@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1790692887069,
+      "tag": "0000_warm_skullbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1790708925951,
+      "tag": "0001_public_fenris",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790711721601,
+      "tag": "0002_acoustic_champions",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790723600497,
+      "tag": "0003_nebulous_starhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1790724000000,
+      "tag": "0004_sad_diamondback",
+      "breakpoints": true
+    }
+  ]
+}

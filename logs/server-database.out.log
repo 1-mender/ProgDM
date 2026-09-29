@@ -1,0 +1,16 @@
+{"level":30,"time":1790693148978,"pid":16940,"hostname":"KOMPUTER","msg":"Server listening at http://127.0.0.1:3333"}
+{"level":30,"time":1790693148979,"pid":16940,"hostname":"KOMPUTER","msg":"Server listening at http://192.168.0.192:3333"}
+{"level":30,"time":1790693159313,"pid":16940,"hostname":"KOMPUTER","reqId":"req-1","req":{"method":"GET","url":"/health","host":"127.0.0.1:3333","remoteAddress":"127.0.0.1","remotePort":52580},"msg":"incoming request"}
+{"level":30,"time":1790693159319,"pid":16940,"hostname":"KOMPUTER","reqId":"req-1","res":{"statusCode":200},"responseTime":4.83679999999913,"msg":"request completed"}
+{"level":30,"time":1790693159676,"pid":16940,"hostname":"KOMPUTER","reqId":"req-2","req":{"method":"GET","url":"/api/session/current","host":"127.0.0.1:3333","remoteAddress":"127.0.0.1","remotePort":52581},"msg":"incoming request"}
+{"level":30,"time":1790693159680,"pid":16940,"hostname":"KOMPUTER","reqId":"req-2","res":{"statusCode":200},"responseTime":3.7273000000004686,"msg":"request completed"}
+{"level":30,"time":1790693160064,"pid":16940,"hostname":"KOMPUTER","reqId":"req-3","req":{"method":"GET","url":"/api/session/current","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":52584},"msg":"incoming request"}
+{"level":30,"time":1790693160065,"pid":16940,"hostname":"KOMPUTER","reqId":"req-3","res":{"statusCode":200},"responseTime":1.0482000000010885,"msg":"request completed"}
+{"level":30,"time":1790693188523,"pid":16940,"hostname":"KOMPUTER","reqId":"req-4","req":{"method":"GET","url":"/health","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":63093},"msg":"incoming request"}
+{"level":30,"time":1790693188523,"pid":16940,"hostname":"KOMPUTER","reqId":"req-4","res":{"statusCode":200},"responseTime":0.35450000000128057,"msg":"request completed"}
+{"level":30,"time":1790693188529,"pid":16940,"hostname":"KOMPUTER","reqId":"req-5","req":{"method":"GET","url":"/health","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":63095},"msg":"incoming request"}
+{"level":30,"time":1790693188530,"pid":16940,"hostname":"KOMPUTER","reqId":"req-5","res":{"statusCode":200},"responseTime":0.845500000003085,"msg":"request completed"}
+{"level":30,"time":1790693196987,"pid":16940,"hostname":"KOMPUTER","reqId":"req-6","req":{"method":"GET","url":"/health","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":58371},"msg":"incoming request"}
+{"level":30,"time":1790693196987,"pid":16940,"hostname":"KOMPUTER","reqId":"req-6","res":{"statusCode":200},"responseTime":0.3269000000000233,"msg":"request completed"}
+{"level":30,"time":1790693196990,"pid":16940,"hostname":"KOMPUTER","reqId":"req-7","req":{"method":"GET","url":"/health","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":58373},"msg":"incoming request"}
+{"level":30,"time":1790693196990,"pid":16940,"hostname":"KOMPUTER","reqId":"req-7","res":{"statusCode":200},"responseTime":0.2977000000028056,"msg":"request completed"}

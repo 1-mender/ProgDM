@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/database" },
+    { "path": "packages/game-engine" },
+    { "path": "apps/server" },
+    { "path": "apps/web" }
+  ]
+}

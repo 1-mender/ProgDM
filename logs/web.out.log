@@ -1,0 +1,15 @@
+
+  VITE v7.3.6  ready in 307 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.0.192:5173/
+  ➜  press h + enter to show help
+20:54:02 [vite] (client) hmr update /src/App.tsx
+20:54:03 [vite] (client) hmr update /src/styles.css
+20:54:30 [vite] (client) ✨ new dependencies optimized: lucide-react
+20:54:30 [vite] (client) ✨ optimized dependencies changed. reloading
+20:55:52 [vite] vite.config.ts changed, restarting server...
+20:55:52 [vite] server restarted.
+00:43:44 [vite] (client) hmr update /src/App.tsx
+00:47:00 [vite] (client) page reload index.html
+00:47:02 [vite] (client) hmr update /src/App.tsx

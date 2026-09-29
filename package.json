@@ -1,0 +1,25 @@
+{
+  "name": "progdm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first tabletop RPG session manager for Dungeon Masters.",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "pnpm build:packages && pnpm --parallel --filter @progdm/server --filter @progdm/web dev",
+    "dev:web": "pnpm build:packages && pnpm --filter @progdm/web dev",
+    "dev:server": "pnpm build:packages && pnpm --filter @progdm/server dev",
+    "build:packages": "pnpm --filter @progdm/shared --filter @progdm/database --filter @progdm/game-engine build",
+    "build": "pnpm --recursive --if-present build",
+    "typecheck": "tsc -b",
+    "dm:link": "pnpm typecheck && node apps/server/dist/dm-link.js",
+    "db:generate": "pnpm --filter @progdm/database db:generate",
+    "db:migrate": "pnpm build:packages && pnpm --filter @progdm/database db:migrate",
+    "test": "pnpm typecheck && pnpm --filter @progdm/database test && pnpm --filter @progdm/server test"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

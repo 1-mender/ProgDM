@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+
+# Local runtime data belongs to the DM machine and should not be committed.
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# Tooling
+.DS_Store
+Thumbs.db

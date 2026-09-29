@@ -1,0 +1,8 @@
+{"level":30,"time":1790707742869,"pid":13704,"hostname":"KOMPUTER","msg":"Server listening at http://127.0.0.1:3333"}
+{"level":30,"time":1790707742870,"pid":13704,"hostname":"KOMPUTER","msg":"Server listening at http://192.168.0.192:3333"}
+{"level":30,"time":1790707761241,"pid":13704,"hostname":"KOMPUTER","reqId":"req-1","req":{"method":"GET","url":"/api/dm/state","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":55816},"msg":"incoming request"}
+{"level":30,"time":1790707761263,"pid":13704,"hostname":"KOMPUTER","reqId":"req-1","res":{"statusCode":200},"responseTime":19.894000000000233,"msg":"request completed"}
+{"level":30,"time":1790707761354,"pid":13704,"hostname":"KOMPUTER","reqId":"req-2","req":{"method":"GET","url":"/api/dm/state","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":55818},"msg":"incoming request"}
+{"level":30,"time":1790707761357,"pid":13704,"hostname":"KOMPUTER","reqId":"req-2","res":{"statusCode":200},"responseTime":2.6626999999971304,"msg":"request completed"}
+{"level":30,"time":1790707761365,"pid":13704,"hostname":"KOMPUTER","reqId":"req-3","req":{"method":"GET","url":"/api/dm/state","host":"localhost:3333","remoteAddress":"127.0.0.1","remotePort":55820},"msg":"incoming request"}
+{"level":30,"time":1790707761372,"pid":13704,"hostname":"KOMPUTER","reqId":"req-3","res":{"statusCode":200},"responseTime":6.081399999999121,"msg":"request completed"}
