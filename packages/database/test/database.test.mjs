@@ -316,3 +316,76 @@ test("backup restore checks and restores the database and uploaded files with a 
   assert.throws(() => database.backupFile("..\\game.db"), /Backup not found/);
   database.close();
 });
+
+test("restoring a schema 0005 backup applies migration 0006 and preserves campaign data", async (t) => {
+  const file = temporaryFile(t);
+  const backups = join(dirname(dirname(file)), "backups");
+  const uploads = join(dirname(dirname(file)), "uploads");
+  const migrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-v5-"));
+  const backupUuid = "00000000-0000-4000-8000-000000000111";
+  const backupName = `progdm-backup-${backupUuid}.db`;
+  mkdirSync(backups, { recursive: true });
+  mkdirSync(join(backups, `progdm-backup-${backupUuid}-uploads`), { recursive: true });
+  t.after(() => {
+    assert.equal(dirname(migrationFolder), resolve(tmpdir()));
+    rmSync(migrationFolder, { recursive: true, force: true });
+  });
+
+  const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
+  const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
+  const versionFiveEntries = journal.entries.filter((entry) => entry.idx <= 5);
+  mkdirSync(join(migrationFolder, "meta"));
+  writeFileSync(join(migrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: versionFiveEntries }));
+  for (const entry of versionFiveEntries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(migrationFolder, entry.tag + ".sql"));
+
+  mkdirSync(dirname(file), { recursive: true });
+  const legacy = new SQLite(file);
+  legacy.pragma("foreign_keys = ON");
+  migrate(drizzle(legacy), { migrationsFolder: migrationFolder });
+  legacy.prepare("INSERT INTO campaigns (id, name, created_at) VALUES (?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000101", "Campaign from v5", "2026-02-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO sessions (id, campaign_id, name, status, join_token, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000102", "00000000-0000-4000-8000-000000000101", "Session history", "ended", "J".repeat(43), "2026-02-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO players (id, session_id, display_name, token_hash, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000103", "00000000-0000-4000-8000-000000000102", "Player", "old-player-token-hash", "approved", "2026-02-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO characters (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000104", "00000000-0000-4000-8000-000000000101", "Mira", "2026-02-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO session_character_assignments (player_id, session_id, character_id, created_at) VALUES (?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000103", "00000000-0000-4000-8000-000000000102", "00000000-0000-4000-8000-000000000104", "2026-02-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO knowledge_entries (id, campaign_id, category, title, description, visibility, visible_to_player_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000105", "00000000-0000-4000-8000-000000000101", "note", "Old private clue", "Keep this through restore.", "player", "00000000-0000-4000-8000-000000000103", "2026-02-01T00:00:00.000Z");
+  await legacy.backup(join(backups, backupName));
+  legacy.close();
+
+  const database = openDatabase({ file, backupsDirectory: backups, uploadsDirectory: uploads });
+  try {
+    const rawAfterStartup = new SQLite(file);
+    assert.equal(rawAfterStartup.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, journal.entries.length);
+    rawAfterStartup.close();
+    assert.equal(database.getCampaign("00000000-0000-4000-8000-000000000101").name, "Campaign from v5");
+    database.createCampaign("Change after migration");
+
+    await database.restoreBackup(backupName);
+
+    assert.deepEqual(database.listCampaigns().map(({ name }) => name), ["Campaign from v5"]);
+    assert.equal(database.getSession("00000000-0000-4000-8000-000000000102").status, "ended");
+    assert.equal(database.listPlayersByCampaign("00000000-0000-4000-8000-000000000101")[0].characterId, "00000000-0000-4000-8000-000000000104");
+    const restoredKnowledge = database.listKnowledgeByCampaign("00000000-0000-4000-8000-000000000101")[0];
+    assert.equal(restoredKnowledge.title, "Old private clue");
+    assert.equal(restoredKnowledge.description, "Keep this through restore.");
+    assert.equal(restoredKnowledge.visibility, "character");
+    assert.equal(restoredKnowledge.visibleToCharacterId, "00000000-0000-4000-8000-000000000104");
+
+    const restoredRaw = new SQLite(file);
+    try {
+      assert.equal(restoredRaw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, journal.entries.length);
+      assert.equal(restoredRaw.prepare("SELECT count(*) AS count FROM knowledge_migration_issues").get().count, 0);
+      assert.deepEqual(restoredRaw.pragma("foreign_key_check"), []);
+    } finally { restoredRaw.close(); }
+
+    const originalBackup = new SQLite(join(backups, backupName), { readonly: true });
+    assert.equal(originalBackup.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, versionFiveEntries.length);
+    assert.equal(originalBackup.prepare("SELECT visibility FROM knowledge_entries").get().visibility, "player");
+    originalBackup.close();
+  } finally { database.close(); }
+});

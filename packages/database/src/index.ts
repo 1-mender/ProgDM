@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { cpSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { cpSync, copyFileSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
@@ -115,17 +115,41 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     return backup;
   }
 
-  function restoreBackupFile(sourceFile: string): void {
+  function restoreBackupFile(sourceFile: string, allowMigration = true): void {
     const source = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
+    let sourceTables: string[];
     try {
       if (source.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Backup file is damaged.");
-      const sourceTables = (source.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((row) => row.name);
-      if (JSON.stringify(sourceTables) !== JSON.stringify([...backupTables].sort())) throw new Error("Backup schema is not supported.");
+      sourceTables = (source.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((row) => row.name);
+    } finally { source.close(); }
+
+    if (JSON.stringify(sourceTables!) !== JSON.stringify([...backupTables].sort())) {
+      if (!allowMigration) throw new Error("Backup schema is not supported.");
+      const stagedFile = join(backupsDirectory, `.migrate-restore-${randomUUID()}.db`);
+      copyFileSync(sourceFile, stagedFile);
+      try {
+        const staged = new SQLite(stagedFile);
+        try {
+          staged.pragma("foreign_keys = OFF");
+          migrate(drizzle(staged, { schema }), { migrationsFolder });
+          staged.pragma("foreign_keys = ON");
+        } finally { staged.close(); }
+        restoreBackupFile(stagedFile, false);
+      } finally {
+        rmSync(stagedFile, { force: true });
+        rmSync(stagedFile + "-wal", { force: true });
+        rmSync(stagedFile + "-shm", { force: true });
+      }
+      return;
+    }
+
+    const sourceWithSchema = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
+    try {
       for (const table of backupTables) {
         const columns = (database: SQLite.Database, schemaName: string) => (database.prepare(`PRAGMA ${schemaName}.table_info("${table}")`).all() as { name: string }[]).map((row) => row.name);
-        if (JSON.stringify(columns(client, "main")) !== JSON.stringify(columns(source, "main"))) throw new Error("Backup schema is not supported.");
+        if (JSON.stringify(columns(client, "main")) !== JSON.stringify(columns(sourceWithSchema, "main"))) throw new Error("Backup schema is not supported.");
       }
-    } finally { source.close(); }
+    } finally { sourceWithSchema.close(); }
 
     client.prepare("ATTACH DATABASE ? AS restore_source").run(sourceFile);
     client.pragma("foreign_keys = OFF");
