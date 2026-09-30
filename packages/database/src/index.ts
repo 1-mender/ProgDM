@@ -307,9 +307,7 @@ export function openDatabase(options: { file?: string } = {}) {
       return db.transaction(() => {
         const character = db.select({
           id: schema.characters.id,
-          campaignId: schema.characters.campaignId,
-          playerStatus: schema.players.status,
-          sessionStatus: schema.sessions.status
+          campaignId: schema.characters.campaignId
         }).from(schema.characters)
           .innerJoin(schema.sessionCharacterAssignments, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
           .innerJoin(schema.players, and(
@@ -317,11 +315,13 @@ export function openDatabase(options: { file?: string } = {}) {
             eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
           ))
           .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
-          .where(eq(schema.characters.id, characterId)).get();
-        if (!character) throw new Error("Character is not assigned to an approved player.");
-        if (character.playerStatus !== "approved" || character.sessionStatus !== "active") {
-          throw new Error("Character is not in the active session.");
-        }
+          .where(and(
+            eq(schema.characters.id, characterId),
+            eq(schema.players.status, "approved"),
+            eq(schema.sessions.status, "active"),
+            eq(schema.sessions.campaignId, schema.characters.campaignId)
+          )).get();
+        if (!character) throw new Error("Character is not in the active session.");
         const catalogItem = db.select().from(schema.catalogItems)
           .where(and(eq(schema.catalogItems.id, catalogItemId), eq(schema.catalogItems.campaignId, character.campaignId))).get();
         if (!catalogItem) throw new Error("Catalog item is unavailable for this campaign.");

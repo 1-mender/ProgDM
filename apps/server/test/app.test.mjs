@@ -112,6 +112,9 @@ test("campaign character can be reassigned next session with inventory and old s
   assert.equal(firstViewBeforeEnd.statusCode, 200);
   assert.equal(firstViewBeforeEnd.json().inventory[0].quantity, 2);
   assert.equal((await post(app, "/api/dm/sessions/" + firstSession.id + "/end")).statusCode, 200);
+  assert.equal((await post(app, "/api/dm/characters/" + character.id + "/items", {
+    catalogItemId: item.id, quantity: 1
+  })).statusCode, 409);
 
   const secondSession = (await post(app, "/api/dm/campaigns/" + campaign.id + "/sessions", { name: "Second night" })).json().session;
   assert.equal((await start(secondSession)).statusCode, 200);
@@ -131,6 +134,14 @@ test("campaign character can be reassigned next session with inventory and old s
   assert.deepEqual(secondView.json().inventory.map(({ name, quantity }) => ({ name, quantity })), [
     { name: "Old compass", quantity: 2 }
   ]);
+  const secondGrant = await post(app, "/api/dm/characters/" + character.id + "/items", {
+    catalogItemId: item.id, quantity: 1
+  });
+  assert.equal(secondGrant.statusCode, 201);
+  assert.equal(secondGrant.json().item.quantity, 3);
+  assert.deepEqual((await readPlayer(secondPlayerToken)).json().inventory.map(({ name, quantity }) => ({ name, quantity })), [
+    { name: "Old compass", quantity: 3 }
+  ]);
 
   const thirdPlayerToken = "C".repeat(43);
   const thirdRequest = await post(app, "/api/join/" + secondSession.joinToken + "/request", {
@@ -148,7 +159,15 @@ test("campaign character can be reassigned next session with inventory and old s
   assert.equal(database.getSession(secondSession.id).status, "active");
   const firstViewAfterEnd = await readPlayer(firstPlayerToken);
   assert.equal(firstViewAfterEnd.statusCode, 200);
-  assert.equal(firstViewAfterEnd.json().inventory[0].quantity, 2);
+  assert.equal(firstViewAfterEnd.json().sessionName, "First night");
+  assert.equal(firstViewAfterEnd.json().characterName, "Mira");
+  assert.equal(firstViewAfterEnd.json().inventory[0].quantity, 3);
+  const oldTokenWrite = await app.inject({
+    method: "POST", url: "/api/dm/characters/" + character.id + "/items",
+    headers: { authorization: "Bearer " + firstPlayerToken },
+    payload: { catalogItemId: item.id, quantity: 1 }
+  });
+  assert.equal(oldTokenWrite.statusCode, 401);
 });
 
 test("invalid names, malformed JSON, unknown records and transitions are rejected", async (t) => {
