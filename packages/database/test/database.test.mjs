@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { openDatabase, resolveDatabaseFile } from "../dist/index.js";
 
 function temporaryFile(t) {
@@ -56,6 +58,66 @@ test("migrations create an empty database and preserve data across process resta
   } finally {
     database.close();
   }
+});
+
+test("character-assignment migration preserves legacy assignments and inventory", (t) => {
+  const file = temporaryFile(t);
+  const migrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-v4-"));
+  t.after(() => {
+    assert.equal(dirname(migrationFolder), resolve(tmpdir()));
+    rmSync(migrationFolder, { recursive: true, force: true });
+  });
+  const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
+  const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
+  const oldEntries = journal.entries.filter((entry) => entry.idx <= 4);
+  mkdirSync(join(migrationFolder, "meta"));
+  writeFileSync(join(migrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: oldEntries }));
+  for (const entry of oldEntries) {
+    copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(migrationFolder, entry.tag + ".sql"));
+  }
+
+  mkdirSync(dirname(file), { recursive: true });
+  const legacy = new SQLite(file);
+  legacy.pragma("foreign_keys = ON");
+  migrate(drizzle(legacy), { migrationsFolder: migrationFolder });
+  legacy.prepare("INSERT INTO campaigns (id, name, created_at) VALUES (?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000001", "Legacy", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO sessions (id, campaign_id, name, status, join_token, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000001", "Old session", "ended", "A".repeat(43), "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO players (id, session_id, display_name, token_hash, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000002", "Player", "legacy-player-hash", "approved", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO characters (id, campaign_id, name, player_id, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000001", "Persistent hero", "00000000-0000-4000-8000-000000000003", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO catalog_items (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000005", "00000000-0000-4000-8000-000000000001", "Old item", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000006", "00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000005", "Old item", 3, "2026-01-01T00:00:00.000Z");
+  legacy.close();
+
+  const database = openDatabase({ file });
+  try {
+    const rawBefore = new SQLite(file);
+    assert.deepEqual(rawBefore.prepare("SELECT player_id, session_id, character_id FROM session_character_assignments").all(), [{
+      player_id: "00000000-0000-4000-8000-000000000003",
+      session_id: "00000000-0000-4000-8000-000000000002",
+      character_id: "00000000-0000-4000-8000-000000000004"
+    }]);
+    rawBefore.close();
+    const oldPlayer = database.listPlayersByCampaign("00000000-0000-4000-8000-000000000001")[0];
+    assert.equal(oldPlayer.characterId, "00000000-0000-4000-8000-000000000004");
+    assert.equal(database.getSession("00000000-0000-4000-8000-000000000002").status, "ended");
+    const oldPlayerState = database.getPlayerState("legacy-player-hash");
+    assert.equal(oldPlayerState.characterName, "Persistent hero");
+    assert.deepEqual(oldPlayerState.inventory.map(({ name, quantity }) => ({ name, quantity })), [
+      { name: "Old item", quantity: 3 }
+    ]);
+    const raw = new SQLite(file);
+    try {
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM session_character_assignments").get().count, 1);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM pragma_table_info('characters') WHERE name = 'player_id'").get().count, 0);
+      assert.deepEqual(raw.pragma("foreign_key_check"), []);
+    } finally { raw.close(); }
+  } finally { database.close(); }
 });
 
 test("database paths do not depend on the shell working directory", () => {
@@ -137,7 +199,8 @@ test("SQLite enforces status, active-session uniqueness and campaign references"
     assert.throws(() => raw.prepare("UPDATE sessions SET join_token = ? WHERE id = ?").run(a.joinToken, b.id), /UNIQUE/);
     assert.throws(() => raw.prepare("DELETE FROM campaigns WHERE id = ?").run(campaign.id), /FOREIGN KEY/);
     assert.throws(() => raw.prepare("UPDATE campaigns SET name = '' WHERE id = ?").run(campaign.id), /CHECK/);
-    assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 1);
+    const migrationCount = JSON.parse(readFileSync(join(fileURLToPath(new URL("../migrations/", import.meta.url)), "meta", "_journal.json"), "utf8")).entries.length;
+    assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, migrationCount);
   } finally {
     raw.close();
     database.close();

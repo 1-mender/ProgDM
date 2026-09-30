@@ -36,6 +36,13 @@
       "when": 1790724000000,
       "tag": "0004_sad_diamondback",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1790774825395,
+      "tag": "0005_redundant_vin_gonzales",
+      "breakpoints": true
     }
   ]
 }

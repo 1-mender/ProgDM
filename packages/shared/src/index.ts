@@ -55,7 +55,6 @@ export interface Character {
   id: EntityId;
   campaignId: EntityId;
   name: string;
-  playerId: EntityId | null;
   createdAt: string;
 }
 

@@ -158,7 +158,8 @@ function DmWorkspace() {
   const itemTarget = grantablePlayers.find((player) => player.id === itemTargetId) ?? grantablePlayers[0];
   const campaignItemCatalog = state?.itemCatalog.filter((item) => item.campaignId === selectedId) ?? [];
   const selectedCatalogItem = campaignItemCatalog.find((item) => item.id === catalogItemId) ?? campaignItemCatalog[0];
-  const availableCharacters = state?.characters.filter((character) => character.campaignId === selectedId && !character.playerId) ?? [];
+  const assignedCharacterIds = new Set(campaignPlayers.map((player) => player.characterId).filter((id): id is string => id !== null));
+  const availableCharacters = state?.characters.filter((character) => character.campaignId === selectedId && !assignedCharacterIds.has(character.id)) ?? [];
   const campaignKnowledge = state?.knowledge.filter((entry) => entry.campaignId === selectedId) ?? [];
   const addresses = state?.networkAddresses ?? [];
   const selectedAddress = addresses.find((entry) => entry.address === joinAddress)?.address ??

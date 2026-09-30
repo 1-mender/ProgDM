@@ -22,7 +22,12 @@ test("empty database has no session and health is public", async (t) => {
   const response = await get(app, "/api/session/current");
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json(), { snapshot: null });
-  assert.deepEqual((await get(app, "/api/dm/state")).json(), { campaigns: [], sessions: [], current: null });
+  const dmState = (await get(app, "/api/dm/state")).json();
+  assert.deepEqual(dmState, {
+    campaigns: [], sessions: [], current: null, players: [], characters: [], itemCatalog: [], knowledge: [],
+    networkAddresses: dmState.networkAddresses
+  });
+  assert.equal(Array.isArray(dmState.networkAddresses), true);
 });
 
 test("all DM reads and writes require the key, including through a proxy", async (t) => {
@@ -78,6 +83,72 @@ test("DM can create, select, start, switch and finish sessions", async (t) => {
   assert.equal((await post(app, "/api/dm/sessions/" + b.id + "/start", { expectedActiveSessionId: null })).statusCode, 409);
   await app.close();
   assert.throws(() => database.listCampaigns());
+});
+
+test("campaign character can be reassigned next session with inventory and old session history preserved", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = (await post(app, "/api/dm/campaigns", { name: "Persistent campaign" })).json().campaign;
+  const character = (await post(app, "/api/dm/campaigns/" + campaign.id + "/characters", { name: "Mira" })).json().character;
+  const item = (await post(app, "/api/dm/campaigns/" + campaign.id + "/items", { name: "Old compass" })).json().item;
+  const firstSession = (await post(app, "/api/dm/campaigns/" + campaign.id + "/sessions", { name: "First night" })).json().session;
+  const start = (session, expectedActiveSessionId = null) =>
+    post(app, "/api/dm/sessions/" + session.id + "/start", { expectedActiveSessionId });
+  assert.equal((await start(firstSession)).statusCode, 200);
+
+  const firstPlayerToken = "A".repeat(43);
+  const firstRequest = await post(app, "/api/join/" + firstSession.joinToken + "/request", {
+    displayName: "Mira's player", playerToken: firstPlayerToken
+  });
+  assert.equal(firstRequest.statusCode, 200);
+  const firstPlayer = database.listPlayersByCampaign(campaign.id).find((player) => player.sessionId === firstSession.id);
+  assert.equal((await post(app, "/api/dm/players/" + firstPlayer.id + "/approve", { characterId: character.id })).statusCode, 200);
+  const grant = await post(app, "/api/dm/characters/" + character.id + "/items", { catalogItemId: item.id, quantity: 2 });
+  assert.equal(grant.statusCode, 201);
+
+  const readPlayer = (token) => app.inject({
+    method: "GET", url: "/api/player/me", headers: { authorization: "Bearer " + token }
+  });
+  const firstViewBeforeEnd = await readPlayer(firstPlayerToken);
+  assert.equal(firstViewBeforeEnd.statusCode, 200);
+  assert.equal(firstViewBeforeEnd.json().inventory[0].quantity, 2);
+  assert.equal((await post(app, "/api/dm/sessions/" + firstSession.id + "/end")).statusCode, 200);
+
+  const secondSession = (await post(app, "/api/dm/campaigns/" + campaign.id + "/sessions", { name: "Second night" })).json().session;
+  assert.equal((await start(secondSession)).statusCode, 200);
+  const secondPlayerToken = "B".repeat(43);
+  const secondRequest = await post(app, "/api/join/" + secondSession.joinToken + "/request", {
+    displayName: "Mira's player", playerToken: secondPlayerToken
+  });
+  assert.equal(secondRequest.statusCode, 200);
+  const secondPlayer = database.listPlayersByCampaign(campaign.id).find((player) => player.sessionId === secondSession.id);
+  const reassigned = await post(app, "/api/dm/players/" + secondPlayer.id + "/approve", { characterId: character.id });
+  assert.equal(reassigned.statusCode, 200);
+  assert.equal(reassigned.json().player.characterId, character.id);
+
+  const secondView = await readPlayer(secondPlayerToken);
+  assert.equal(secondView.statusCode, 200);
+  assert.equal(secondView.json().characterName, "Mira");
+  assert.deepEqual(secondView.json().inventory.map(({ name, quantity }) => ({ name, quantity })), [
+    { name: "Old compass", quantity: 2 }
+  ]);
+
+  const thirdPlayerToken = "C".repeat(43);
+  const thirdRequest = await post(app, "/api/join/" + secondSession.joinToken + "/request", {
+    displayName: "Another player", playerToken: thirdPlayerToken
+  });
+  assert.equal(thirdRequest.statusCode, 200);
+  const thirdPlayer = database.listPlayersByCampaign(campaign.id).find((player) => player.sessionId === secondSession.id && player.displayName === "Another player");
+  const conflict = await post(app, "/api/dm/players/" + thirdPlayer.id + "/approve", { characterId: character.id });
+  assert.equal(conflict.statusCode, 409);
+
+  const history = database.listPlayersByCampaign(campaign.id);
+  assert.equal(history.find((player) => player.sessionId === firstSession.id).characterId, character.id);
+  assert.equal(history.find((player) => player.sessionId === secondSession.id && player.id === secondPlayer.id).characterId, character.id);
+  assert.equal(database.getSession(firstSession.id).status, "ended");
+  assert.equal(database.getSession(secondSession.id).status, "active");
+  const firstViewAfterEnd = await readPlayer(firstPlayerToken);
+  assert.equal(firstViewAfterEnd.statusCode, 200);
+  assert.equal(firstViewAfterEnd.json().inventory[0].quantity, 2);
 });
 
 test("invalid names, malformed JSON, unknown records and transitions are rejected", async (t) => {

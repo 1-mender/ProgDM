@@ -321,7 +321,8 @@ export function createApp(options: {
         } catch (error) {
           const message = error instanceof Error ? error.message : "";
           if (message === "Player request not found.") return reply.code(404).send({ message: "Заявка не найдена." });
-          if (message === "Character is unavailable for this campaign.") return reply.code(409).send({ message: "Этот персонаж уже назначен или относится к другой кампании. Обновите список." });
+          if (message === "Character is unavailable for this campaign.") return reply.code(409).send({ message: "Этот персонаж относится к другой кампании. Обновите список." });
+          if (message === "Character is already assigned in this session.") return reply.code(409).send({ message: "Этот персонаж уже назначен игроку в текущей сессии." });
           if (message === "Rejected request cannot be approved." || message === "Session has ended.") {
             return reply.code(409).send({ message: "Заявка закрыта. Обновите список." });
           }

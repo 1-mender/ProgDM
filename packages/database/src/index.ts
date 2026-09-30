@@ -59,10 +59,11 @@ export function openDatabase(options: { file?: string } = {}) {
   const client = new SQLite(file);
   const db = drizzle(client, { schema });
   try {
-    client.pragma("foreign_keys = ON");
     client.pragma("busy_timeout = 5000");
     client.pragma("journal_mode = WAL");
+    client.pragma("foreign_keys = OFF");
     migrate(db, { migrationsFolder });
+    client.pragma("foreign_keys = ON");
   } catch (error) {
     client.close();
     throw error;
@@ -84,7 +85,11 @@ export function openDatabase(options: { file?: string } = {}) {
       characterName: schema.characters.name
     }).from(schema.players)
       .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
-      .leftJoin(schema.characters, eq(schema.characters.playerId, schema.players.id))
+      .leftJoin(schema.sessionCharacterAssignments, and(
+        eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
+        eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
+      ))
+      .leftJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
       .where(eq(schema.players.id, playerId)).get() ?? null;
   }
 
@@ -141,7 +146,11 @@ export function openDatabase(options: { file?: string } = {}) {
       }).from(schema.players)
         .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
         .innerJoin(schema.campaigns, eq(schema.sessions.campaignId, schema.campaigns.id))
-        .leftJoin(schema.characters, eq(schema.characters.playerId, schema.players.id))
+        .leftJoin(schema.sessionCharacterAssignments, and(
+          eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
+          eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
+        ))
+        .leftJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
         .where(eq(schema.players.tokenHash, tokenHash)).get();
       if (!player) return null;
       const knowledge = player.status === "approved"
@@ -211,7 +220,11 @@ export function openDatabase(options: { file?: string } = {}) {
         characterName: schema.characters.name
       }).from(schema.players)
         .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
-        .leftJoin(schema.characters, eq(schema.characters.playerId, schema.players.id))
+        .leftJoin(schema.sessionCharacterAssignments, and(
+          eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
+          eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
+        ))
+        .leftJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
         .where(eq(schema.sessions.campaignId, campaignId))
         .orderBy(asc(schema.players.createdAt), asc(schema.players.id)).all();
     },
@@ -220,7 +233,6 @@ export function openDatabase(options: { file?: string } = {}) {
         id: schema.characters.id,
         campaignId: schema.characters.campaignId,
         name: schema.characters.name,
-        playerId: schema.characters.playerId,
         createdAt: schema.characters.createdAt
       }).from(schema.characters).where(eq(schema.characters.campaignId, campaignId))
         .orderBy(asc(schema.characters.name), asc(schema.characters.id)).all();
@@ -285,7 +297,7 @@ export function openDatabase(options: { file?: string } = {}) {
         .where(eq(schema.campaigns.id, campaignId)).get();
       if (!campaign) throw new Error("Campaign not found.");
       return db.insert(schema.characters).values({
-        id: randomUUID(), campaignId, name: validatedName(name), playerId: null, createdAt: new Date().toISOString()
+        id: randomUUID(), campaignId, name: validatedName(name), createdAt: new Date().toISOString()
       }).returning().get();
     },
     grantInventoryItem(characterId: string, catalogItemId: string, quantity: number) {
@@ -299,7 +311,11 @@ export function openDatabase(options: { file?: string } = {}) {
           playerStatus: schema.players.status,
           sessionStatus: schema.sessions.status
         }).from(schema.characters)
-          .innerJoin(schema.players, eq(schema.characters.playerId, schema.players.id))
+          .innerJoin(schema.sessionCharacterAssignments, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
+          .innerJoin(schema.players, and(
+            eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
+            eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
+          ))
           .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
           .where(eq(schema.characters.id, characterId)).get();
         if (!character) throw new Error("Character is not assigned to an approved player.");
@@ -328,6 +344,7 @@ export function openDatabase(options: { file?: string } = {}) {
         const request = db.select({
           id: schema.players.id,
           status: schema.players.status,
+          sessionId: schema.players.sessionId,
           sessionStatus: schema.sessions.status,
           campaignId: schema.sessions.campaignId
         }).from(schema.players)
@@ -342,13 +359,24 @@ export function openDatabase(options: { file?: string } = {}) {
           const character = db.select().from(schema.characters)
             .where(and(eq(schema.characters.id, assignment.characterId), eq(schema.characters.campaignId, request.campaignId)))
             .get();
-          if (!character || character.playerId !== null) throw new Error("Character is unavailable for this campaign.");
-          db.update(schema.characters).set({ playerId })
-            .where(eq(schema.characters.id, character.id)).run();
+          if (!character) throw new Error("Character is unavailable for this campaign.");
+          const existingAssignment = db.select({ playerId: schema.sessionCharacterAssignments.playerId })
+            .from(schema.sessionCharacterAssignments)
+            .where(and(
+              eq(schema.sessionCharacterAssignments.sessionId, request.sessionId),
+              eq(schema.sessionCharacterAssignments.characterId, character.id)
+            )).get();
+          if (existingAssignment) throw new Error("Character is already assigned in this session.");
+          db.insert(schema.sessionCharacterAssignments).values({
+            playerId, sessionId: request.sessionId, characterId: character.id, createdAt: new Date().toISOString()
+          }).run();
         } else {
           const name = validatedName(assignment.characterName);
-          db.insert(schema.characters).values({
-            id: randomUUID(), campaignId: request.campaignId, name, playerId, createdAt: new Date().toISOString()
+          const character = db.insert(schema.characters).values({
+            id: randomUUID(), campaignId: request.campaignId, name, createdAt: new Date().toISOString()
+          }).returning().get();
+          db.insert(schema.sessionCharacterAssignments).values({
+            playerId, sessionId: request.sessionId, characterId: character.id, createdAt: new Date().toISOString()
           }).run();
         }
         db.update(schema.players).set({ status: "approved" })

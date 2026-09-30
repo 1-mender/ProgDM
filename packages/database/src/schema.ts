@@ -43,12 +43,20 @@ export const characters = sqliteTable("characters", {
   id: text("id").primaryKey(),
   campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  playerId: text("player_id").references(() => players.id, { onDelete: "set null" }),
   createdAt: text("created_at").notNull()
 }, (table) => [
   index("characters_campaign_id_idx").on(table.campaignId),
-  uniqueIndex("characters_player_id_unique").on(table.playerId),
   check("character_name_valid", sql`length(trim(${table.name})) between 1 and 120`)
+]);
+
+export const sessionCharacterAssignments = sqliteTable("session_character_assignments", {
+  playerId: text("player_id").primaryKey().references(() => players.id, { onDelete: "cascade" }),
+  sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
+  characterId: text("character_id").notNull().references(() => characters.id, { onDelete: "cascade" }),
+  createdAt: text("created_at").notNull()
+}, (table) => [
+  uniqueIndex("session_character_assignments_session_character_unique").on(table.sessionId, table.characterId),
+  index("session_character_assignments_character_idx").on(table.characterId)
 ]);
 
 export const catalogItems = sqliteTable("catalog_items", {
