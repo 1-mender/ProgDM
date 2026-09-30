@@ -1,5 +1,6 @@
 import Fastify, { type FastifyError } from "fastify";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
 import { openDatabase, type GameDatabase } from "@progdm/database";
@@ -148,6 +149,62 @@ export function createApp(options: {
         knowledge: campaigns.flatMap((campaign) => database.listKnowledgeByCampaign(campaign.id)),
         networkAddresses: addresses
       };
+    });
+    dm.get("/api/dm/backups", async () => ({ backups: database.listBackups() }));
+    dm.post("/api/dm/backups", async (_request, reply) => reply.code(201).send({ backup: await database.createBackup() }));
+    dm.get<{ Params: { id: string } }>("/api/dm/backups/:id/download", {
+      schema: { params: { type: "object", required: ["id"], properties: { id: { type: "string", pattern: "^progdm-backup-[0-9a-f-]{36}\\.db$" } } } }
+    }, async (request, reply) => {
+      try {
+        return reply.type("application/vnd.sqlite3").header("Content-Disposition", `attachment; filename="${request.params.id}"`)
+          .send(createReadStream(database.backupFile(request.params.id)));
+      } catch (error) {
+        if (error instanceof Error && error.message === "Backup not found.") return reply.code(404).send({ message: "Резервная копия не найдена." });
+        throw error;
+      }
+    });
+    dm.post<{ Body: { id: string } }>("/api/dm/backups/restore", {
+      schema: { body: { type: "object", additionalProperties: false, required: ["id"], properties: {
+        id: { type: "string", pattern: "^progdm-backup-[0-9a-f-]{36}\\.db$" }
+      } } }
+    }, async (request, reply) => {
+      try {
+        return { restored: await database.restoreBackup(request.body.id) };
+      } catch (error) {
+        if (error instanceof Error && error.message === "Backup not found.") return reply.code(404).send({ message: "Резервная копия не найдена." });
+        if (error instanceof Error && /Backup (file is damaged|schema is not supported|uploads are missing|contains invalid references)|integrity check/.test(error.message)) {
+          return reply.code(409).send({ message: "Копия повреждена или создана несовместимой версией приложения." });
+        }
+        throw error;
+      }
+    });
+    dm.get<{ Params: { id: string } }>("/api/dm/campaigns/:id/export", {
+      schema: { params: idParams }
+    }, async (request, reply) => {
+      try {
+        return reply.type("application/json; charset=utf-8").header("Content-Disposition", "attachment; filename=progdm-campaign.json")
+          .send(database.exportCampaign(request.params.id));
+      } catch (error) {
+        if (error instanceof Error && error.message === "Campaign not found.") return reply.code(404).send({ message: "Кампания не найдена." });
+        throw error;
+      }
+    });
+    dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
+      bodyLimit: 10 * 1024 * 1024,
+      schema: { body: { type: "object", required: ["format", "version"], properties: {
+        format: { const: "progdm-campaign" }, version: { const: 1 }
+      } } }
+    }, async (request, reply) => {
+      try {
+        return reply.code(201).send({ campaign: database.importCampaign(request.body) });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Campaign file format is not supported.") return reply.code(400).send({ message: "Формат файла кампании не поддерживается." });
+        if (/Campaign file|Campaign name|Name must|Player name|Description|constraint/i.test(message)) {
+          return reply.code(400).send({ message: "Файл кампании повреждён или содержит недопустимые данные." });
+        }
+        throw error;
+      }
     });
     dm.post<{ Body: { name: string } }>("/api/dm/campaigns", { schema: { body: nameBody } }, async (request, reply) => {
       const campaign = database.createCampaign(request.body.name);

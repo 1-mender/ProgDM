@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
+import { BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { Campaign, Character, DmState, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
@@ -11,6 +11,7 @@ const knowledgeCategories: Record<KnowledgeCategory, string> = {
   npc: "Персонаж мира", monster: "Монстр", note: "Заметка или факт", quest: "Квест"
 };
 const sessionPlural = new Intl.PluralRules("ru");
+type BackupInfo = { id: string; createdAt: string; size: number };
 function sessionCount(count: number) {
   const word = { one: "сессия", few: "сессии", many: "сессий", other: "сессии" }[sessionPlural.select(count) as "one" | "few" | "many" | "other"];
   return count + " " + word;
@@ -35,9 +36,9 @@ function initialToken() {
 class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
-async function request<T>(token: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(token: string, path: string, body?: unknown, timeoutMs = 10000): Promise<T> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 10000);
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(path, {
       method: body === undefined ? "GET" : "POST",
@@ -52,6 +53,18 @@ async function request<T>(token: string, path: string, body?: unknown): Promise<
     if (error instanceof ApiError) throw error;
     throw new Error("Нет связи с сервером. Обновите данные перед повтором действия.");
   } finally { clearTimeout(timer); }
+}
+
+async function downloadFile(token: string, path: string, filename: string) {
+  const response = await fetch(path, { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new ApiError(result.message ?? "Не удалось скачать файл.", response.status);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url; link.download = filename; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function Modal({ title, children, close, busy }: { title: string; children: ReactNode; close: () => void; busy: boolean }) {
@@ -83,6 +96,8 @@ function DmWorkspace() {
   const [token, setToken] = useState(initialToken);
   const [keyInput, setKeyInput] = useState("");
   const [state, setState] = useState<DmState | null>(null);
+  const [backups, setBackups] = useState<BackupInfo[]>([]);
+  const [backupId, setBackupId] = useState("");
   const [selectedId, setSelectedId] = useState(() => readStored(campaignKey));
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
@@ -114,9 +129,13 @@ function DmWorkspace() {
     const id = ++loadId.current;
     if (!silent) setPhase("loading");
     try {
-      const data = await request<DmState>(token, "/api/dm/state");
+      const [data, backupData] = await Promise.all([
+        request<DmState>(token, "/api/dm/state"), request<{ backups: BackupInfo[] }>(token, "/api/dm/backups")
+      ]);
       if (id !== loadId.current) return;
       setState(data);
+      setBackups(backupData.backups);
+      setBackupId((previous) => backupData.backups.some((backup) => backup.id === previous) ? previous : backupData.backups[0]?.id ?? "");
       setSelectedId((previous) => data.campaigns.some((campaign) => campaign.id === previous)
         ? previous : (data.current?.campaign.id ?? data.campaigns[0]?.id ?? ""));
       setPhase("ready");
@@ -256,6 +275,38 @@ function DmWorkspace() {
       setNotice("Запись добавлена и пока скрыта от игроков.");
     });
   }
+  function createBackup() {
+    void mutate(async () => {
+      const { backup } = await request<{ backup: BackupInfo }>(token, "/api/dm/backups", {}, 120000);
+      await downloadFile(token, "/api/dm/backups/" + encodeURIComponent(backup.id) + "/download", "ProgDM-rezervnaya-kopiya.db");
+      setNotice("Резервная копия создана и скачана.");
+    });
+  }
+  function restoreBackupNow() {
+    if (!backupId || !window.confirm("Текущая база будет заменена выбранной копией. Перед восстановлением приложение автоматически сохранит текущие данные. Продолжить?")) return;
+    void mutate(async () => {
+      await request(token, "/api/dm/backups/restore", { id: backupId }, 120000);
+      setNotice("Копия восстановлена. Перед восстановлением создана страховочная копия.");
+    });
+  }
+  function exportCampaign() {
+    if (!selected) return;
+    void mutate(async () => {
+      await downloadFile(token, "/api/dm/campaigns/" + selected.id + "/export", "ProgDM-kampaniya.json");
+      setNotice("Кампания выгружена в файл.");
+    });
+  }
+  function importCampaignFile(file?: File) {
+    if (!file) return;
+    void mutate(async () => {
+      let archive: unknown;
+      try { archive = JSON.parse(await file.text()); }
+      catch { throw new Error("Файл не является корректным JSON."); }
+      const result = await request<{ campaign: Campaign }>(token, "/api/dm/campaigns/import", archive, 120000);
+      setSelectedId(result.campaign.id);
+      setNotice("Кампания импортирована.");
+    });
+  }
   function saveKnowledgeVisibility(entry: KnowledgeEntry, draft: { visibility: KnowledgeVisibility; playerId: string }) {
     const unchanged = draft.visibility === entry.visibility &&
       (draft.visibility !== "player" || draft.playerId === (entry.visibleToPlayerId ?? ""));
@@ -383,6 +434,24 @@ function DmWorkspace() {
             <button role="tab" aria-selected={workspaceMode === "live"} className={workspaceMode === "live" ? "selected" : ""} disabled={!current || current.campaign.id !== selectedId} onClick={() => setWorkspaceMode("live")}><Radio size={17} />За столом</button>
           </div>
           {workspaceMode === "prepare" && <>
+          <section className="data-tools" aria-labelledby="data-tools-title">
+            <div className="section-heading"><h2 id="data-tools-title"><Database size={18} />Данные и копии</h2></div>
+            <div className="data-tool-actions">
+              <button className="secondary" disabled={locked} onClick={createBackup}><Download />Создать копию и скачать базу</button>
+              <button className="secondary" disabled={locked} onClick={exportCampaign}><Download />Экспорт кампании</button>
+              <label className="secondary file-action"><Upload />Импорт кампании<input type="file" accept=".json,application/json" disabled={locked} onChange={(event) => { importCampaignFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
+            </div>
+            <p className="muted backup-note">Копии хранятся в data/backups. Для переноса сохраните файл базы вместе с папкой progdm-backup-…-uploads с тем же идентификатором.</p>
+            {backups.length > 0 && <div className="backup-restore">
+              <div className="field"><label htmlFor="backup-choice">Резервная копия</label><select id="backup-choice" value={backupId} disabled={locked} onChange={(event) => setBackupId(event.target.value)}>
+                {backups.map((backup) => <option key={backup.id} value={backup.id}>{new Date(backup.createdAt).toLocaleString("ru-RU")} · {(backup.size / 1024 / 1024).toFixed(1)} МБ</option>)}
+              </select></div>
+              <button className="secondary" disabled={locked || !backupId} onClick={restoreBackupNow}><RefreshCw />Восстановить</button>
+              <button className="icon-button" title="Скачать выбранную копию" aria-label="Скачать выбранную копию" disabled={locked || !backupId} onClick={() => void mutate(async () => {
+                await downloadFile(token, "/api/dm/backups/" + encodeURIComponent(backupId) + "/download", "ProgDM-rezervnaya-kopiya.db");
+              })}><Download /></button>
+            </div>}
+          </section>
           <section className="session-create" aria-labelledby="new-session-title">
             <h2 id="new-session-title">Новая сессия</h2>
             <form className="inline-form" onSubmit={createSession}>

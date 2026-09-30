@@ -226,3 +226,73 @@ test("failed activation rolls back the previous active session", (t) => {
     database.close();
   }
 });
+
+test("campaign export and import preserve history and inventory without copying secrets", (t) => {
+  const database = memoryDatabase(t);
+  const campaign = database.createCampaign("Campaign to move");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const item = database.createCatalogItem(campaign.id, "Compass");
+  const session = database.createSession(campaign.id, "Night one");
+  database.activateSession(session.id);
+  const player = database.submitPlayerRequest(session.id, "Player", "a".repeat(64));
+  database.approvePlayer(player.id, { characterId: character.id });
+  database.grantInventoryItem(character.id, item.id, 2);
+  const entry = database.createKnowledge(campaign.id, "npc", "Keeper", "Knows the old road.");
+  database.setKnowledgeVisibility(entry.id, "party");
+
+  const archive = database.exportCampaign(campaign.id);
+  const serialized = JSON.stringify(archive);
+  assert.equal(serialized.includes(session.joinToken), false);
+  assert.equal(serialized.includes("a".repeat(64)), false);
+  const imported = database.importCampaign(archive);
+  assert.notEqual(imported.id, campaign.id);
+  const importedArchive = database.exportCampaign(imported.id);
+  assert.equal(importedArchive.campaign.name, campaign.name);
+  assert.equal(importedArchive.sessions[0].status, "planned");
+  assert.equal(importedArchive.players[0].displayName, "Player");
+  assert.equal(importedArchive.assignments.length, 1);
+  assert.notEqual(importedArchive.assignments[0].characterId, character.id);
+  assert.deepEqual(importedArchive.inventoryItems.map(({ name, quantity }) => ({ name, quantity })), [
+    { name: "Compass", quantity: 2 }
+  ]);
+  assert.equal(importedArchive.knowledge[0].visibility, "party");
+  assert.throws(() => database.importCampaign({ ...archive, assignments: [{ ...archive.assignments[0], characterId: "missing" }] }), /invalid reference/);
+  assert.equal(database.listCampaigns().length, 2);
+});
+
+test("backup restore checks and restores the database and uploaded files with a safety copy", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const uploads = join(root, "uploads");
+  const backups = join(root, "backups");
+  const assetDirectory = join(uploads, "items");
+  mkdirSync(assetDirectory, { recursive: true });
+  const asset = join(assetDirectory, "map.bin");
+  writeFileSync(asset, "original asset");
+  const database = openDatabase({ file, backupsDirectory: backups, uploadsDirectory: uploads });
+  const campaign = database.createCampaign("Before restore");
+  const snapshot = await database.createBackup();
+  assert.equal(database.listBackups().length, 1);
+  const backupDatabase = new SQLite(database.backupFile(snapshot.id), { readonly: true });
+  assert.equal(backupDatabase.prepare("SELECT name FROM campaigns WHERE id = ?").get(campaign.id).name, "Before restore");
+  backupDatabase.close();
+  const raw = new SQLite(file);
+  raw.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run("After backup", campaign.id);
+  raw.close();
+  writeFileSync(asset, "changed asset");
+
+  const restored = await database.restoreBackup(snapshot.id);
+  const restoredRaw = new SQLite(file, { readonly: true });
+  const restoredName = restoredRaw.prepare("SELECT name FROM campaigns WHERE id = ?").get(campaign.id).name;
+  restoredRaw.close();
+  assert.equal(restoredName, "Before restore");
+  assert.equal(database.getCampaign(campaign.id).name, "Before restore");
+  assert.equal(readFileSync(asset, "utf8"), "original asset");
+  assert.equal(database.listBackups().length, 2);
+  assert.notEqual(restored.safetyCopyId, snapshot.id);
+  const safetyDatabase = new SQLite(database.backupFile(restored.safetyCopyId), { readonly: true });
+  assert.equal(safetyDatabase.prepare("SELECT name FROM campaigns WHERE id = ?").get(campaign.id).name, "After backup");
+  safetyDatabase.close();
+  assert.throws(() => database.backupFile("..\\game.db"), /Backup not found/);
+  database.close();
+});

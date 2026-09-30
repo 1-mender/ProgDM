@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { openDatabase } from "@progdm/database";
 import { createApp } from "../dist/app.js";
@@ -6,9 +9,12 @@ import { createApp } from "../dist/app.js";
 const dmToken = "test-dm-token";
 const headers = { authorization: "Bearer " + dmToken };
 function fixture(t) {
-  const database = openDatabase({ file: ":memory:" });
+  const directory = mkdtempSync(join(tmpdir(), "progdm-api-test-"));
+  const database = openDatabase({
+    file: ":memory:", backupsDirectory: join(directory, "backups"), uploadsDirectory: join(directory, "uploads")
+  });
   const app = createApp({ database, dmToken });
-  t.after(() => app.close());
+  t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
   return { database, app };
 }
 function get(app, url) { return app.inject({ method: "GET", url, headers }); }
@@ -188,4 +194,52 @@ test("invalid names, malformed JSON, unknown records and transitions are rejecte
   assert.equal((await post(app, "/api/dm/sessions/" + planned.id + "/start")).statusCode, 400);
   assert.equal(database.listCampaigns().length, 1);
   assert.equal(database.listSessions(campaign.id).length, 1);
+});
+
+test("campaign export and import are authenticated and omit player and invitation credentials", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Transfer campaign");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const catalogItem = database.createCatalogItem(campaign.id, "Key");
+  const session = database.createSession(campaign.id, "Night one");
+  database.activateSession(session.id);
+  const player = database.submitPlayerRequest(session.id, "Player", "b".repeat(64));
+  database.approvePlayer(player.id, { characterId: character.id });
+  database.grantInventoryItem(character.id, catalogItem.id, 1);
+
+  const exported = await get(app, "/api/dm/campaigns/" + campaign.id + "/export");
+  assert.equal(exported.statusCode, 200);
+  assert.match(exported.headers["content-disposition"], /attachment/);
+  assert.equal(exported.body.includes(session.joinToken), false);
+  assert.equal(exported.body.includes("b".repeat(64)), false);
+  const archive = exported.json();
+  assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
+
+  const imported = await post(app, "/api/dm/campaigns/import", archive);
+  assert.equal(imported.statusCode, 201);
+  assert.notEqual(imported.json().campaign.id, campaign.id);
+  const importedData = database.exportCampaign(imported.json().campaign.id);
+  assert.equal(importedData.characters[0].name, "Mira");
+  assert.equal(importedData.inventoryItems[0].quantity, 1);
+  const invalid = await post(app, "/api/dm/campaigns/import", { ...archive, inventoryItems: [{ ...archive.inventoryItems[0], characterId: "missing" }] });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(database.listCampaigns().length, 2);
+});
+
+test("DM can download a database backup and restore it without losing the pre-restore state", async (t) => {
+  const { app, database } = fixture(t);
+  const original = database.createCampaign("Original");
+  const created = await post(app, "/api/dm/backups", {});
+  assert.equal(created.statusCode, 201);
+  const backup = created.json().backup;
+  const download = await app.inject({ method: "GET", url: "/api/dm/backups/" + backup.id + "/download", headers });
+  assert.equal(download.statusCode, 200);
+  assert.equal(download.headers["content-type"].startsWith("application/vnd.sqlite3"), true);
+  database.createCampaign("Temporary");
+  const restored = await post(app, "/api/dm/backups/restore", { id: backup.id });
+  assert.equal(restored.statusCode, 200);
+  assert.deepEqual(database.listCampaigns().map((campaign) => campaign.name), ["Original"]);
+  assert.equal(database.listBackups().length, 2);
+  assert.equal((await get(app, "/api/dm/backups")).json().backups.length, 2);
+  assert.equal(database.getCampaign(original.id).name, "Original");
 });

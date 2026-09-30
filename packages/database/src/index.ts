@@ -1,6 +1,6 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { cpSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
 import { and, asc, eq, or } from "drizzle-orm";
@@ -52,12 +52,127 @@ function validatedDescription(description: string): string {
   return value;
 }
 
-export function openDatabase(options: { file?: string } = {}) {
+function transferRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Campaign file is invalid.");
+  return value as Record<string, unknown>;
+}
+
+function transferString(record: Record<string, unknown>, key: string, max = 200): string {
+  const value = record[key];
+  if (typeof value !== "string" || value.length > max) throw new Error("Campaign file is invalid.");
+  return value;
+}
+
+function transferArray(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
+  const value = record[key];
+  if (!Array.isArray(value) || value.length > 10000) throw new Error("Campaign file is invalid.");
+  return value.map(transferRecord);
+}
+
+export function openDatabase(options: { file?: string; backupsDirectory?: string; uploadsDirectory?: string } = {}) {
   const file = resolveDatabaseFile(options.file);
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
+  const backupsDirectory = resolve(workspaceRoot, options.backupsDirectory ?? DATA_DIRECTORIES.backups);
+  const uploadsDirectory = resolve(workspaceRoot, options.uploadsDirectory ?? "data/uploads");
 
   const client = new SQLite(file);
   const db = drizzle(client, { schema });
+  const backupIdPattern = /^progdm-backup-([0-9a-f-]{36})\.db$/;
+  const backupTables = ["campaigns", "sessions", "players", "characters", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "__drizzle_migrations"];
+
+  async function createBackup() {
+    mkdirSync(backupsDirectory, { recursive: true });
+    const id = randomUUID();
+    const filename = `progdm-backup-${id}.db`;
+    const destination = join(backupsDirectory, filename);
+    const temporary = destination + ".tmp";
+    try {
+      await client.backup(temporary);
+      const snapshot = new SQLite(temporary, { readonly: true, fileMustExist: true });
+      try {
+        const integrity = snapshot.pragma("integrity_check", { simple: true });
+        if (integrity !== "ok") throw new Error("Backup integrity check failed.");
+      } finally { snapshot.close(); }
+      rmSync(destination, { force: true });
+      const stagedUploads = join(backupsDirectory, `.uploads-${id}`);
+      mkdirSync(uploadsDirectory, { recursive: true });
+      cpSync(uploadsDirectory, stagedUploads, { recursive: true, force: true, errorOnExist: false });
+      renameSync(temporary, destination);
+      renameSync(stagedUploads, join(backupsDirectory, `progdm-backup-${id}-uploads`));
+      return { id: filename, createdAt: new Date().toISOString(), size: statSync(destination).size };
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      rmSync(join(backupsDirectory, `.uploads-${id}`), { recursive: true, force: true });
+      rmSync(destination, { force: true });
+      throw error;
+    }
+  }
+
+  function resolveBackup(id: string): string {
+    if (!backupIdPattern.test(basename(id)) || basename(id) !== id) throw new Error("Backup not found.");
+    const backup = join(backupsDirectory, id);
+    if (!statSync(backup, { throwIfNoEntry: false })?.isFile()) throw new Error("Backup not found.");
+    return backup;
+  }
+
+  function restoreBackupFile(sourceFile: string): void {
+    const source = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
+    try {
+      if (source.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Backup file is damaged.");
+      const sourceTables = (source.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((row) => row.name);
+      if (JSON.stringify(sourceTables) !== JSON.stringify([...backupTables].sort())) throw new Error("Backup schema is not supported.");
+      for (const table of backupTables) {
+        const columns = (database: SQLite.Database, schemaName: string) => (database.prepare(`PRAGMA ${schemaName}.table_info("${table}")`).all() as { name: string }[]).map((row) => row.name);
+        if (JSON.stringify(columns(client, "main")) !== JSON.stringify(columns(source, "main"))) throw new Error("Backup schema is not supported.");
+      }
+    } finally { source.close(); }
+
+    client.prepare("ATTACH DATABASE ? AS restore_source").run(sourceFile);
+    client.pragma("foreign_keys = OFF");
+    try {
+      client.transaction(() => {
+        for (const table of backupTables) client.exec(`DELETE FROM main."${table}"`);
+        for (const table of backupTables) {
+          const columns = (client.prepare(`PRAGMA main.table_info("${table}")`).all() as { name: string }[]).map((row) => `"${row.name}"`).join(", ");
+          client.exec(`INSERT INTO main."${table}" (${columns}) SELECT ${columns} FROM restore_source."${table}"`);
+        }
+        const violations = client.pragma("foreign_key_check") as unknown[];
+        if (violations.length) throw new Error("Backup contains invalid references.");
+        if (client.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Restored database failed integrity check.");
+      })();
+    } finally {
+      client.prepare("DETACH DATABASE restore_source").run();
+      client.pragma("foreign_keys = ON");
+    }
+  }
+
+  async function restoreBackup(id: string) {
+    const sourceFile = resolveBackup(id);
+    const backupUuid = backupIdPattern.exec(id)![1]!;
+    const sourceUploads = join(backupsDirectory, `progdm-backup-${backupUuid}-uploads`);
+    if (!statSync(sourceUploads, { throwIfNoEntry: false })?.isDirectory()) throw new Error("Backup uploads are missing.");
+    const safetyCopy = await createBackup();
+    const stagedUploads = uploadsDirectory + `.restore-${randomUUID()}`;
+    const previousUploads = uploadsDirectory + `.previous-${randomUUID()}`;
+    cpSync(sourceUploads, stagedUploads, { recursive: true });
+    let databaseRestored = false;
+    try {
+      restoreBackupFile(sourceFile);
+      databaseRestored = true;
+      if (statSync(uploadsDirectory, { throwIfNoEntry: false })?.isDirectory()) renameSync(uploadsDirectory, previousUploads);
+      renameSync(stagedUploads, uploadsDirectory);
+      rmSync(previousUploads, { recursive: true, force: true });
+      return { safetyCopyId: safetyCopy.id };
+    } catch (error) {
+      if (databaseRestored) restoreBackupFile(resolveBackup(safetyCopy.id));
+      rmSync(stagedUploads, { recursive: true, force: true });
+      if (statSync(previousUploads, { throwIfNoEntry: false })?.isDirectory()) {
+        rmSync(uploadsDirectory, { recursive: true, force: true });
+        renameSync(previousUploads, uploadsDirectory);
+      }
+      throw error;
+    }
+  }
   try {
     client.pragma("busy_timeout = 5000");
     client.pragma("journal_mode = WAL");
@@ -98,11 +213,166 @@ export function openDatabase(options: { file?: string } = {}) {
     close(): void {
       client.close();
     },
+    async createBackup() {
+      return createBackup();
+    },
+    listBackups() {
+      if (!statSync(backupsDirectory, { throwIfNoEntry: false })?.isDirectory()) return [];
+      return readdirSync(backupsDirectory).flatMap((filename) => {
+        const match = backupIdPattern.exec(filename);
+        if (!match) return [];
+        const file = join(backupsDirectory, filename);
+        const info = statSync(file);
+        return info.isFile() ? [{ id: filename, createdAt: info.mtime.toISOString(), size: info.size }] : [];
+      }).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    },
+    backupFile(id: string) {
+      return resolveBackup(id);
+    },
+    async restoreBackup(id: string) {
+      return restoreBackup(id);
+    },
     listCampaigns(): Campaign[] {
       return db.select().from(schema.campaigns).orderBy(asc(schema.campaigns.createdAt), asc(schema.campaigns.id)).all();
     },
     getCampaign(id: string): Campaign | null {
       return db.select().from(schema.campaigns).where(eq(schema.campaigns.id, id)).get() ?? null;
+    },
+    exportCampaign(id: string) {
+      const campaign = db.select({ name: schema.campaigns.name, createdAt: schema.campaigns.createdAt })
+        .from(schema.campaigns).where(eq(schema.campaigns.id, id)).get();
+      if (!campaign) throw new Error("Campaign not found.");
+      const sessions = db.select({
+        id: schema.sessions.id, name: schema.sessions.name, status: schema.sessions.status, createdAt: schema.sessions.createdAt
+      }).from(schema.sessions).where(eq(schema.sessions.campaignId, id)).all();
+      const sessionIds = sessions.map((session) => session.id);
+      const players = sessionIds.length ? db.select({
+        id: schema.players.id, sessionId: schema.players.sessionId, displayName: schema.players.displayName,
+        status: schema.players.status, createdAt: schema.players.createdAt
+      }).from(schema.players).where(or(...sessionIds.map((sessionId) => eq(schema.players.sessionId, sessionId)))).all() : [];
+      const playerIds = players.map((player) => player.id);
+      const characters = db.select({
+        id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt
+      }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all();
+      const characterIds = characters.map((character) => character.id);
+      const assignments = sessionIds.length ? db.select({
+        playerId: schema.sessionCharacterAssignments.playerId,
+        sessionId: schema.sessionCharacterAssignments.sessionId,
+        characterId: schema.sessionCharacterAssignments.characterId,
+        createdAt: schema.sessionCharacterAssignments.createdAt
+      }).from(schema.sessionCharacterAssignments)
+        .where(or(...sessionIds.map((sessionId) => eq(schema.sessionCharacterAssignments.sessionId, sessionId)))).all() : [];
+      const catalogItems = db.select({
+        id: schema.catalogItems.id, name: schema.catalogItems.name, createdAt: schema.catalogItems.createdAt
+      }).from(schema.catalogItems).where(eq(schema.catalogItems.campaignId, id)).all();
+      const inventoryItems = characterIds.length ? db.select({
+        id: schema.inventoryItems.id, characterId: schema.inventoryItems.characterId,
+        catalogItemId: schema.inventoryItems.catalogItemId, name: schema.inventoryItems.name,
+        quantity: schema.inventoryItems.quantity, createdAt: schema.inventoryItems.createdAt
+      }).from(schema.inventoryItems)
+        .where(or(...characterIds.map((characterId) => eq(schema.inventoryItems.characterId, characterId)))).all() : [];
+      const knowledge = db.select({
+        id: schema.knowledgeEntries.id, category: schema.knowledgeEntries.category, title: schema.knowledgeEntries.title,
+        description: schema.knowledgeEntries.description, visibility: schema.knowledgeEntries.visibility,
+        visibleToPlayerId: schema.knowledgeEntries.visibleToPlayerId, createdAt: schema.knowledgeEntries.createdAt
+      }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
+        .map((entry) => ({ ...entry, visibleToPlayerId: entry.visibleToPlayerId && playerIds.includes(entry.visibleToPlayerId) ? entry.visibleToPlayerId : null }));
+      return {
+        format: "progdm-campaign", version: 1, exportedAt: new Date().toISOString(), campaign,
+        sessions, players, assignments, characters, catalogItems, inventoryItems, knowledge
+      };
+    },
+    importCampaign(source: unknown) {
+      const archive = transferRecord(source);
+      if (archive.format !== "progdm-campaign" || archive.version !== 1) throw new Error("Campaign file format is not supported.");
+      const campaignSource = transferRecord(archive.campaign);
+      const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
+      const createdAt = (record: Record<string, unknown>) => {
+        const value = transferString(record, "createdAt", 64);
+        if (!value || Number.isNaN(Date.parse(value))) throw new Error("Campaign file is invalid.");
+        return value;
+      };
+      const sessions = transferArray(archive, "sessions");
+      const players = transferArray(archive, "players");
+      const assignments = transferArray(archive, "assignments");
+      const characters = transferArray(archive, "characters");
+      const catalogItems = transferArray(archive, "catalogItems");
+      const inventoryItems = transferArray(archive, "inventoryItems");
+      const knowledge = transferArray(archive, "knowledge");
+      const campaignId = randomUUID();
+      const sessionIds = new Map(sessions.map((row) => [transferString(row, "id"), randomUUID()]));
+      const playerIds = new Map(players.map((row) => [transferString(row, "id"), randomUUID()]));
+      const characterIds = new Map(characters.map((row) => [transferString(row, "id"), randomUUID()]));
+      const catalogIds = new Map(catalogItems.map((row) => [transferString(row, "id"), randomUUID()]));
+      const requireMapped = (map: Map<string, string>, id: unknown) => {
+        if (typeof id !== "string" || !map.has(id)) throw new Error("Campaign file contains an invalid reference.");
+        return map.get(id)!;
+      };
+      const playerSessionIds = new Map(players.map((row) => [transferString(row, "id"), transferString(row, "sessionId")]));
+      for (const assignment of assignments) {
+        const playerId = transferString(assignment, "playerId");
+        const sessionId = transferString(assignment, "sessionId");
+        if (playerSessionIds.get(playerId) !== sessionId) throw new Error("Campaign file contains an invalid reference.");
+        requireMapped(characterIds, assignment.characterId);
+        requireMapped(sessionIds, assignment.sessionId);
+      }
+      const newId = () => randomUUID();
+      return db.transaction(() => {
+        const campaign = db.insert(schema.campaigns).values({
+          id: campaignId, name: sourceCampaignName, createdAt: createdAt(campaignSource)
+        }).returning().get();
+        for (const row of sessions) {
+          const status = transferString(row, "status");
+          if (!["planned", "active", "ended"].includes(status)) throw new Error("Campaign file is invalid.");
+          db.insert(schema.sessions).values({
+            id: requireMapped(sessionIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
+            status: status === "active" ? "planned" : status as "planned" | "ended",
+            joinToken: randomBytes(32).toString("base64url"), createdAt: createdAt(row)
+          }).run();
+        }
+        for (const row of players) {
+          const status = transferString(row, "status");
+          if (!["pending", "approved", "rejected"].includes(status)) throw new Error("Campaign file is invalid.");
+          db.insert(schema.players).values({
+            id: requireMapped(playerIds, row.id), sessionId: requireMapped(sessionIds, row.sessionId),
+            displayName: validatedPlayerName(transferString(row, "displayName", 60)),
+            tokenHash: createHash("sha256").update(randomBytes(32)).digest("hex"),
+            status: status as "pending" | "approved" | "rejected", createdAt: createdAt(row)
+          }).run();
+        }
+        for (const row of characters) db.insert(schema.characters).values({
+          id: requireMapped(characterIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)), createdAt: createdAt(row)
+        }).run();
+        for (const row of catalogItems) db.insert(schema.catalogItems).values({
+          id: requireMapped(catalogIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)), createdAt: createdAt(row)
+        }).run();
+        for (const row of assignments) db.insert(schema.sessionCharacterAssignments).values({
+          playerId: requireMapped(playerIds, row.playerId), sessionId: requireMapped(sessionIds, row.sessionId),
+          characterId: requireMapped(characterIds, row.characterId), createdAt: createdAt(row)
+        }).run();
+        for (const row of inventoryItems) {
+          const quantity = row.quantity;
+          if (!Number.isInteger(quantity) || (quantity as number) < 1 || (quantity as number) > 9999) throw new Error("Campaign file is invalid.");
+          db.insert(schema.inventoryItems).values({
+            id: newId(), characterId: requireMapped(characterIds, row.characterId),
+            catalogItemId: row.catalogItemId === null ? null : requireMapped(catalogIds, row.catalogItemId),
+            name: validatedName(transferString(row, "name", 120)), quantity: quantity as number, createdAt: createdAt(row)
+          }).run();
+        }
+        for (const row of knowledge) {
+          const category = transferString(row, "category");
+          const visibility = transferString(row, "visibility");
+          if (!["npc", "monster", "note", "quest"].includes(category) || !["hidden", "player", "party"].includes(visibility)) throw new Error("Campaign file is invalid.");
+          const visibleToPlayerId = visibility === "player" ? requireMapped(playerIds, row.visibleToPlayerId) : null;
+          db.insert(schema.knowledgeEntries).values({
+            id: newId(), campaignId, category: category as KnowledgeCategory,
+            title: validatedName(transferString(row, "title", 120)),
+            description: validatedDescription(transferString(row, "description", 2000)),
+            visibility: visibility as KnowledgeVisibility, visibleToPlayerId, createdAt: createdAt(row)
+          }).run();
+        }
+        return campaign;
+      });
     },
     createCampaign(name: string): Campaign {
       return db.insert(schema.campaigns).values({
