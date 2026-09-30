@@ -300,6 +300,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const inventoryItems = transferArray(archive, "inventoryItems");
       const knowledge = transferArray(archive, "knowledge");
       const campaignId = randomUUID();
+      const sessionsWithPlayers = new Set(players.map((row) => transferString(row, "sessionId")));
       const sessionIds = new Map(sessions.map((row) => [transferString(row, "id"), randomUUID()]));
       const playerIds = new Map(players.map((row) => [transferString(row, "id"), randomUUID()]));
       const characterIds = new Map(characters.map((row) => [transferString(row, "id"), randomUUID()]));
@@ -326,7 +327,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           if (!["planned", "active", "ended"].includes(status)) throw new Error("Campaign file is invalid.");
           db.insert(schema.sessions).values({
             id: requireMapped(sessionIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
-            status: status === "active" ? "planned" : status as "planned" | "ended",
+            status: status === "active" || sessionsWithPlayers.has(transferString(row, "id"))
+              ? "ended" : status as "planned" | "ended",
             joinToken: randomBytes(32).toString("base64url"), createdAt: createdAt(row)
           }).run();
         }

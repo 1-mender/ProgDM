@@ -226,6 +226,63 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(database.listCampaigns().length, 2);
 });
 
+test("players reconnect by the same name in a new session after importing campaign history", async (t) => {
+  const source = fixture(t);
+  const campaign = source.database.createCampaign("Long campaign");
+  const character = source.database.createCharacter(campaign.id, "Mira");
+  const session1 = source.database.createSession(campaign.id, "Session 1");
+  source.database.activateSession(session1.id);
+  const oldToken = "E".repeat(43);
+  assert.equal((await post(source.app, "/api/join/" + session1.joinToken + "/request", {
+    displayName: "Player A", playerToken: oldToken
+  })).statusCode, 200);
+  const playerA = source.database.listPlayersByCampaign(campaign.id).find((player) => player.sessionId === session1.id);
+  assert.equal((await post(source.app, "/api/dm/players/" + playerA.id + "/approve", { characterId: character.id })).statusCode, 200);
+  const exported = await get(source.app, "/api/dm/campaigns/" + campaign.id + "/export");
+
+  const destination = fixture(t);
+  const imported = await post(destination.app, "/api/dm/campaigns/import", exported.json());
+  assert.equal(imported.statusCode, 201);
+  const importedCampaign = imported.json().campaign;
+  const importedSession1 = destination.database.listSessions(importedCampaign.id)[0];
+  const importedCharacter = destination.database.listCharactersByCampaign(importedCampaign.id)[0];
+  assert.equal(importedSession1.name, "Session 1");
+  assert.equal(importedSession1.status, "ended");
+  const historicalPlayer = destination.database.listPlayersByCampaign(importedCampaign.id)
+    .find((player) => player.sessionId === importedSession1.id);
+  assert.equal(historicalPlayer.displayName, "Player A");
+  assert.equal(historicalPlayer.characterId, importedCharacter.id);
+  assert.equal((await post(destination.app, "/api/dm/sessions/" + importedSession1.id + "/start", {
+    expectedActiveSessionId: null
+  })).statusCode, 409);
+
+  const session2 = (await post(destination.app, "/api/dm/campaigns/" + importedCampaign.id + "/sessions", {
+    name: "Session 2"
+  })).json().session;
+  assert.equal((await post(destination.app, "/api/dm/sessions/" + session2.id + "/start", {
+    expectedActiveSessionId: null
+  })).statusCode, 200);
+  const newToken = "F".repeat(43);
+  const reconnect = await post(destination.app, "/api/join/" + session2.joinToken + "/request", {
+    displayName: "Player A", playerToken: newToken
+  });
+  assert.equal(reconnect.statusCode, 200);
+  const newPlayer = destination.database.listPlayersByCampaign(importedCampaign.id)
+    .find((player) => player.sessionId === session2.id);
+  assert.equal(newPlayer.displayName, historicalPlayer.displayName);
+  assert.equal(newPlayer.status, "pending");
+  assert.equal(newPlayer.characterId, null);
+  assert.equal((await post(destination.app, "/api/dm/players/" + newPlayer.id + "/approve", {
+    characterId: importedCharacter.id
+  })).statusCode, 200);
+
+  const history = destination.database.listPlayersByCampaign(importedCampaign.id);
+  assert.equal(history.find((player) => player.sessionId === importedSession1.id).characterId, importedCharacter.id);
+  assert.equal(history.find((player) => player.sessionId === session2.id).characterId, importedCharacter.id);
+  assert.equal(destination.database.getSession(importedSession1.id).status, "ended");
+  assert.equal(destination.database.getSession(session2.id).status, "active");
+});
+
 test("DM can download a database backup and restore it without losing the pre-restore state", async (t) => {
   const { app, database } = fixture(t);
   const original = database.createCampaign("Original");

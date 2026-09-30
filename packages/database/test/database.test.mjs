@@ -248,7 +248,8 @@ test("campaign export and import preserve history and inventory without copying 
   assert.notEqual(imported.id, campaign.id);
   const importedArchive = database.exportCampaign(imported.id);
   assert.equal(importedArchive.campaign.name, campaign.name);
-  assert.equal(importedArchive.sessions[0].status, "planned");
+  assert.equal(importedArchive.sessions[0].status, "ended");
+  assert.throws(() => database.activateSession(importedArchive.sessions[0].id), /ended session/);
   assert.equal(importedArchive.players[0].displayName, "Player");
   assert.equal(importedArchive.assignments.length, 1);
   assert.notEqual(importedArchive.assignments[0].characterId, character.id);
