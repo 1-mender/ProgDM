@@ -60,6 +60,98 @@ test("migrations create an empty database and preserve data across process resta
   }
 });
 
+test("activity and archive preserve a character across sessions and campaign export", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Long story");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const item = db.createCatalogItem(campaign.id, "Compass");
+  const first = db.createSession(campaign.id, "First night");
+  db.activateSession(first.id);
+  const playerA = db.submitPlayerRequest(first.id, "Player A", "private-player-hash");
+  db.approvePlayer(playerA.id, { characterId: mira.id });
+  assert.throws(() => db.archiveCharacter(mira.id), /active character/);
+  assert.equal(db.listCampaignActivity(campaign.id).some((event) => event.type === "character_archived"), false);
+  db.grantInventoryItem(mira.id, item.id, 2);
+  const knowledge = db.createKnowledge(campaign.id, "note", "Secret door", "Behind the library");
+  db.setKnowledgeVisibility(knowledge.id, "character", mira.id);
+  assert.equal(db.getPlayerState("private-player-hash").knowledge.some((entry) => entry.id === knowledge.id), true);
+  db.endSession(first.id);
+
+  const archived = db.archiveCharacter(mira.id);
+  assert.ok(archived.archivedAt);
+  const history = db.listCampaignActivity(campaign.id);
+  assert.deepEqual(history.map((event) => event.type), [
+    "campaign_created", "character_created", "catalog_item_created", "session_created", "session_started",
+    "player_requested", "character_assigned", "player_approved", "item_granted", "knowledge_created",
+    "knowledge_visibility_changed", "session_ended", "character_archived"
+  ]);
+  assert.equal(history.find((event) => event.type === "item_granted").details.quantity, 2);
+  assert.equal(db.listSessionActivity(first.id).some((event) => event.type === "item_granted"), true);
+  assert.equal(JSON.stringify(history).includes("private-player-hash"), false);
+  assert.equal(JSON.stringify(history).includes(first.joinToken), false);
+
+  const archive = db.exportCampaign(campaign.id);
+  assert.equal(archive.version, 2);
+  assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
+  assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
+  assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
+  const imported = db.importCampaign(archive);
+  const importedMira = db.listCharactersByCampaign(imported.id)[0];
+  assert.ok(importedMira.archivedAt);
+  assert.equal(db.listKnowledgeByCampaign(imported.id)[0].visibleToCharacterId, importedMira.id);
+  assert.equal(db.listCampaignActivity(imported.id).find((event) => event.type === "item_granted").characterId, importedMira.id);
+  assert.equal(db.listCampaignActivity(imported.id).find((event) => event.type === "knowledge_visibility_changed").knowledgeEntryId,
+    db.listKnowledgeByCampaign(imported.id)[0].id);
+  assert.equal(JSON.stringify(db.listCampaignActivity(imported.id)).includes("private-player-hash"), false);
+  assert.equal(db.listCampaignActivity(imported.id).at(-1).type, "campaign_imported");
+  assert.equal(db.listPlayersByCampaign(campaign.id)[0].characterId, mira.id);
+  assert.equal(db.getPlayerState("private-player-hash").inventory[0].quantity, 2);
+
+  const second = db.createSession(campaign.id, "Second night");
+  db.activateSession(second.id);
+  const playerB = db.submitPlayerRequest(second.id, "Player B", "new-player-hash");
+  assert.equal(db.listCharactersByCampaign(campaign.id)[0].archivedAt, archived.archivedAt);
+  assert.throws(() => db.approvePlayer(playerB.id, { characterId: mira.id }), /unavailable/);
+  db.restoreCharacter(mira.id);
+  db.approvePlayer(playerB.id, { characterId: mira.id });
+  assert.equal(db.getPlayerState("new-player-hash").inventory[0].quantity, 2);
+  assert.equal(db.getPlayerState("new-player-hash").knowledge[0].id, knowledge.id);
+  assert.equal(db.listPlayersByCampaign(campaign.id).find((row) => row.id === playerA.id).characterId, mira.id);
+  assert.deepEqual(db.listCampaignActivity(campaign.id).filter((event) => event.type.startsWith("character_")).map((event) => event.type), [
+    "character_created", "character_assigned", "character_archived", "character_restored", "character_assigned"
+  ]);
+});
+
+test("health check reports cross-campaign knowledge and backup restores activity and archive", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+  const campaign = db.createCampaign("Original");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const knowledge = db.createKnowledge(campaign.id, "note", "Clue", "Old letter");
+  db.setKnowledgeVisibility(knowledge.id, "character", mira.id);
+  db.archiveCharacter(mira.id);
+  assert.equal(db.checkDataHealth().ok, true);
+  const backup = await db.createBackup();
+  db.restoreCharacter(mira.id);
+  const other = db.createCampaign("Other");
+  const otherCharacter = db.createCharacter(other.id, "Nora");
+  const raw = new SQLite(file);
+  try { raw.prepare("UPDATE knowledge_entries SET visible_to_character_id = ? WHERE id = ?").run(otherCharacter.id, knowledge.id); }
+  finally { raw.close(); }
+  const unhealthy = db.checkDataHealth();
+  assert.equal(unhealthy.ok, false);
+  assert.equal(unhealthy.checks.find((item) => item.name === "Личные знания").status, "error");
+  await db.restoreBackup(backup.id);
+  assert.equal(db.checkDataHealth().ok, true);
+  assert.ok(db.listCharactersByCampaign(campaign.id)[0].archivedAt);
+  assert.equal(db.listKnowledgeByCampaign(campaign.id)[0].visibleToCharacterId, mira.id);
+  assert.deepEqual(db.listCampaignActivity(campaign.id).map((event) => event.type).slice(-2), ["character_archived", "backup_restored"]);
+  assert.equal(db.listCampaigns().length, 1);
+  } finally { db.close(); }
+});
+
 test("character-assignment migration preserves legacy assignments and inventory", (t) => {
   const file = temporaryFile(t);
   const migrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-v4-"));
@@ -379,7 +471,7 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     const currentRaw = new SQLite(file, { readonly: true });
     const currentTableNames = currentRaw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(({ name }) => name);
     currentRaw.close();
-    assert.deepEqual(legacyTableNames, currentTableNames, "backup must have the same table list but the previous knowledge columns");
+    assert.deepEqual(legacyTableNames, currentTableNames.filter((name) => name !== "campaign_activity"), "migration 0007 adds only the activity table to the previous table set");
 
     await database.restoreBackup(backupName);
 
@@ -391,6 +483,8 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     assert.equal(restoredKnowledge.description, "Keep this through restore.");
     assert.equal(restoredKnowledge.visibility, "character");
     assert.equal(restoredKnowledge.visibleToCharacterId, "00000000-0000-4000-8000-000000000104");
+    assert.equal(database.listCharactersByCampaign("00000000-0000-4000-8000-000000000101")[0].archivedAt, null);
+    assert.deepEqual(database.listCampaignActivity("00000000-0000-4000-8000-000000000101").map((event) => event.type), ["backup_restored"]);
 
     const restoredRaw = new SQLite(file);
     try {

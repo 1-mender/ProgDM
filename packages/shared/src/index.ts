@@ -37,6 +37,7 @@ export interface DmState {
   characters: Character[];
   itemCatalog: CampaignItem[];
   knowledge: KnowledgeEntry[];
+  activity: CampaignActivity[];
   networkAddresses: NetworkAddress[];
 }
 
@@ -56,6 +57,7 @@ export interface Character {
   campaignId: EntityId;
   name: string;
   createdAt: string;
+  archivedAt: string | null;
 }
 
 export interface CampaignItem {
@@ -115,23 +117,42 @@ export interface InventoryItem {
   createdAt: string;
 }
 
-export interface SessionEvent {
-  id: EntityId;
-  sessionId: EntityId;
-  type: SessionEventType;
-  createdAt: string;
-  payload: Record<string, unknown>;
-}
-
-export const FUTURE_SESSION_EVENTS = [
-  "ITEM_RECEIVED",
-  "QUEST_STARTED",
-  "QUEST_COMPLETED",
-  "MONSTER_REVEALED",
-  "SESSION_STARTED",
-  "SESSION_ENDED",
-  "MESSAGE",
-  "NOTIFICATION"
+export const ACTIVITY_TYPES = [
+  "campaign_created", "campaign_imported", "backup_restored",
+  "session_created", "session_started", "session_ended",
+  "player_requested", "player_approved", "player_rejected",
+  "character_created", "character_assigned", "character_archived", "character_restored",
+  "catalog_item_created", "item_granted", "knowledge_created", "knowledge_visibility_changed"
 ] as const;
 
-export type SessionEventType = (typeof FUTURE_SESSION_EVENTS)[number];
+export type ActivityType = (typeof ACTIVITY_TYPES)[number];
+
+export interface ActivityDetails {
+  campaignName?: string;
+  sessionName?: string;
+  playerName?: string;
+  characterName?: string;
+  itemName?: string;
+  knowledgeTitle?: string;
+  quantity?: number;
+  totalQuantity?: number;
+  visibility?: KnowledgeVisibility;
+  previousVisibility?: KnowledgeVisibility;
+  backupId?: string;
+}
+
+export interface CampaignActivity {
+  id: EntityId;
+  campaignId: EntityId;
+  sessionId: EntityId | null;
+  playerId: EntityId | null;
+  characterId: EntityId | null;
+  catalogItemId: EntityId | null;
+  knowledgeEntryId: EntityId | null;
+  type: ActivityType;
+  createdAt: string;
+  details: ActivityDetails;
+}
+
+export type HealthCheck = { name: string; status: "ok" | "error" | "skipped"; message: string };
+export type DataHealth = { ok: boolean; checks: HealthCheck[] };

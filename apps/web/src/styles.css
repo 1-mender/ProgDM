@@ -158,6 +158,15 @@ dialog::backdrop { background: #20252a66; }
 .character-list { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 16px; }
 .character-list li { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 0; color: #5c636a; overflow-wrap: anywhere; }
 .character-list svg { flex: 0 0 auto; color: #7a8188; }
+.character-list .icon-button { margin-left: auto; }
+.character-list .icon-button svg { width: 16px; height: 16px; }
+.activity-section { padding: 24px 0; border-top: 1px solid #dce0e3; }
+.activity-list { list-style: none; padding: 0; margin: 0; max-height: 300px; overflow: auto; }
+.activity-list li { display: flex; gap: 16px; padding: 7px 0; border-bottom: 1px solid #e4e7e9; }
+.activity-list time { flex: 0 0 145px; color: #626b70; font-size: 13px; }
+.activity-list span { overflow-wrap: anywhere; }
+.health-result { margin-top: 12px; }
+.health-result ul { margin: 8px 0 0; padding-left: 20px; }
 .item-grant { padding: 24px 0 8px; }
 .item-grant h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; font-size: 15px; }
 .item-grant h3 svg { color: #286f63; }

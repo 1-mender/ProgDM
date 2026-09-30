@@ -43,7 +43,8 @@ export const characters = sqliteTable("characters", {
   id: text("id").primaryKey(),
   campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  createdAt: text("created_at").notNull()
+  createdAt: text("created_at").notNull(),
+  archivedAt: text("archived_at")
 }, (table) => [
   index("characters_campaign_id_idx").on(table.campaignId),
   check("character_name_valid", sql`length(trim(${table.name})) between 1 and 120`)
@@ -110,4 +111,21 @@ export const knowledgeMigrationIssues = sqliteTable("knowledge_migration_issues"
   createdAt: text("created_at").notNull()
 }, (table) => [
   check("knowledge_migration_issue_reason_valid", sql`${table.reason} in ('missing_assignment', 'campaign_mismatch')`)
+]);
+
+export const campaignActivity = sqliteTable("campaign_activity", {
+  id: text("id").primaryKey(),
+  campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "restrict" }),
+  sessionId: text("session_id").references(() => sessions.id, { onDelete: "restrict" }),
+  playerId: text("player_id").references(() => players.id, { onDelete: "restrict" }),
+  characterId: text("character_id").references(() => characters.id, { onDelete: "restrict" }),
+  catalogItemId: text("catalog_item_id").references(() => catalogItems.id, { onDelete: "restrict" }),
+  knowledgeEntryId: text("knowledge_entry_id").references(() => knowledgeEntries.id, { onDelete: "restrict" }),
+  type: text("type").notNull(),
+  createdAt: text("created_at").notNull(),
+  payload: text("payload").notNull()
+}, (table) => [
+  index("campaign_activity_campaign_order_idx").on(table.campaignId, table.createdAt, table.id),
+  index("campaign_activity_session_order_idx").on(table.sessionId, table.createdAt, table.id),
+  check("campaign_activity_payload_valid", sql`json_valid(${table.payload})`)
 ]);

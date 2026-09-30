@@ -30,10 +30,26 @@ test("empty database has no session and health is public", async (t) => {
   assert.deepEqual(response.json(), { snapshot: null });
   const dmState = (await get(app, "/api/dm/state")).json();
   assert.deepEqual(dmState, {
-    campaigns: [], sessions: [], current: null, players: [], characters: [], itemCatalog: [], knowledge: [],
+    campaigns: [], sessions: [], current: null, players: [], characters: [], itemCatalog: [], knowledge: [], activity: [],
     networkAddresses: dmState.networkAddresses
   });
   assert.equal(Array.isArray(dmState.networkAddresses), true);
+});
+
+test("DM can inspect history, archive characters and check local data", async (t) => {
+  const { app } = fixture(t);
+  const campaign = (await post(app, "/api/dm/campaigns", { name: "Chronicle" })).json().campaign;
+  const character = (await post(app, `/api/dm/campaigns/${campaign.id}/characters`, { name: "Mira" })).json().character;
+  const archived = await post(app, `/api/dm/characters/${character.id}/archive`);
+  assert.equal(archived.statusCode, 200);
+  assert.ok(archived.json().character.archivedAt);
+  const activity = (await get(app, `/api/dm/campaigns/${campaign.id}/activity`)).json().activity;
+  assert.deepEqual(activity.map((event) => event.type), ["campaign_created", "character_created", "character_archived"]);
+  const restored = await post(app, `/api/dm/characters/${character.id}/restore`);
+  assert.equal(restored.json().character.archivedAt, null);
+  const health = await post(app, "/api/dm/data/health");
+  assert.equal(health.statusCode, 200);
+  assert.equal(health.json().ok, true);
 });
 
 test("all DM reads and writes require the key, including through a proxy", async (t) => {
@@ -45,7 +61,9 @@ test("all DM reads and writes require the key, including through a proxy", async
     ["POST", "/api/dm/campaigns"],
     ["POST", "/api/dm/campaigns/" + campaign.id + "/sessions"],
     ["POST", "/api/dm/sessions/" + session.id + "/start"],
-    ["POST", "/api/dm/sessions/" + session.id + "/end"]
+    ["POST", "/api/dm/sessions/" + session.id + "/end"],
+    ["POST", "/api/dm/data/health"], ["GET", "/api/dm/campaigns/" + campaign.id + "/activity"],
+    ["GET", "/api/dm/sessions/" + session.id + "/activity"]
   ];
   for (const [method, url] of routes) {
     for (const authorization of ["", "Bearer wrong-key", "Bearer " + dmToken + "x"]) {

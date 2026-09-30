@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
+import { Archive, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { Campaign, Character, DmState, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, Player, Session } from "@progdm/shared";
+import type { ActivityType, Campaign, CampaignActivity, Character, DataHealth, DmState, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
 
 const tokenKey = "progdm.dmToken";
@@ -10,6 +10,19 @@ const statusLabels = { planned: "Запланирована", active: "Идёт 
 const knowledgeCategories: Record<KnowledgeCategory, string> = {
   npc: "Персонаж мира", monster: "Монстр", note: "Заметка или факт", quest: "Квест"
 };
+const activityLabels: Record<ActivityType, string> = {
+  campaign_created: "Кампания создана", campaign_imported: "Кампания импортирована", backup_restored: "Копия восстановлена",
+  session_created: "Сессия создана", session_started: "Сессия началась", session_ended: "Сессия завершена",
+  player_requested: "Заявка игрока", player_approved: "Игрок принят", player_rejected: "Заявка отклонена",
+  character_created: "Персонаж создан", character_assigned: "Персонаж назначен", character_archived: "Персонаж архивирован", character_restored: "Персонаж восстановлен",
+  catalog_item_created: "Предмет добавлен в справочник", item_granted: "Предмет выдан",
+  knowledge_created: "Знание создано", knowledge_visibility_changed: "Видимость знания изменена"
+};
+function activitySummary(event: CampaignActivity): string {
+  const subject = event.details.characterName ?? event.details.playerName ?? event.details.knowledgeTitle ?? event.details.itemName ?? event.details.sessionName ?? event.details.campaignName;
+  const quantity = event.type === "item_granted" ? ` × ${event.details.quantity ?? 1}` : "";
+  return `${activityLabels[event.type]}${subject ? `: ${subject}` : ""}${quantity}`;
+}
 const sessionPlural = new Intl.PluralRules("ru");
 type BackupInfo = { id: string; createdAt: string; size: number };
 function sessionCount(count: number) {
@@ -98,6 +111,7 @@ function DmWorkspace() {
   const [state, setState] = useState<DmState | null>(null);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backupId, setBackupId] = useState("");
+  const [health, setHealth] = useState<DataHealth | null>(null);
   const [selectedId, setSelectedId] = useState(() => readStored(campaignKey));
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
@@ -178,7 +192,9 @@ function DmWorkspace() {
   const campaignItemCatalog = state?.itemCatalog.filter((item) => item.campaignId === selectedId) ?? [];
   const selectedCatalogItem = campaignItemCatalog.find((item) => item.id === catalogItemId) ?? campaignItemCatalog[0];
   const assignedCharacterIds = new Set(campaignPlayers.map((player) => player.characterId).filter((id): id is string => id !== null));
-  const availableCharacters = state?.characters.filter((character) => character.campaignId === selectedId && !assignedCharacterIds.has(character.id)) ?? [];
+  const campaignCharacters = state?.characters.filter((character) => character.campaignId === selectedId) ?? [];
+  const availableCharacters = campaignCharacters.filter((character) => !character.archivedAt && !assignedCharacterIds.has(character.id));
+  const campaignActivity = state?.activity.filter((event) => event.campaignId === selectedId) ?? [];
   const campaignKnowledge = state?.knowledge.filter((entry) => entry.campaignId === selectedId) ?? [];
   const addresses = state?.networkAddresses ?? [];
   const selectedAddress = addresses.find((entry) => entry.address === joinAddress)?.address ??
@@ -287,6 +303,19 @@ function DmWorkspace() {
     void mutate(async () => {
       await request(token, "/api/dm/backups/restore", { id: backupId }, 120000);
       setNotice("Копия восстановлена. Перед восстановлением создана страховочная копия.");
+    });
+  }
+  function checkHealth() {
+    void mutate(async () => {
+      const result = await request<DataHealth>(token, "/api/dm/data/health", {});
+      setHealth(result);
+      setNotice(result.ok ? "Проблем не обнаружено." : "Обнаружены проблемы с данными.");
+    });
+  }
+  function changeCharacterArchive(character: Character) {
+    void mutate(async () => {
+      await request(token, `/api/dm/characters/${character.id}/${character.archivedAt ? "restore" : "archive"}`, {});
+      setNotice(character.archivedAt ? "Персонаж восстановлен." : "Персонаж архивирован.");
     });
   }
   function exportCampaign() {
@@ -440,7 +469,12 @@ function DmWorkspace() {
               <button className="secondary" disabled={locked} onClick={createBackup}><Download />Создать копию и скачать базу</button>
               <button className="secondary" disabled={locked} onClick={exportCampaign}><Download />Экспорт кампании</button>
               <label className="secondary file-action"><Upload />Импорт кампании<input type="file" accept=".json,application/json" disabled={locked} onChange={(event) => { importCampaignFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
+              <button className="secondary" disabled={locked} onClick={checkHealth}><Check />Проверить данные</button>
             </div>
+            {health && <div className="health-result" role="status">
+              <strong>{health.ok ? "Проблем не обнаружено" : "Обнаружены проблемы"}</strong>
+              {!health.ok && <ul>{health.checks.filter((item) => item.status === "error").map((item) => <li key={item.name}>{item.name}: {item.message}</li>)}</ul>}
+            </div>}
             <p className="muted backup-note">Копии хранятся в data/backups. Для переноса сохраните файл базы вместе с папкой progdm-backup-…-uploads с тем же идентификатором.</p>
             {backups.length > 0 && <div className="backup-restore">
               <div className="field"><label htmlFor="backup-choice">Резервная копия</label><select id="backup-choice" value={backupId} disabled={locked} onChange={(event) => setBackupId(event.target.value)}>
@@ -468,12 +502,22 @@ function DmWorkspace() {
             {campaignItemCatalog.length > 0 && <ul className="character-list">{campaignItemCatalog.map((item) => <li key={item.id}><PackagePlus size={16} /><span>{item.name}</span></li>)}</ul>}
           </section>
           <section className="character-tools">
-            <div className="section-heading"><h2>Персонажи <span className="count">{availableCharacters.length}</span></h2></div>
+            <div className="section-heading"><h2>Персонажи <span className="count">{campaignCharacters.length}</span></h2></div>
             <form className="inline-form character-create-form" onSubmit={createCharacter}>
               <div className="field"><label htmlFor="new-character-name">Имя персонажа</label><input id="new-character-name" value={newCharacterName} maxLength={120} disabled={locked} onChange={(event) => setNewCharacterName(event.target.value)} placeholder="Для назначения игроку" /></div>
               <button className="secondary" disabled={locked || !newCharacterName.trim()}><UserPlus />Добавить персонажа</button>
             </form>
-            {availableCharacters.length > 0 && <ul className="character-list">{availableCharacters.map((character: Character) => <li key={character.id}><Users size={16} /><span>{character.name}</span></li>)}</ul>}
+            {campaignCharacters.length > 0 && <ul className="character-list">{campaignCharacters.map((character: Character) => <li key={character.id}>
+              <Users size={16} /><span>{character.name}{character.archivedAt ? " · В архиве" : ""}</span>
+              <button className="icon-button" title={character.archivedAt ? "Вернуть из архива" : "Архивировать"} aria-label={(character.archivedAt ? "Вернуть из архива " : "Архивировать ") + character.name} disabled={locked || (!character.archivedAt && assignedCharacterIds.has(character.id))} onClick={() => changeCharacterArchive(character)}>{character.archivedAt ? <RotateCcw /> : <Archive />}</button>
+            </li>)}</ul>}
+          </section>
+          <section className="activity-section" aria-labelledby="activity-title">
+            <div className="section-heading"><h2 id="activity-title">История</h2></div>
+            {campaignActivity.length ? <ol className="activity-list">{campaignActivity.map((event) => <li key={event.id}>
+              <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString("ru-RU")}</time>
+              <span>{activitySummary(event)}</span>
+            </li>)}</ol> : <p className="muted">Пока нет событий.</p>}
           </section>
           </>}
           {workspaceMode === "live" && <section className="party-section" aria-labelledby="players-title">

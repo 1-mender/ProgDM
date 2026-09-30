@@ -147,9 +147,15 @@ export function createApp(options: {
         characters: campaigns.flatMap((campaign) => database.listCharactersByCampaign(campaign.id)),
         itemCatalog: campaigns.flatMap((campaign) => database.listCatalogItemsByCampaign(campaign.id)),
         knowledge: campaigns.flatMap((campaign) => database.listKnowledgeByCampaign(campaign.id)),
+        activity: campaigns.flatMap((campaign) => database.listCampaignActivity(campaign.id, 20)),
         networkAddresses: addresses
       };
     });
+    dm.get<{ Params: { id: string } }>("/api/dm/campaigns/:id/activity", { schema: { params: idParams } }, async (request) =>
+      ({ activity: database.listCampaignActivity(request.params.id) }));
+    dm.get<{ Params: { id: string } }>("/api/dm/sessions/:id/activity", { schema: { params: idParams } }, async (request) =>
+      ({ activity: database.listSessionActivity(request.params.id) }));
+    dm.post("/api/dm/data/health", async () => database.checkDataHealth());
     dm.get("/api/dm/backups", async () => ({ backups: database.listBackups() }));
     dm.post("/api/dm/backups", async (_request, reply) => reply.code(201).send({ backup: await database.createBackup() }));
     dm.get<{ Params: { id: string } }>("/api/dm/backups/:id/download", {
@@ -192,7 +198,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { const: 1 }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2] }
       } } }
     }, async (request, reply) => {
       try {
@@ -229,6 +235,18 @@ export function createApp(options: {
           throw error;
         }
       });
+    for (const action of ["archive", "restore"] as const) {
+      dm.post<{ Params: { id: string } }>(`/api/dm/characters/:id/${action}`, { schema: { params: idParams } }, async (request, reply) => {
+        try {
+          const character = action === "archive" ? database.archiveCharacter(request.params.id) : database.restoreCharacter(request.params.id);
+          return { character };
+        } catch (error) {
+          if (error instanceof Error && error.message === "Character not found.") return reply.code(404).send({ message: "Персонаж не найден." });
+          if (error instanceof Error && error.message === "An active character cannot be archived.") return reply.code(409).send({ message: "Нельзя архивировать персонажа, назначенного в активной сессии." });
+          throw error;
+        }
+      });
+    }
     dm.post<{ Params: { id: string }; Body: { catalogItemId: string; quantity: number } }>("/api/dm/characters/:id/items", {
       schema: {
         params: idParams,
@@ -378,7 +396,7 @@ export function createApp(options: {
         } catch (error) {
           const message = error instanceof Error ? error.message : "";
           if (message === "Player request not found.") return reply.code(404).send({ message: "Заявка не найдена." });
-          if (message === "Character is unavailable for this campaign.") return reply.code(409).send({ message: "Этот персонаж относится к другой кампании. Обновите список." });
+          if (message === "Character is unavailable for this campaign.") return reply.code(409).send({ message: "Персонаж недоступен для назначения: проверьте кампанию и архив." });
           if (message === "Character is already assigned in this session.") return reply.code(409).send({ message: "Этот персонаж уже назначен игроку в текущей сессии." });
           if (message === "Rejected request cannot be approved." || message === "Session has ended.") {
             return reply.code(409).send({ message: "Заявка закрыта. Обновите список." });

@@ -1,12 +1,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { cpSync, copyFileSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, cpSync, copyFileSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
-import { and, asc, eq, or } from "drizzle-orm";
+import { and, asc, desc, eq, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
-import type { Campaign, CampaignItem, KnowledgeCategory, KnowledgeVisibility, Session, SessionSnapshot } from "@progdm/shared";
+import { readMigrationFiles } from "drizzle-orm/migrator";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -74,11 +75,64 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
   const backupsDirectory = resolve(workspaceRoot, options.backupsDirectory ?? DATA_DIRECTORIES.backups);
   const uploadsDirectory = resolve(workspaceRoot, options.uploadsDirectory ?? "data/uploads");
+  mkdirSync(backupsDirectory, { recursive: true });
+  for (const category of ["monsters", "characters", "items"]) mkdirSync(join(uploadsDirectory, category), { recursive: true });
 
   const client = new SQLite(file);
   const db = drizzle(client, { schema });
   const backupIdPattern = /^progdm-backup-([0-9a-f-]{36})\.db$/;
-  const backupTables = ["campaigns", "sessions", "players", "characters", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "__drizzle_migrations"];
+  const backupTables = ["campaigns", "sessions", "players", "characters", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "campaign_activity", "__drizzle_migrations"];
+
+  type ActivityInput = {
+    campaignId: string;
+    type: ActivityType;
+    sessionId?: string | null;
+    playerId?: string | null;
+    characterId?: string | null;
+    catalogItemId?: string | null;
+    knowledgeEntryId?: string | null;
+    details?: ActivityDetails;
+  };
+
+  function appendActivity(event: ActivityInput): void {
+    const latest = db.select({ createdAt: schema.campaignActivity.createdAt }).from(schema.campaignActivity)
+      .orderBy(desc(schema.campaignActivity.createdAt)).limit(1).get();
+    const timestamp = Math.max(Date.now(), latest ? Date.parse(latest.createdAt) + 1 : 0);
+    db.insert(schema.campaignActivity).values({
+      id: randomUUID(), campaignId: event.campaignId, sessionId: event.sessionId ?? null,
+      playerId: event.playerId ?? null, characterId: event.characterId ?? null,
+      catalogItemId: event.catalogItemId ?? null, knowledgeEntryId: event.knowledgeEntryId ?? null,
+      type: event.type, createdAt: new Date(timestamp).toISOString(), payload: JSON.stringify(event.details ?? {})
+    }).run();
+  }
+
+  function activeSessionId(campaignId: string): string | null {
+    return db.select({ id: schema.sessions.id }).from(schema.sessions)
+      .where(and(eq(schema.sessions.campaignId, campaignId), eq(schema.sessions.status, "active"))).get()?.id ?? null;
+  }
+
+  function activityRows(rows: (typeof schema.campaignActivity.$inferSelect)[]): CampaignActivity[] {
+    return rows.map((row) => ({
+      id: row.id, campaignId: row.campaignId, sessionId: row.sessionId, playerId: row.playerId,
+      characterId: row.characterId, catalogItemId: row.catalogItemId,
+      knowledgeEntryId: row.knowledgeEntryId, type: row.type as ActivityType,
+      createdAt: row.createdAt, details: JSON.parse(row.payload) as ActivityDetails
+    }));
+  }
+
+  function parsedActivityDetails(value: unknown): ActivityDetails {
+    const details = transferRecord(value);
+    const stringKeys = new Set(["campaignName", "sessionName", "playerName", "characterName", "itemName", "knowledgeTitle", "backupId"]);
+    const visibilityKeys = new Set(["visibility", "previousVisibility"]);
+    for (const [key, part] of Object.entries(details)) {
+      if (stringKeys.has(key) && typeof part === "string" && part.length <= 160) continue;
+      if (visibilityKeys.has(key) && ["hidden", "party", "character"].includes(String(part))) continue;
+      if (["quantity", "totalQuantity"].includes(key) && typeof part === "number" && Number.isInteger(part) && part >= 0 && part <= 9999) continue;
+      throw new Error("Campaign file contains an invalid activity payload.");
+    }
+    if (JSON.stringify(details).length > 2000) throw new Error("Campaign file contains an invalid activity payload.");
+    return details as ActivityDetails;
+  }
 
   async function createBackup() {
     mkdirSync(backupsDirectory, { recursive: true });
@@ -183,6 +237,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       databaseRestored = true;
       if (statSync(uploadsDirectory, { throwIfNoEntry: false })?.isDirectory()) renameSync(uploadsDirectory, previousUploads);
       renameSync(stagedUploads, uploadsDirectory);
+      db.transaction(() => {
+        for (const campaign of db.select({ id: schema.campaigns.id }).from(schema.campaigns).all()) {
+          appendActivity({ campaignId: campaign.id, type: "backup_restored", details: { backupId: id } });
+        }
+      });
       rmSync(previousUploads, { recursive: true, force: true });
       return { safetyCopyId: safetyCopy.id };
     } catch (error) {
@@ -254,8 +313,68 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     async restoreBackup(id: string) {
       return restoreBackup(id);
     },
+    checkDataHealth(): DataHealth {
+      const checks: HealthCheck[] = [];
+      const check = (name: string, run: () => { status: HealthCheck["status"]; message: string }) => {
+        try { checks.push({ name, ...run() }); }
+        catch { checks.push({ name, status: "error", message: "Проверка не выполнена. Проверьте доступ к локальным данным." }); }
+      };
+      check("Целостность SQLite", () => client.pragma("integrity_check", { simple: true }) === "ok"
+        ? { status: "ok", message: "Структура базы цела." }
+        : { status: "error", message: "SQLite обнаружил повреждение базы." });
+      check("Внешние ключи", () => {
+        const count = (client.pragma("foreign_key_check") as unknown[]).length;
+        return count === 0 ? { status: "ok", message: "Нарушений ссылок нет." }
+          : { status: "error", message: `Найдено нарушений ссылок: ${count}.` };
+      });
+      check("Миграции", () => {
+        const expected = readMigrationFiles({ migrationsFolder }).map((migration) => migration.folderMillis);
+        const applied = client.prepare("SELECT created_at AS createdAt FROM __drizzle_migrations ORDER BY id")
+          .all() as { createdAt: number }[];
+        const matches = applied.length === expected.length && applied.every((row, index) => row.createdAt === expected[index]);
+        return matches ? { status: "ok", message: `Применены все миграции: ${expected.length}.` }
+          : { status: "error", message: "Версия схемы не соответствует ожидаемым миграциям." };
+      });
+      for (const [name, path] of [
+        ["База данных", dirname(file === ":memory:" ? join(backupsDirectory, "game.db") : file)],
+        ["Резервные копии", backupsDirectory], ["Загрузки", uploadsDirectory],
+        ...["monsters", "characters", "items"].map((category) => [`Загрузки: ${category}`, join(uploadsDirectory, category)])
+      ]) {
+        check(name!, () => {
+          const present = statSync(path!, { throwIfNoEntry: false })?.isDirectory();
+          if (present) accessSync(path!, constants.R_OK | constants.W_OK);
+          return present ? { status: "ok", message: "Каталог доступен." }
+            : { status: "error", message: "Каталог отсутствует." };
+        });
+      }
+      const domainQueries = [
+        ["Назначения персонажей", "SELECT count(*) AS count FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id JOIN characters c ON c.id=a.character_id WHERE p.session_id!=a.session_id OR c.campaign_id!=s.campaign_id"],
+        ["Личные знания", "SELECT count(*) AS count FROM knowledge_entries k JOIN characters c ON c.id=k.visible_to_character_id WHERE c.campaign_id!=k.campaign_id"],
+        ["Инвентарь", "SELECT count(*) AS count FROM inventory_items i JOIN characters c ON c.id=i.character_id JOIN catalog_items ci ON ci.id=i.catalog_item_id WHERE c.campaign_id!=ci.campaign_id"],
+        ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
+        ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
+        ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id)" ]
+      ] as const;
+      for (const [name, query] of domainQueries) check(name, () => {
+        const count = (client.prepare(query).get() as { count: number }).count;
+        return count === 0 ? { status: "ok", message: "Нарушений не найдено." }
+          : { status: "error", message: `Найдено несогласованных записей: ${count}.` };
+      });
+      checks.push({ name: "Файлы загрузок", status: "skipped", message: "Ссылок на файлы в базе пока нет; проверено наличие каталогов." });
+      return { ok: checks.every((item) => item.status !== "error"), checks };
+    },
     listCampaigns(): Campaign[] {
       return db.select().from(schema.campaigns).orderBy(asc(schema.campaigns.createdAt), asc(schema.campaigns.id)).all();
+    },
+    listCampaignActivity(campaignId: string, limit?: number): CampaignActivity[] {
+      const rows = db.select().from(schema.campaignActivity).where(eq(schema.campaignActivity.campaignId, campaignId));
+      if (limit !== undefined) return activityRows(rows.orderBy(desc(schema.campaignActivity.createdAt), desc(schema.campaignActivity.id)).limit(limit).all().reverse());
+      return activityRows(rows.orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all());
+    },
+    listSessionActivity(sessionId: string, limit?: number): CampaignActivity[] {
+      const rows = db.select().from(schema.campaignActivity).where(eq(schema.campaignActivity.sessionId, sessionId));
+      if (limit !== undefined) return activityRows(rows.orderBy(desc(schema.campaignActivity.createdAt), desc(schema.campaignActivity.id)).limit(limit).all().reverse());
+      return activityRows(rows.orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all());
     },
     getCampaign(id: string): Campaign | null {
       return db.select().from(schema.campaigns).where(eq(schema.campaigns.id, id)).get() ?? null;
@@ -273,7 +392,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         status: schema.players.status, createdAt: schema.players.createdAt
       }).from(schema.players).where(or(...sessionIds.map((sessionId) => eq(schema.players.sessionId, sessionId)))).all() : [];
       const characters = db.select({
-        id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt
+        id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt, archivedAt: schema.characters.archivedAt
       }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all();
       const characterIds = characters.map((character) => character.id);
       const assignments = sessionIds.length ? db.select({
@@ -299,13 +418,16 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
         .map((entry) => ({ ...entry }));
       return {
-        format: "progdm-campaign", version: 1, exportedAt: new Date().toISOString(), campaign,
-        sessions, players, assignments, characters, catalogItems, inventoryItems, knowledge
+        format: "progdm-campaign", version: 2, exportedAt: new Date().toISOString(), campaign,
+        sessions, players, assignments, characters, catalogItems, inventoryItems, knowledge,
+        activity: activityRows(db.select().from(schema.campaignActivity)
+          .where(eq(schema.campaignActivity.campaignId, id))
+          .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all())
       };
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || archive.version !== 1) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || (archive.version !== 1 && archive.version !== 2)) throw new Error("Campaign file format is not supported.");
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
       const createdAt = (record: Record<string, unknown>) => {
@@ -320,12 +442,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const catalogItems = transferArray(archive, "catalogItems");
       const inventoryItems = transferArray(archive, "inventoryItems");
       const knowledge = transferArray(archive, "knowledge");
+      const activity = archive.version === 2 ? transferArray(archive, "activity") : [];
       const campaignId = randomUUID();
       const sessionsWithPlayers = new Set(players.map((row) => transferString(row, "sessionId")));
       const sessionIds = new Map(sessions.map((row) => [transferString(row, "id"), randomUUID()]));
       const playerIds = new Map(players.map((row) => [transferString(row, "id"), randomUUID()]));
       const characterIds = new Map(characters.map((row) => [transferString(row, "id"), randomUUID()]));
       const catalogIds = new Map(catalogItems.map((row) => [transferString(row, "id"), randomUUID()]));
+      const knowledgeIds = new Map(knowledge.map((row) => [transferString(row, "id"), randomUUID()]));
       const requireMapped = (map: Map<string, string>, id: unknown) => {
         if (typeof id !== "string" || !map.has(id)) throw new Error("Campaign file contains an invalid reference.");
         return map.get(id)!;
@@ -363,9 +487,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             status: status as "pending" | "approved" | "rejected", createdAt: createdAt(row)
           }).run();
         }
-        for (const row of characters) db.insert(schema.characters).values({
-          id: requireMapped(characterIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)), createdAt: createdAt(row)
-        }).run();
+        for (const row of characters) {
+          const archivedAt = row.archivedAt;
+          if (archive.version === 2 && archivedAt !== null && (typeof archivedAt !== "string" || Number.isNaN(Date.parse(archivedAt)))) throw new Error("Campaign file is invalid.");
+          db.insert(schema.characters).values({
+            id: requireMapped(characterIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
+            createdAt: createdAt(row), archivedAt: archive.version === 2 ? archivedAt as string | null : null
+          }).run();
+        }
         for (const row of catalogItems) db.insert(schema.catalogItems).values({
           id: requireMapped(catalogIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)), createdAt: createdAt(row)
         }).run();
@@ -399,21 +528,41 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             }
           }
           db.insert(schema.knowledgeEntries).values({
-            id: newId(), campaignId, category: category as KnowledgeCategory,
+            id: requireMapped(knowledgeIds, row.id), campaignId, category: category as KnowledgeCategory,
             title: validatedName(transferString(row, "title", 120)),
             description: validatedDescription(transferString(row, "description", 2000)),
             visibility, visibleToCharacterId, createdAt: createdAt(row)
           }).run();
         }
+        for (const row of activity) {
+          if (typeof row.type !== "string" || !ACTIVITY_TYPES.includes(row.type as ActivityType)) throw new Error("Campaign file contains an invalid event type.");
+          const mapped = (value: unknown, ids: Map<string, string>) => value === null ? null : requireMapped(ids, value);
+          db.insert(schema.campaignActivity).values({
+            id: newId(), campaignId,
+            sessionId: mapped(row.sessionId, sessionIds), playerId: mapped(row.playerId, playerIds),
+            characterId: mapped(row.characterId, characterIds), catalogItemId: mapped(row.catalogItemId, catalogIds),
+            knowledgeEntryId: mapped(row.knowledgeEntryId, knowledgeIds),
+            type: row.type, createdAt: createdAt(row), payload: JSON.stringify(parsedActivityDetails(row.details))
+          }).run();
+        }
+        appendActivity({ campaignId, type: "campaign_imported", details: { campaignName: campaign.name } });
+        for (const row of sessions) {
+          const sourceStatus = transferString(row, "status");
+          if (sourceStatus === "active" || (sourceStatus === "planned" && sessionsWithPlayers.has(transferString(row, "id")))) {
+            appendActivity({ campaignId, sessionId: requireMapped(sessionIds, row.id), type: "session_ended", details: { sessionName: validatedName(transferString(row, "name", 120)) } });
+          }
+        }
         return campaign;
       });
     },
     createCampaign(name: string): Campaign {
-      return db.insert(schema.campaigns).values({
-        id: randomUUID(),
-        name: validatedName(name),
-        createdAt: new Date().toISOString()
-      }).returning().get();
+      return db.transaction(() => {
+        const campaign = db.insert(schema.campaigns).values({
+          id: randomUUID(), name: validatedName(name), createdAt: new Date().toISOString()
+        }).returning().get();
+        appendActivity({ campaignId: campaign.id, type: "campaign_created", details: { campaignName: campaign.name } });
+        return campaign;
+      });
     },
     listSessions(campaignId: string): Session[] {
       return db.select().from(schema.sessions).where(eq(schema.sessions.campaignId, campaignId))
@@ -504,11 +653,13 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         if (existing) {
           db.update(schema.players).set({ displayName: name, status: "pending", createdAt })
             .where(eq(schema.players.id, existing.id)).run();
+          appendActivity({ campaignId: session.campaignId, sessionId, playerId: existing.id, type: "player_requested", details: { playerName: name } });
           return getPlayer(existing.id)!;
         }
         const player = db.insert(schema.players).values({
           id: randomUUID(), sessionId, displayName: name, tokenHash, status: "pending", createdAt
         }).returning().get();
+        appendActivity({ campaignId: session.campaignId, sessionId, playerId: player.id, type: "player_requested", details: { playerName: name } });
         return getPlayer(player.id)!;
       });
     },
@@ -537,7 +688,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         id: schema.characters.id,
         campaignId: schema.characters.campaignId,
         name: schema.characters.name,
-        createdAt: schema.characters.createdAt
+        createdAt: schema.characters.createdAt,
+        archivedAt: schema.characters.archivedAt
       }).from(schema.characters).where(eq(schema.characters.campaignId, campaignId))
         .orderBy(asc(schema.characters.name), asc(schema.characters.id)).all();
     },
@@ -546,6 +698,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .orderBy(asc(schema.catalogItems.name), asc(schema.catalogItems.id)).all();
     },
     createCatalogItem(campaignId: string, name: string): CampaignItem {
+      return db.transaction(() => {
       const campaign = db.select({ id: schema.campaigns.id }).from(schema.campaigns)
         .where(eq(schema.campaigns.id, campaignId)).get();
       if (!campaign) throw new Error("Campaign not found.");
@@ -554,9 +707,12 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .where(eq(schema.catalogItems.campaignId, campaignId)).all()
         .some((item) => item.name.toLocaleLowerCase("ru") === itemName.toLocaleLowerCase("ru"));
       if (duplicate) throw new Error("Catalog item already exists.");
-      return db.insert(schema.catalogItems).values({
+      const item = db.insert(schema.catalogItems).values({
         id: randomUUID(), campaignId, name: itemName, createdAt: new Date().toISOString()
       }).returning().get();
+      appendActivity({ campaignId, type: "catalog_item_created", catalogItemId: item.id, details: { itemName: item.name } });
+      return item;
+      });
     },
     listKnowledgeByCampaign(campaignId: string) {
       return db.select().from(schema.knowledgeEntries)
@@ -564,18 +720,22 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .orderBy(asc(schema.knowledgeEntries.createdAt), asc(schema.knowledgeEntries.title)).all();
     },
     createKnowledge(campaignId: string, category: KnowledgeCategory, title: string, description: string) {
+      return db.transaction(() => {
       const campaign = db.select({ id: schema.campaigns.id }).from(schema.campaigns)
         .where(eq(schema.campaigns.id, campaignId)).get();
       if (!campaign) throw new Error("Campaign not found.");
-      return db.insert(schema.knowledgeEntries).values({
+      const entry = db.insert(schema.knowledgeEntries).values({
         id: randomUUID(), campaignId, category, title: validatedName(title),
         description: validatedDescription(description), visibility: "hidden", visibleToCharacterId: null,
         createdAt: new Date().toISOString()
       }).returning().get();
+      appendActivity({ campaignId, type: "knowledge_created", knowledgeEntryId: entry.id, details: { knowledgeTitle: entry.title } });
+      return entry;
+      });
     },
     setKnowledgeVisibility(entryId: string, visibility: KnowledgeVisibility, characterId?: string) {
       return db.transaction(() => {
-        const entry = db.select({ id: schema.knowledgeEntries.id, campaignId: schema.knowledgeEntries.campaignId })
+        const entry = db.select({ id: schema.knowledgeEntries.id, campaignId: schema.knowledgeEntries.campaignId, title: schema.knowledgeEntries.title, visibility: schema.knowledgeEntries.visibility, visibleToCharacterId: schema.knowledgeEntries.visibleToCharacterId })
           .from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.id, entryId)).get();
         if (!entry) throw new Error("Knowledge entry not found.");
         let visibleToCharacterId: string | null = null;
@@ -589,17 +749,52 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           if (!character) throw new Error("Character is not in this campaign.");
           visibleToCharacterId = character.id;
         }
-        return db.update(schema.knowledgeEntries).set({ visibility, visibleToCharacterId })
+        const updated = db.update(schema.knowledgeEntries).set({ visibility, visibleToCharacterId })
           .where(eq(schema.knowledgeEntries.id, entryId)).returning().get()!;
+        if (entry.visibility !== visibility || entry.visibleToCharacterId !== visibleToCharacterId) {
+          appendActivity({ campaignId: entry.campaignId, sessionId: activeSessionId(entry.campaignId), characterId: visibleToCharacterId, knowledgeEntryId: entry.id, type: "knowledge_visibility_changed", details: { knowledgeTitle: entry.title, visibility, previousVisibility: entry.visibility as KnowledgeVisibility } });
+        }
+        return updated;
       });
     },
     createCharacter(campaignId: string, name: string) {
+      return db.transaction(() => {
       const campaign = db.select({ id: schema.campaigns.id }).from(schema.campaigns)
         .where(eq(schema.campaigns.id, campaignId)).get();
       if (!campaign) throw new Error("Campaign not found.");
-      return db.insert(schema.characters).values({
+      const character = db.insert(schema.characters).values({
         id: randomUUID(), campaignId, name: validatedName(name), createdAt: new Date().toISOString()
       }).returning().get();
+      appendActivity({ campaignId, characterId: character.id, type: "character_created", details: { characterName: character.name } });
+      return character;
+      });
+    },
+    archiveCharacter(characterId: string) {
+      return db.transaction(() => {
+        const character = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+        if (!character) throw new Error("Character not found.");
+        if (character.archivedAt) return character;
+        const active = db.select({ id: schema.sessions.id }).from(schema.sessionCharacterAssignments)
+          .innerJoin(schema.players, eq(schema.sessionCharacterAssignments.playerId, schema.players.id))
+          .innerJoin(schema.sessions, eq(schema.sessionCharacterAssignments.sessionId, schema.sessions.id))
+          .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), eq(schema.sessions.status, "active"), eq(schema.players.status, "approved"))).get();
+        if (active) throw new Error("An active character cannot be archived.");
+        const updated = db.update(schema.characters).set({ archivedAt: new Date().toISOString() })
+          .where(eq(schema.characters.id, characterId)).returning().get()!;
+        appendActivity({ campaignId: character.campaignId, sessionId: activeSessionId(character.campaignId), characterId, type: "character_archived", details: { characterName: character.name } });
+        return updated;
+      });
+    },
+    restoreCharacter(characterId: string) {
+      return db.transaction(() => {
+        const character = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+        if (!character) throw new Error("Character not found.");
+        if (!character.archivedAt) return character;
+        const updated = db.update(schema.characters).set({ archivedAt: null })
+          .where(eq(schema.characters.id, characterId)).returning().get()!;
+        appendActivity({ campaignId: character.campaignId, sessionId: activeSessionId(character.campaignId), characterId, type: "character_restored", details: { characterName: character.name } });
+        return updated;
+      });
     },
     grantInventoryItem(characterId: string, catalogItemId: string, quantity: number) {
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) {
@@ -608,7 +803,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       return db.transaction(() => {
         const character = db.select({
           id: schema.characters.id,
-          campaignId: schema.characters.campaignId
+          campaignId: schema.characters.campaignId,
+          sessionId: schema.sessions.id
         }).from(schema.characters)
           .innerJoin(schema.sessionCharacterAssignments, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
           .innerJoin(schema.players, and(
@@ -631,13 +827,17 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           .find((item) => item.name.toLocaleLowerCase("ru") === catalogItem.name.toLocaleLowerCase("ru"));
         if (existing) {
           if (existing.quantity + quantity > 9999) throw new Error("Item quantity limit exceeded.");
-          return db.update(schema.inventoryItems)
+          const item = db.update(schema.inventoryItems)
             .set({ quantity: existing.quantity + quantity, catalogItemId })
             .where(eq(schema.inventoryItems.id, existing.id)).returning().get();
+          appendActivity({ campaignId: character.campaignId, sessionId: character.sessionId, characterId, catalogItemId, type: "item_granted", details: { itemName: catalogItem.name, quantity, totalQuantity: item.quantity } });
+          return item;
         }
-        return db.insert(schema.inventoryItems).values({
+        const item = db.insert(schema.inventoryItems).values({
           id: randomUUID(), characterId, catalogItemId, name: catalogItem.name, quantity, createdAt: new Date().toISOString()
         }).returning().get();
+        appendActivity({ campaignId: character.campaignId, sessionId: character.sessionId, characterId, catalogItemId, type: "item_granted", details: { itemName: catalogItem.name, quantity, totalQuantity: item.quantity } });
+        return item;
       });
     },
     approvePlayer(playerId: string, assignment: { characterId: string } | { characterName: string }) {
@@ -660,7 +860,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           const character = db.select().from(schema.characters)
             .where(and(eq(schema.characters.id, assignment.characterId), eq(schema.characters.campaignId, request.campaignId)))
             .get();
-          if (!character) throw new Error("Character is unavailable for this campaign.");
+          if (!character || character.archivedAt) throw new Error("Character is unavailable for this campaign.");
           const existingAssignment = db.select({ playerId: schema.sessionCharacterAssignments.playerId })
             .from(schema.sessionCharacterAssignments)
             .where(and(
@@ -671,6 +871,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           db.insert(schema.sessionCharacterAssignments).values({
             playerId, sessionId: request.sessionId, characterId: character.id, createdAt: new Date().toISOString()
           }).run();
+          appendActivity({ campaignId: request.campaignId, sessionId: request.sessionId, playerId, characterId: character.id, type: "character_assigned", details: { characterName: character.name } });
         } else {
           const name = validatedName(assignment.characterName);
           const character = db.insert(schema.characters).values({
@@ -679,29 +880,40 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           db.insert(schema.sessionCharacterAssignments).values({
             playerId, sessionId: request.sessionId, characterId: character.id, createdAt: new Date().toISOString()
           }).run();
+          appendActivity({ campaignId: request.campaignId, sessionId: request.sessionId, characterId: character.id, type: "character_created", details: { characterName: character.name } });
+          appendActivity({ campaignId: request.campaignId, sessionId: request.sessionId, playerId, characterId: character.id, type: "character_assigned", details: { characterName: character.name } });
         }
         db.update(schema.players).set({ status: "approved" })
           .where(and(eq(schema.players.id, playerId), eq(schema.players.status, "pending"))).run();
+        appendActivity({ campaignId: request.campaignId, sessionId: request.sessionId, playerId, type: "player_approved", details: { playerName: getPlayer(playerId)!.displayName } });
         return getPlayer(playerId)!;
       });
     },
     rejectPlayer(playerId: string) {
+      return db.transaction(() => {
       const player = getPlayer(playerId);
       if (!player) throw new Error("Player request not found.");
       if (player.status === "approved") throw new Error("Approved player cannot be rejected.");
       if (player.status === "rejected") return player;
       db.update(schema.players).set({ status: "rejected" })
         .where(and(eq(schema.players.id, playerId), eq(schema.players.status, "pending"))).run();
+      const session = getSession(player.sessionId)!;
+      appendActivity({ campaignId: session.campaignId, sessionId: session.id, playerId, type: "player_rejected", details: { playerName: player.displayName } });
       return getPlayer(playerId)!;
+      });
     },
     createSession(campaignId: string, name: string): Session {
-      return db.insert(schema.sessions).values({
+      return db.transaction(() => {
+      const session = db.insert(schema.sessions).values({
         id: randomUUID(),
         campaignId,
         name: validatedName(name),
         joinToken: randomBytes(32).toString("base64url"),
         createdAt: new Date().toISOString()
       }).returning().get();
+      appendActivity({ campaignId, sessionId: session.id, type: "session_created", details: { sessionName: session.name } });
+      return session;
+      });
     },
     activateSession(id: string, expectedActiveSessionId?: string | null): Session {
       // End the previous session and activate the next one as one atomic change.
@@ -714,16 +926,26 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           const current = db.select().from(schema.sessions).where(eq(schema.sessions.status, "active")).get();
           if ((current?.id ?? null) !== expectedActiveSessionId) throw new Error("Active session changed.");
         }
-        db.update(schema.sessions).set({ status: "ended" }).where(eq(schema.sessions.status, "active")).run();
-        return db.update(schema.sessions).set({ status: "active" }).where(eq(schema.sessions.id, id)).returning().get()!;
+        const previous = db.select().from(schema.sessions).where(eq(schema.sessions.status, "active")).get();
+        if (previous) {
+          db.update(schema.sessions).set({ status: "ended" }).where(eq(schema.sessions.id, previous.id)).run();
+          appendActivity({ campaignId: previous.campaignId, sessionId: previous.id, type: "session_ended", details: { sessionName: previous.name } });
+        }
+        const active = db.update(schema.sessions).set({ status: "active" }).where(eq(schema.sessions.id, id)).returning().get()!;
+        appendActivity({ campaignId: active.campaignId, sessionId: active.id, type: "session_started", details: { sessionName: active.name } });
+        return active;
       });
     },
     endSession(id: string): Session {
+      return db.transaction(() => {
       const session = getSession(id);
       if (!session) throw new Error("Session not found.");
       if (session.status === "ended") return session;
       if (session.status !== "active") throw new Error("Only an active session can be ended.");
-      return db.update(schema.sessions).set({ status: "ended" }).where(eq(schema.sessions.id, id)).returning().get()!;
+      const ended = db.update(schema.sessions).set({ status: "ended" }).where(eq(schema.sessions.id, id)).returning().get()!;
+      appendActivity({ campaignId: session.campaignId, sessionId: id, type: "session_ended", details: { sessionName: session.name } });
+      return ended;
+      });
     },
     getCurrentSession(): SessionSnapshot | null {
       return db.select({ campaign: schema.campaigns, session: schema.sessions }).from(schema.sessions)
