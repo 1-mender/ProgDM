@@ -58,6 +58,19 @@ export interface Character {
   name: string;
   createdAt: string;
   archivedAt: string | null;
+  shortDescription: string;
+  archetype: string;
+  origin: string;
+  personalGoal: string;
+  dmNotes: string;
+}
+
+export interface PersonalNote {
+  id: EntityId;
+  characterId: EntityId;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CampaignItem {
@@ -83,8 +96,14 @@ export interface PlayerState {
   campaignName: string;
   sessionName: string;
   characterName: string | null;
+  characterId: EntityId | null;
+  profile: Pick<Character, "shortDescription" | "archetype" | "origin" | "personalGoal"> | null;
+  canEdit: boolean;
   inventory: InventoryItem[];
   knowledge: KnowledgeEntry[];
+  notes: PersonalNote[];
+  recentActivity: CampaignActivity[];
+  newActivity: CampaignActivity[];
 }
 
 export type KnowledgeCategory = "npc" | "monster" | "note" | "quest";
@@ -122,7 +141,8 @@ export const ACTIVITY_TYPES = [
   "session_created", "session_started", "session_ended",
   "player_requested", "player_approved", "player_rejected",
   "character_created", "character_assigned", "character_archived", "character_restored",
-  "catalog_item_created", "item_granted", "knowledge_created", "knowledge_visibility_changed"
+  "catalog_item_created", "item_granted", "knowledge_created", "knowledge_visibility_changed",
+  "character_profile_updated", "personal_note_created", "personal_note_updated"
 ] as const;
 
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];

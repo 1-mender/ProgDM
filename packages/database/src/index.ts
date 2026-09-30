@@ -81,7 +81,28 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   const client = new SQLite(file);
   const db = drizzle(client, { schema });
   const backupIdPattern = /^progdm-backup-([0-9a-f-]{36})\.db$/;
-  const backupTables = ["campaigns", "sessions", "players", "characters", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "campaign_activity", "__drizzle_migrations"];
+  const backupTables = ["campaigns", "sessions", "players", "characters", "character_personal_notes", "character_read_state", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "campaign_activity", "__drizzle_migrations"];
+
+  function profileText(value: string, max: number): string {
+    const trimmed = value.trim();
+    if (trimmed.length > max) throw new Error("Profile text is too long.");
+    return trimmed;
+  }
+
+  function activePlayerCharacter(tokenHash: string) {
+    return db.select({ playerId: schema.players.id, sessionId: schema.sessions.id, campaignId: schema.sessions.campaignId, characterId: schema.characters.id })
+      .from(schema.players)
+      .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
+      .innerJoin(schema.sessionCharacterAssignments, eq(schema.sessionCharacterAssignments.playerId, schema.players.id))
+      .innerJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
+      .where(and(eq(schema.players.tokenHash, tokenHash), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"), eq(schema.characters.campaignId, schema.sessions.campaignId))).get() ?? null;
+  }
+
+  function requireActivePlayerCharacter(tokenHash: string) {
+    const active = activePlayerCharacter(tokenHash);
+    if (!active) throw new Error("Active character access required.");
+    return active;
+  }
 
   type ActivityInput = {
     campaignId: string;
@@ -353,6 +374,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         ["Инвентарь", "SELECT count(*) AS count FROM inventory_items i JOIN characters c ON c.id=i.character_id JOIN catalog_items ci ON ci.id=i.catalog_item_id WHERE c.campaign_id!=ci.campaign_id"],
         ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
         ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
+        ["Отметки просмотра", "SELECT count(*) AS count FROM character_read_state r JOIN characters c ON c.id=r.character_id LEFT JOIN campaign_activity a ON a.id=r.last_seen_id WHERE a.id IS NULL OR a.campaign_id!=c.campaign_id OR a.created_at!=r.last_seen_at"],
         ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id)" ]
       ] as const;
       for (const [name, query] of domainQueries) check(name, () => {
@@ -392,9 +414,13 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         status: schema.players.status, createdAt: schema.players.createdAt
       }).from(schema.players).where(or(...sessionIds.map((sessionId) => eq(schema.players.sessionId, sessionId)))).all() : [];
       const characters = db.select({
-        id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt, archivedAt: schema.characters.archivedAt
+        id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt, archivedAt: schema.characters.archivedAt,
+        shortDescription: schema.characters.shortDescription, archetype: schema.characters.archetype,
+        origin: schema.characters.origin, personalGoal: schema.characters.personalGoal, dmNotes: schema.characters.dmNotes
       }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all();
       const characterIds = characters.map((character) => character.id);
+      const personalNotes = characterIds.length ? db.select().from(schema.characterPersonalNotes)
+        .where(or(...characterIds.map((characterId) => eq(schema.characterPersonalNotes.characterId, characterId)))).all() : [];
       const assignments = sessionIds.length ? db.select({
         playerId: schema.sessionCharacterAssignments.playerId,
         sessionId: schema.sessionCharacterAssignments.sessionId,
@@ -418,8 +444,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
         .map((entry) => ({ ...entry }));
       return {
-        format: "progdm-campaign", version: 2, exportedAt: new Date().toISOString(), campaign,
-        sessions, players, assignments, characters, catalogItems, inventoryItems, knowledge,
+        format: "progdm-campaign", version: 3, exportedAt: new Date().toISOString(), campaign,
+        sessions, players, assignments, characters, personalNotes, catalogItems, inventoryItems, knowledge,
         activity: activityRows(db.select().from(schema.campaignActivity)
           .where(eq(schema.campaignActivity.campaignId, id))
           .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all())
@@ -427,7 +453,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || (archive.version !== 1 && archive.version !== 2)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
       const createdAt = (record: Record<string, unknown>) => {
@@ -439,10 +465,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const players = transferArray(archive, "players");
       const assignments = transferArray(archive, "assignments");
       const characters = transferArray(archive, "characters");
+      const personalNotes = archive.version === 3 ? transferArray(archive, "personalNotes") : [];
       const catalogItems = transferArray(archive, "catalogItems");
       const inventoryItems = transferArray(archive, "inventoryItems");
       const knowledge = transferArray(archive, "knowledge");
-      const activity = archive.version === 2 ? transferArray(archive, "activity") : [];
+      const activity = archive.version === 1 ? [] : transferArray(archive, "activity");
       const campaignId = randomUUID();
       const sessionsWithPlayers = new Set(players.map((row) => transferString(row, "sessionId")));
       const sessionIds = new Map(sessions.map((row) => [transferString(row, "id"), randomUUID()]));
@@ -489,12 +516,22 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         }
         for (const row of characters) {
           const archivedAt = row.archivedAt;
-          if (archive.version === 2 && archivedAt !== null && (typeof archivedAt !== "string" || Number.isNaN(Date.parse(archivedAt)))) throw new Error("Campaign file is invalid.");
+          if (archive.version !== 1 && archivedAt !== null && (typeof archivedAt !== "string" || Number.isNaN(Date.parse(archivedAt)))) throw new Error("Campaign file is invalid.");
           db.insert(schema.characters).values({
             id: requireMapped(characterIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
-            createdAt: createdAt(row), archivedAt: archive.version === 2 ? archivedAt as string | null : null
+            createdAt: createdAt(row), archivedAt: archive.version !== 1 ? archivedAt as string | null : null,
+            shortDescription: archive.version === 3 ? profileText(transferString(row, "shortDescription", 500), 500) : "",
+            archetype: archive.version === 3 ? profileText(transferString(row, "archetype", 120), 120) : "",
+            origin: archive.version === 3 ? profileText(transferString(row, "origin", 500), 500) : "",
+            personalGoal: archive.version === 3 ? profileText(transferString(row, "personalGoal", 500), 500) : "",
+            dmNotes: archive.version === 3 ? profileText(transferString(row, "dmNotes", 2000), 2000) : ""
           }).run();
         }
+        for (const row of personalNotes) db.insert(schema.characterPersonalNotes).values({
+          id: newId(), characterId: requireMapped(characterIds, row.characterId),
+          body: validatedDescription(transferString(row, "body", 2000)),
+          createdAt: createdAt(row), updatedAt: createdAt({ createdAt: row.updatedAt })
+        }).run();
         for (const row of catalogItems) db.insert(schema.catalogItems).values({
           id: requireMapped(catalogIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)), createdAt: createdAt(row)
         }).run();
@@ -595,7 +632,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         status: schema.players.status,
         campaignName: schema.campaigns.name,
         sessionName: schema.sessions.name,
-        characterName: schema.characters.name
+        characterName: schema.characters.name,
+        shortDescription: schema.characters.shortDescription,
+        archetype: schema.characters.archetype,
+        origin: schema.characters.origin,
+        personalGoal: schema.characters.personalGoal
       }).from(schema.players)
         .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
         .innerJoin(schema.campaigns, eq(schema.sessions.campaignId, schema.campaigns.id))
@@ -620,19 +661,96 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           ))
           .orderBy(asc(schema.knowledgeEntries.createdAt), asc(schema.knowledgeEntries.title)).all()
         : [];
+      const active = activePlayerCharacter(tokenHash);
+      const visibleKnowledge = new Map(knowledge.map((entry) => [entry.id, entry]));
+      const relevant = active ? activityRows(db.select().from(schema.campaignActivity)
+        .where(eq(schema.campaignActivity.campaignId, active.campaignId))
+        .orderBy(desc(schema.campaignActivity.createdAt), desc(schema.campaignActivity.id)).all())
+        .filter((event) => event.type === "item_granted" && event.characterId === active.characterId ||
+          event.type === "knowledge_visibility_changed" && !!event.knowledgeEntryId &&
+          !!visibleKnowledge.get(event.knowledgeEntryId) &&
+          (event.details.visibility === "party" || event.details.visibility === "character" && event.characterId === active.characterId))
+        .slice(0, 20) : [];
+      const marker = active ? db.select().from(schema.characterReadState)
+        .where(eq(schema.characterReadState.characterId, active.characterId)).get() : null;
+      const isNew = (event: CampaignActivity) => !marker || event.createdAt > marker.lastSeenAt ||
+        event.createdAt === marker.lastSeenAt && event.id > marker.lastSeenId;
       return {
         displayName: player.displayName,
         status: player.status,
         campaignName: player.campaignName,
         sessionName: player.sessionName,
         characterName: player.characterName,
+        characterId: player.characterId,
+        profile: active ? {
+          shortDescription: player.shortDescription ?? "", archetype: player.archetype ?? "",
+          origin: player.origin ?? "", personalGoal: player.personalGoal ?? ""
+        } : null,
+        canEdit: !!active,
         inventory: player.characterId
           ? db.select().from(schema.inventoryItems)
             .where(eq(schema.inventoryItems.characterId, player.characterId))
             .orderBy(asc(schema.inventoryItems.createdAt), asc(schema.inventoryItems.name)).all()
           : [],
-        knowledge
+        knowledge,
+        notes: active ? db.select().from(schema.characterPersonalNotes)
+          .where(eq(schema.characterPersonalNotes.characterId, active.characterId))
+          .orderBy(desc(schema.characterPersonalNotes.updatedAt), desc(schema.characterPersonalNotes.id)).all() : [],
+        recentActivity: relevant,
+        newActivity: relevant.filter(isNew)
       };
+    },
+    updatePlayerProfile(tokenHash: string, fields: { shortDescription: string; personalGoal: string }) {
+      return db.transaction(() => {
+        const active = requireActivePlayerCharacter(tokenHash);
+        const character = db.update(schema.characters).set({
+          shortDescription: profileText(fields.shortDescription, 500), personalGoal: profileText(fields.personalGoal, 500)
+        }).where(eq(schema.characters.id, active.characterId)).returning().get()!;
+        appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, characterId: active.characterId,
+          type: "character_profile_updated", details: { characterName: character.name } });
+        return character;
+      });
+    },
+    updatePlayerDisplayName(tokenHash: string, displayName: string) {
+      const active = requireActivePlayerCharacter(tokenHash);
+      return db.update(schema.players).set({ displayName: validatedPlayerName(displayName) })
+        .where(eq(schema.players.id, active.playerId)).returning().get();
+    },
+    createPersonalNote(tokenHash: string, body: string) {
+      return db.transaction(() => {
+        const active = requireActivePlayerCharacter(tokenHash);
+        const now = new Date().toISOString();
+        const note = db.insert(schema.characterPersonalNotes).values({
+          id: randomUUID(), characterId: active.characterId, body: validatedDescription(body), createdAt: now, updatedAt: now
+        }).returning().get();
+        appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, characterId: active.characterId, type: "personal_note_created" });
+        return note;
+      });
+    },
+    updatePersonalNote(tokenHash: string, noteId: string, body: string) {
+      return db.transaction(() => {
+        const active = requireActivePlayerCharacter(tokenHash);
+        const note = db.select().from(schema.characterPersonalNotes)
+          .where(and(eq(schema.characterPersonalNotes.id, noteId), eq(schema.characterPersonalNotes.characterId, active.characterId))).get();
+        if (!note) throw new Error("Personal note not found.");
+        const updated = db.update(schema.characterPersonalNotes).set({ body: validatedDescription(body), updatedAt: new Date().toISOString() })
+          .where(eq(schema.characterPersonalNotes.id, noteId)).returning().get()!;
+        appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, characterId: active.characterId, type: "personal_note_updated" });
+        return updated;
+      });
+    },
+    markPlayerActivitySeen(tokenHash: string, upToActivityId: string) {
+      return db.transaction(() => {
+        const active = requireActivePlayerCharacter(tokenHash);
+        const visible = this.getPlayerState(tokenHash)?.recentActivity.find((event) => event.id === upToActivityId);
+        if (!visible) throw new Error("Activity is not visible to this player.");
+        const current = db.select().from(schema.characterReadState)
+          .where(eq(schema.characterReadState.characterId, active.characterId)).get();
+        if (current && (current.lastSeenAt > visible.createdAt || current.lastSeenAt === visible.createdAt && current.lastSeenId >= visible.id)) return current;
+        db.insert(schema.characterReadState).values({ characterId: active.characterId, lastSeenAt: visible.createdAt, lastSeenId: visible.id })
+          .onConflictDoUpdate({ target: schema.characterReadState.characterId, set: { lastSeenAt: visible.createdAt, lastSeenId: visible.id } }).run();
+        return visible;
+      });
     },
     submitPlayerRequest(sessionId: string, displayName: string, tokenHash: string) {
       return db.transaction(() => {
@@ -689,9 +807,56 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         campaignId: schema.characters.campaignId,
         name: schema.characters.name,
         createdAt: schema.characters.createdAt,
-        archivedAt: schema.characters.archivedAt
+        archivedAt: schema.characters.archivedAt,
+        shortDescription: schema.characters.shortDescription,
+        archetype: schema.characters.archetype,
+        origin: schema.characters.origin,
+        personalGoal: schema.characters.personalGoal,
+        dmNotes: schema.characters.dmNotes
       }).from(schema.characters).where(eq(schema.characters.campaignId, campaignId))
         .orderBy(asc(schema.characters.name), asc(schema.characters.id)).all();
+    },
+    listPersonalNotesByCharacter(characterId: string) {
+      return db.select().from(schema.characterPersonalNotes)
+        .where(eq(schema.characterPersonalNotes.characterId, characterId))
+        .orderBy(desc(schema.characterPersonalNotes.updatedAt), desc(schema.characterPersonalNotes.id)).all();
+    },
+    listCharacterActivity(characterId: string, limit = 20) {
+      return activityRows(db.select().from(schema.campaignActivity)
+        .where(eq(schema.campaignActivity.characterId, characterId))
+        .orderBy(desc(schema.campaignActivity.createdAt), desc(schema.campaignActivity.id)).limit(limit).all());
+    },
+    getCharacterOverview(characterId: string) {
+      const character = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+      if (!character) return null;
+      const player = db.select({ id: schema.players.id, displayName: schema.players.displayName })
+        .from(schema.sessionCharacterAssignments)
+        .innerJoin(schema.players, eq(schema.sessionCharacterAssignments.playerId, schema.players.id))
+        .innerJoin(schema.sessions, eq(schema.sessionCharacterAssignments.sessionId, schema.sessions.id))
+        .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"))).get() ?? null;
+      return {
+        character, player,
+        inventory: db.select().from(schema.inventoryItems).where(eq(schema.inventoryItems.characterId, characterId)).all(),
+        knowledge: db.select().from(schema.knowledgeEntries).where(and(
+          eq(schema.knowledgeEntries.campaignId, character.campaignId),
+          or(eq(schema.knowledgeEntries.visibility, "party"), eq(schema.knowledgeEntries.visibleToCharacterId, characterId))
+        )).all(),
+        notes: this.listPersonalNotesByCharacter(characterId), activity: this.listCharacterActivity(characterId, 10)
+      };
+    },
+    updateCharacterProfile(characterId: string, fields: { name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string }) {
+      return db.transaction(() => {
+        const before = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+        if (!before) throw new Error("Character not found.");
+        const values = {
+          name: validatedName(fields.name), shortDescription: profileText(fields.shortDescription, 500),
+          archetype: profileText(fields.archetype, 120), origin: profileText(fields.origin, 500),
+          personalGoal: profileText(fields.personalGoal, 500), dmNotes: profileText(fields.dmNotes, 2000)
+        };
+        const character = db.update(schema.characters).set(values).where(eq(schema.characters.id, characterId)).returning().get()!;
+        appendActivity({ campaignId: before.campaignId, characterId, type: "character_profile_updated", details: { characterName: character.name } });
+        return character;
+      });
     },
     listCatalogItemsByCampaign(campaignId: string): CampaignItem[] {
       return db.select().from(schema.catalogItems).where(eq(schema.catalogItems.campaignId, campaignId))

@@ -91,7 +91,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 2);
+  assert.equal(archive.version, 3);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -120,6 +120,113 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.deepEqual(db.listCampaignActivity(campaign.id).filter((event) => event.type.startsWith("character_")).map((event) => event.type), [
     "character_created", "character_assigned", "character_archived", "character_restored", "character_assigned"
   ]);
+});
+
+test("profile, personal notes and read marker belong to the character, not an old player", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Story");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const other = db.createCharacter(campaign.id, "Nora");
+  const item = db.createCatalogItem(campaign.id, "Key");
+  const first = db.createSession(campaign.id, "First");
+  db.activateSession(first.id);
+  const a = db.submitPlayerRequest(first.id, "A", "token-a-hash");
+  db.approvePlayer(a.id, { characterId: mira.id });
+  db.updateCharacterProfile(mira.id, { name: "Mira", shortDescription: "Explorer", archetype: "Scout", origin: "North", personalGoal: "Find home", dmNotes: "Secret" });
+  db.updatePlayerProfile("token-a-hash", { shortDescription: "Explorer of ruins", personalGoal: "Find the map" });
+  const note = db.createPersonalNote("token-a-hash", "The old door is suspicious.");
+  db.grantInventoryItem(mira.id, item.id, 1);
+  const clue = db.createKnowledge(campaign.id, "note", "Door", "Behind the library");
+  db.setKnowledgeVisibility(clue.id, "character", mira.id);
+  const firstView = db.getPlayerState("token-a-hash");
+  assert.equal(firstView.profile.personalGoal, "Find the map");
+  assert.equal(firstView.profile.dmNotes, undefined);
+  assert.equal(firstView.notes[0].id, note.id);
+  assert.deepEqual(firstView.newActivity.map((event) => event.type), ["knowledge_visibility_changed", "item_granted"]);
+  db.markPlayerActivitySeen("token-a-hash", firstView.newActivity[0].id);
+  assert.equal(db.getPlayerState("token-a-hash").newActivity.length, 0);
+  assert.equal(db.getPlayerState("token-a-hash").inventory.length, 1);
+  assert.equal(db.getPlayerState("token-a-hash").knowledge.length, 1);
+
+  db.endSession(first.id);
+  assert.throws(() => db.updatePlayerProfile("token-a-hash", { shortDescription: "Stolen", personalGoal: "Stolen" }), /Active character/);
+  assert.throws(() => db.createPersonalNote("token-a-hash", "Stolen"), /Active character/);
+  assert.throws(() => db.markPlayerActivitySeen("token-a-hash", firstView.newActivity[0].id), /Active character/);
+  const oldView = db.getPlayerState("token-a-hash");
+  assert.equal(oldView.canEdit, false);
+  assert.equal(oldView.profile, null);
+  assert.deepEqual(oldView.notes, []);
+  assert.deepEqual(oldView.recentActivity, []);
+  assert.equal(oldView.inventory.length, 1);
+
+  db.archiveCharacter(mira.id);
+  assert.equal(db.listPersonalNotesByCharacter(mira.id)[0].body, note.body);
+  assert.equal(db.listCharactersByCampaign(campaign.id).find((row) => row.id === mira.id).personalGoal, "Find the map");
+  db.restoreCharacter(mira.id);
+  const second = db.createSession(campaign.id, "Second");
+  db.activateSession(second.id);
+  const b = db.submitPlayerRequest(second.id, "B", "token-b-hash");
+  db.approvePlayer(b.id, { characterId: mira.id });
+  const c = db.submitPlayerRequest(second.id, "C", "token-c-hash");
+  db.approvePlayer(c.id, { characterId: other.id });
+  assert.equal(db.getPlayerState("token-b-hash").profile.shortDescription, "Explorer of ruins");
+  assert.equal(db.getPlayerState("token-b-hash").notes[0].id, note.id);
+  assert.deepEqual(db.getPlayerState("token-c-hash").notes, []);
+  assert.equal(db.getPlayerState("token-c-hash").knowledge.some((entry) => entry.id === clue.id), false);
+  assert.throws(() => db.updatePersonalNote("token-c-hash", note.id, "Changed"), /not found/);
+  assert.equal(db.getPlayerState("token-b-hash").newActivity.length, 0);
+  db.grantInventoryItem(mira.id, item.id, 1);
+  assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.type), ["item_granted"]);
+
+  const exported = db.exportCampaign(campaign.id);
+  assert.equal(exported.version, 3);
+  assert.equal(exported.personalNotes.length, 1);
+  assert.equal("readState" in exported, false);
+  assert.equal(JSON.stringify(exported).includes("token-a-hash"), false);
+  const imported = db.importCampaign(exported);
+  const importedMira = db.listCharactersByCampaign(imported.id).find((row) => row.name === "Mira");
+  assert.equal(importedMira.dmNotes, "Secret");
+  assert.equal(importedMira.personalGoal, "Find the map");
+  assert.equal(db.listPersonalNotesByCharacter(importedMira.id)[0].body, note.body);
+  const legacyExport = structuredClone(exported);
+  legacyExport.version = 2;
+  delete legacyExport.personalNotes;
+  for (const character of legacyExport.characters) {
+    for (const key of ["shortDescription", "archetype", "origin", "personalGoal", "dmNotes"]) delete character[key];
+  }
+  const legacyImport = db.importCampaign(legacyExport);
+  const legacyMira = db.listCharactersByCampaign(legacyImport.id).find((row) => row.name === "Mira");
+  assert.equal(legacyMira.personalGoal, "");
+  assert.deepEqual(db.listPersonalNotesByCharacter(legacyMira.id), []);
+  assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("backup restores profile, notes and character read marker", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Backup story");
+    const mira = db.createCharacter(campaign.id, "Mira");
+    const item = db.createCatalogItem(campaign.id, "Key");
+    const session = db.createSession(campaign.id, "Night");
+    db.activateSession(session.id);
+    const player = db.submitPlayerRequest(session.id, "A", "backup-player-hash");
+    db.approvePlayer(player.id, { characterId: mira.id });
+    db.updatePlayerProfile("backup-player-hash", { shortDescription: "Before backup", personalGoal: "Remember" });
+    db.createPersonalNote("backup-player-hash", "Private thought");
+    db.grantInventoryItem(mira.id, item.id, 1);
+    db.markPlayerActivitySeen("backup-player-hash", db.getPlayerState("backup-player-hash").newActivity[0].id);
+    const backup = await db.createBackup();
+    db.updatePlayerProfile("backup-player-hash", { shortDescription: "After backup", personalGoal: "Changed" });
+    db.createPersonalNote("backup-player-hash", "Later thought");
+    db.grantInventoryItem(mira.id, item.id, 1);
+    await db.restoreBackup(backup.id);
+    assert.equal(db.getPlayerState("backup-player-hash").profile.shortDescription, "Before backup");
+    assert.deepEqual(db.getPlayerState("backup-player-hash").notes.map((note) => note.body), ["Private thought"]);
+    assert.equal(db.getPlayerState("backup-player-hash").newActivity.length, 0);
+    assert.equal(db.checkDataHealth().ok, true);
+  } finally { db.close(); }
 });
 
 test("health check reports cross-campaign knowledge and backup restores activity and archive", async (t) => {
@@ -471,7 +578,7 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     const currentRaw = new SQLite(file, { readonly: true });
     const currentTableNames = currentRaw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(({ name }) => name);
     currentRaw.close();
-    assert.deepEqual(legacyTableNames, currentTableNames.filter((name) => name !== "campaign_activity"), "migration 0007 adds only the activity table to the previous table set");
+    assert.deepEqual(legacyTableNames, currentTableNames.filter((name) => !["campaign_activity", "character_personal_notes", "character_read_state"].includes(name)), "migrations 0007 and 0008 add the activity, notes and read-state tables");
 
     await database.restoreBackup(backupName);
 

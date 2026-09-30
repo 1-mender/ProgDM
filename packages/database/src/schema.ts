@@ -44,11 +44,34 @@ export const characters = sqliteTable("characters", {
   campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   createdAt: text("created_at").notNull(),
-  archivedAt: text("archived_at")
+  archivedAt: text("archived_at"),
+  shortDescription: text("short_description").notNull().default(""),
+  archetype: text("archetype").notNull().default(""),
+  origin: text("origin").notNull().default(""),
+  personalGoal: text("personal_goal").notNull().default(""),
+  dmNotes: text("dm_notes").notNull().default("")
 }, (table) => [
   index("characters_campaign_id_idx").on(table.campaignId),
-  check("character_name_valid", sql`length(trim(${table.name})) between 1 and 120`)
+  check("character_name_valid", sql`length(trim(${table.name})) between 1 and 120`),
+  check("character_profile_valid", sql`length(${table.shortDescription}) <= 500 and length(${table.archetype}) <= 120 and length(${table.origin}) <= 500 and length(${table.personalGoal}) <= 500 and length(${table.dmNotes}) <= 2000`)
 ]);
+
+export const characterPersonalNotes = sqliteTable("character_personal_notes", {
+  id: text("id").primaryKey(),
+  characterId: text("character_id").notNull().references(() => characters.id, { onDelete: "restrict" }),
+  body: text("body").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => [
+  index("character_personal_notes_character_idx").on(table.characterId, table.createdAt, table.id),
+  check("character_personal_note_body_valid", sql`length(trim(${table.body})) between 1 and 2000`)
+]);
+
+export const characterReadState = sqliteTable("character_read_state", {
+  characterId: text("character_id").primaryKey().references(() => characters.id, { onDelete: "restrict" }),
+  lastSeenAt: text("last_seen_at").notNull(),
+  lastSeenId: text("last_seen_id").notNull()
+});
 
 export const sessionCharacterAssignments = sqliteTable("session_character_assignments", {
   playerId: text("player_id").primaryKey().references(() => players.id, { onDelete: "cascade" }),

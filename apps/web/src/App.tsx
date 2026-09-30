@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Archive, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { ActivityType, Campaign, CampaignActivity, Character, DataHealth, DmState, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, Player, Session } from "@progdm/shared";
+import type { ActivityType, Campaign, CampaignActivity, Character, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
 
 const tokenKey = "progdm.dmToken";
@@ -16,7 +16,8 @@ const activityLabels: Record<ActivityType, string> = {
   player_requested: "Заявка игрока", player_approved: "Игрок принят", player_rejected: "Заявка отклонена",
   character_created: "Персонаж создан", character_assigned: "Персонаж назначен", character_archived: "Персонаж архивирован", character_restored: "Персонаж восстановлен",
   catalog_item_created: "Предмет добавлен в справочник", item_granted: "Предмет выдан",
-  knowledge_created: "Знание создано", knowledge_visibility_changed: "Видимость знания изменена"
+  knowledge_created: "Знание создано", knowledge_visibility_changed: "Видимость знания изменена",
+  character_profile_updated: "Профиль обновлён", personal_note_created: "Личная заметка добавлена", personal_note_updated: "Личная заметка обновлена"
 };
 function activitySummary(event: CampaignActivity): string {
   const subject = event.details.characterName ?? event.details.playerName ?? event.details.knowledgeTitle ?? event.details.itemName ?? event.details.sessionName ?? event.details.campaignName;
@@ -25,6 +26,7 @@ function activitySummary(event: CampaignActivity): string {
 }
 const sessionPlural = new Intl.PluralRules("ru");
 type BackupInfo = { id: string; createdAt: string; size: number };
+type CharacterOverview = { character: Character; player: { id: string; displayName: string } | null; inventory: InventoryItem[]; knowledge: KnowledgeEntry[]; notes: PersonalNote[]; activity: CampaignActivity[] };
 function sessionCount(count: number) {
   const word = { one: "сессия", few: "сессии", many: "сессий", other: "сессии" }[sessionPlural.select(count) as "one" | "few" | "many" | "other"];
   return count + " " + word;
@@ -110,6 +112,8 @@ function DmWorkspace() {
   const [keyInput, setKeyInput] = useState("");
   const [state, setState] = useState<DmState | null>(null);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
+  const [characterOverview, setCharacterOverview] = useState<CharacterOverview | null>(null);
+  const [profileDraft, setProfileDraft] = useState<Character | null>(null);
   const [backupId, setBackupId] = useState("");
   const [health, setHealth] = useState<DataHealth | null>(null);
   const [selectedId, setSelectedId] = useState(() => readStored(campaignKey));
@@ -233,7 +237,28 @@ function DmWorkspace() {
     } finally { busyRef.current = false; setBusy(false); }
   }
 
-  function chooseCampaign(id: string) { setSelectedId(id); setSessionName(""); setNotice(""); setError(""); }
+  function chooseCampaign(id: string) { setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setCharacterOverview(null); setProfileDraft(null); }
+  function openCharacter(characterId: string) {
+    void request<CharacterOverview>(token, `/api/dm/characters/${characterId}/overview`).then((overview) => {
+      setCharacterOverview(overview); setProfileDraft(overview.character);
+      window.setTimeout(() => document.getElementById("character-overview")?.scrollIntoView({ block: "start", behavior: "smooth" }), 0);
+    }).catch((failure: Error) => setError(failure.message));
+  }
+  function saveCharacterProfile(event: FormEvent) {
+    event.preventDefault();
+    if (!profileDraft) return;
+    void mutate(async () => {
+      await request(token, `/api/dm/characters/${profileDraft.id}/profile`, {
+        name: profileDraft.name, shortDescription: profileDraft.shortDescription, archetype: profileDraft.archetype,
+        origin: profileDraft.origin, personalGoal: profileDraft.personalGoal, dmNotes: profileDraft.dmNotes
+      });
+      const overview = await request<CharacterOverview>(token, `/api/dm/characters/${profileDraft.id}/overview`);
+      setCharacterOverview(overview); setProfileDraft(overview.character); setNotice("Профиль сохранён.");
+    });
+  }
+  function editProfile(field: "name" | "shortDescription" | "archetype" | "origin" | "personalGoal" | "dmNotes", value: string) {
+    setProfileDraft((current) => current ? { ...current, [field]: value } : null);
+  }
   function openCampaignForm() { setNotice(""); setError(""); setCampaignForm(true); }
   function confirm(intent: Confirmation) { setNotice(""); setError(""); setConfirmation(intent); }
   function createCampaign(event: FormEvent) {
@@ -277,6 +302,7 @@ function DmWorkspace() {
       await request(token, "/api/dm/characters/" + itemTarget.characterId + "/items", {
         catalogItemId: selectedCatalogItem.id, quantity: Number(itemQuantity)
       });
+      if (characterOverview?.character.id === itemTarget.characterId) setCharacterOverview(await request<CharacterOverview>(token, `/api/dm/characters/${itemTarget.characterId}/overview`));
       setNotice("Предмет выдан игроку.");
     });
   }
@@ -315,6 +341,10 @@ function DmWorkspace() {
   function changeCharacterArchive(character: Character) {
     void mutate(async () => {
       await request(token, `/api/dm/characters/${character.id}/${character.archivedAt ? "restore" : "archive"}`, {});
+      if (characterOverview?.character.id === character.id) {
+        const overview = await request<CharacterOverview>(token, `/api/dm/characters/${character.id}/overview`);
+        setCharacterOverview(overview); setProfileDraft(overview.character);
+      }
       setNotice(character.archivedAt ? "Персонаж восстановлен." : "Персонаж архивирован.");
     });
   }
@@ -345,6 +375,7 @@ function DmWorkspace() {
       await request(token, "/api/dm/knowledge/" + entry.id + "/visibility", visibility === "character"
         ? { visibility, characterId: draft.characterId }
         : { visibility });
+      if (characterOverview) setCharacterOverview(await request<CharacterOverview>(token, `/api/dm/characters/${characterOverview.character.id}/overview`));
       setKnowledgeDrafts((previous) => { const next = { ...previous }; delete next[entry.id]; return next; });
       setNotice(visibility === "hidden" ? "Запись скрыта от игроков." : "Доступ к записи обновлён.");
     });
@@ -508,7 +539,7 @@ function DmWorkspace() {
               <button className="secondary" disabled={locked || !newCharacterName.trim()}><UserPlus />Добавить персонажа</button>
             </form>
             {campaignCharacters.length > 0 && <ul className="character-list">{campaignCharacters.map((character: Character) => <li key={character.id}>
-              <Users size={16} /><span>{character.name}{character.archivedAt ? " · В архиве" : ""}</span>
+              <Users size={16} /><button className="text-link" onClick={() => openCharacter(character.id)}>{character.name}{character.archivedAt ? " · В архиве" : ""}</button>
               <button className="icon-button" title={character.archivedAt ? "Вернуть из архива" : "Архивировать"} aria-label={(character.archivedAt ? "Вернуть из архива " : "Архивировать ") + character.name} disabled={locked || (!character.archivedAt && assignedCharacterIds.has(character.id))} onClick={() => changeCharacterArchive(character)}>{character.archivedAt ? <RotateCcw /> : <Archive />}</button>
             </li>)}</ul>}
           </section>
@@ -550,10 +581,10 @@ function DmWorkspace() {
             {approvedPlayers.length > 0 && <ul className="party-list accepted-list">
               {approvedPlayers.map((player) => <li key={player.id} className="party-row accepted-row">
                 <div className="player-identity"><strong>{player.displayName}</strong><span className="muted">{player.sessionName}</span></div>
-                <span className="character-name">{player.characterName}</span><span className="badge accepted"><Check size={15} />В партии</span>
+                <button className="text-link character-name" onClick={() => player.characterId && openCharacter(player.characterId)}>{player.characterName}</button><span className="badge accepted"><Check size={15} />В партии</span>
               </li>)}
             </ul>}
-            {grantablePlayers.length > 0 && <div className="item-grant">
+            {grantablePlayers.length > 0 && <div id="item-grant" className="item-grant">
               <h3><PackagePlus size={18} />Выдать предмет</h3>
               <form className="inline-form item-grant-form" onSubmit={grantItem}>
                 <div className="field"><label htmlFor="item-target">Игрок и персонаж</label>
@@ -579,6 +610,33 @@ function DmWorkspace() {
             {pendingPlayers.length === 0 && approvedPlayers.length === 0 && <p className="empty-list">Заявок пока нет</p>}
           </section>
           }
+          {characterOverview?.character.campaignId === selectedId && profileDraft && <section id="character-overview" className="character-overview" aria-labelledby="character-overview-title">
+            <div className="section-heading"><h2 id="character-overview-title">{characterOverview.character.name}{characterOverview.character.archivedAt ? " · В архиве" : ""}</h2>
+              <button className="icon-button" title="Закрыть профиль" aria-label="Закрыть профиль" onClick={() => { setCharacterOverview(null); setProfileDraft(null); }}><X /></button></div>
+            <p className="muted">{characterOverview.player ? `Сейчас играет: ${characterOverview.player.displayName}` : "Сейчас не назначен"}</p>
+            <div className="character-overview-actions">
+              {characterOverview.player && <button className="secondary" onClick={() => { setWorkspaceMode("live"); setItemTargetId(characterOverview.player!.id); window.setTimeout(() => document.getElementById("item-grant")?.scrollIntoView({ behavior: "smooth" }), 0); }}><PackagePlus />Выдать предмет</button>}
+              <button className="secondary" onClick={() => document.getElementById("knowledge-title")?.scrollIntoView({ behavior: "smooth" })}><Eye />Открыть знание</button>
+              <button className="secondary" disabled={locked || (!characterOverview.character.archivedAt && !!characterOverview.player)} onClick={() => changeCharacterArchive(characterOverview.character)}>{characterOverview.character.archivedAt ? <RotateCcw /> : <Archive />}{characterOverview.character.archivedAt ? "Вернуть" : "Архивировать"}</button>
+            </div>
+            <details className="character-edit"><summary>Редактировать профиль</summary>
+              <form className="character-profile-form" onSubmit={saveCharacterProfile}>
+                <label>Имя<input value={profileDraft.name} maxLength={120} required disabled={locked} onChange={(event) => editProfile("name", event.target.value)} /></label>
+                <label>Краткое описание<textarea value={profileDraft.shortDescription} maxLength={500} rows={2} disabled={locked} onChange={(event) => editProfile("shortDescription", event.target.value)} /></label>
+                <label>Архетип<input value={profileDraft.archetype} maxLength={120} disabled={locked} onChange={(event) => editProfile("archetype", event.target.value)} /></label>
+                <label>Происхождение<textarea value={profileDraft.origin} maxLength={500} rows={2} disabled={locked} onChange={(event) => editProfile("origin", event.target.value)} /></label>
+                <label>Личная цель<textarea value={profileDraft.personalGoal} maxLength={500} rows={2} disabled={locked} onChange={(event) => editProfile("personalGoal", event.target.value)} /></label>
+                <label>Заметки ведущего<textarea value={profileDraft.dmNotes} maxLength={2000} rows={3} disabled={locked} onChange={(event) => editProfile("dmNotes", event.target.value)} /></label>
+                <button className="primary" disabled={locked || !profileDraft.name.trim()}>Сохранить профиль</button>
+              </form>
+            </details>
+            <div className="character-overview-grid">
+              <div><h3>Инвентарь</h3>{characterOverview.inventory.length ? <ul>{characterOverview.inventory.map((item) => <li key={item.id}>{item.name} · {item.quantity}</li>)}</ul> : <p className="muted">Пусто</p>}</div>
+              <div><h3>Знания</h3>{characterOverview.knowledge.length ? <ul>{characterOverview.knowledge.map((entry) => <li key={entry.id}>{entry.title}</li>)}</ul> : <p className="muted">Нет открытых записей</p>}</div>
+              <div><h3>Личные заметки</h3>{characterOverview.notes.length ? <ul>{characterOverview.notes.map((note) => <li key={note.id}>{note.body}</li>)}</ul> : <p className="muted">Пусто</p>}</div>
+              <div><h3>Последние события</h3>{characterOverview.activity.length ? <ul>{characterOverview.activity.map((event) => <li key={event.id}>{activitySummary(event)}</li>)}</ul> : <p className="muted">Пока нет событий</p>}</div>
+            </div>
+          </section>}
           <section className="knowledge-section" aria-labelledby="knowledge-title">
             <div className="section-heading"><h2 id="knowledge-title">Знания партии <span className="count">{campaignKnowledge.length}</span></h2></div>
             {workspaceMode === "prepare" && <form className="knowledge-create-form" onSubmit={createKnowledge}>
@@ -622,7 +680,7 @@ function DmWorkspace() {
                       {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Открыто всей партии" : "Знает персонаж: " + (state?.characters.find((character) => character.id === entry.visibleToCharacterId)?.name ?? "персонаж")}
                     </span>
                   </div>
-                  {workspaceMode === "live" ? <form className="knowledge-controls" onSubmit={(event) => { event.preventDefault(); saveKnowledgeVisibility(entry, draft); }}>
+                  <form className="knowledge-controls" onSubmit={(event) => { event.preventDefault(); saveKnowledgeVisibility(entry, draft); }}>
                     <label className="visually-hidden" htmlFor={"knowledge-visibility-" + entry.id}>Кому показать запись</label>
                     <select id={"knowledge-visibility-" + entry.id} value={draft.visibility} disabled={locked}
                       onChange={(event) => setKnowledgeDrafts((previous) => ({ ...previous, [entry.id]: {
@@ -645,7 +703,7 @@ function DmWorkspace() {
                       disabled={locked || (nextVisibility === "hidden" && entry.visibility === "hidden") || targetMissing}>
                       {nextVisibility === "hidden" ? <EyeOff /> : <Eye />}{actionLabel}
                     </button>
-                  </form> : null}
+                  </form>
                 </li>;
               })}
             </ul>}

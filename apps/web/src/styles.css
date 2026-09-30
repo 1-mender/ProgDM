@@ -128,6 +128,32 @@ dialog::backdrop { background: #20252a66; }
 .join-form label { margin: 0; }
 .join-form button { width: 100%; min-height: 46px; margin-top: 6px; }
 .join-shell .message { margin-bottom: 14px; }
+.join-content:has(.player-app) { padding: 0; }
+.player-app { min-height: 100dvh; padding-bottom: 104px; }
+.player-app-header { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 66px; background: #f7f8f7; border-bottom: 1px solid #dce0e3; }
+.player-app-header > div { min-width: 0; display: grid; gap: 3px; }
+.player-app-header strong { overflow-wrap: anywhere; }
+.player-app-header span { color: #687177; font-size: 12px; overflow-wrap: anywhere; }
+.player-view { padding: 20px 0 30px; }
+.player-view h1 { margin: 0 0 14px; font-size: 24px; }
+.player-view h2 { margin: 0 0 10px; font-size: 17px; }
+.player-view p { overflow-wrap: anywhere; }
+.player-section { padding: 20px 0; border-top: 1px solid #dce0e3; }
+.player-section .section-heading { margin-bottom: 8px; }
+.player-profile-name { font-size: 18px; font-weight: 700; }
+.player-simple-list { list-style: none; margin: 0 0 16px; padding: 0; }
+.player-simple-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 11px 0; border-bottom: 1px solid #e3e6e8; overflow-wrap: anywhere; }
+.player-simple-list li > .muted { margin-left: auto; font-size: 13px; }
+.player-simple-list time { display: block; width: 100%; color: #687177; font-size: 12px; }
+.player-knowledge-item p { width: 100%; margin: 4px 0; line-height: 1.5; }
+.player-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.player-actions button { min-height: 44px; }
+.player-form { display: grid; gap: 10px; }
+.player-form button { min-height: 44px; justify-self: start; }
+.player-form textarea { width: 100%; min-height: 90px; }
+.player-nav { position: fixed; left: 50%; bottom: 0; z-index: 10; width: min(100%, 480px); transform: translateX(-50%); display: grid; grid-template-columns: repeat(3, 1fr); padding: 6px 8px max(6px, env(safe-area-inset-bottom)); background: #fff; border-top: 1px solid #cdd3d5; box-shadow: 0 -3px 12px #0000000d; }
+.player-nav button { min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; background: transparent; color: #485156; font: inherit; font-size: 11px; }
+.player-nav button.selected { color: #176d60; font-weight: 700; }
 .join-panel { padding: 22px 0; margin: 0 0 28px; border-bottom: 1px solid #dce0e3; }
 .join-panel .section-heading { margin-bottom: 18px; }
 .join-panel .section-heading h2 { display: flex; align-items: center; gap: 9px; }
@@ -160,6 +186,20 @@ dialog::backdrop { background: #20252a66; }
 .character-list svg { flex: 0 0 auto; color: #7a8188; }
 .character-list .icon-button { margin-left: auto; }
 .character-list .icon-button svg { width: 16px; height: 16px; }
+.character-overview { padding: 22px 0; border-top: 1px solid #dce0e3; border-bottom: 1px solid #dce0e3; scroll-margin-top: 16px; }
+.character-overview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.character-overview-actions button { min-height: 42px; }
+.character-edit { margin: 18px 0; }
+.character-edit summary { cursor: pointer; font-weight: 600; }
+.character-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.character-profile-form label { display: grid; gap: 6px; min-width: 0; }
+.character-profile-form input, .character-profile-form textarea { width: 100%; }
+.character-profile-form button { justify-self: start; }
+.character-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.character-overview-grid h3 { margin: 0 0 8px; font-size: 15px; }
+.character-overview-grid ul { list-style: none; padding: 0; margin: 0; }
+.character-overview-grid li { padding: 6px 0; border-bottom: 1px solid #e4e7e9; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .character-profile-form, .character-overview-grid { grid-template-columns: 1fr; } }
 .activity-section { padding: 24px 0; border-top: 1px solid #dce0e3; }
 .activity-list { list-style: none; padding: 0; margin: 0; max-height: 300px; overflow: auto; }
 .activity-list li { display: flex; gap: 16px; padding: 7px 0; border-bottom: 1px solid #e4e7e9; }

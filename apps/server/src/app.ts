@@ -80,6 +80,39 @@ export function createApp(options: {
       const state = tokenHash ? database.getPlayerState(tokenHash) : null;
       return state ?? reply.code(401).send({ message: "Заявка не найдена." });
     });
+    const activeAction = <T>(request: object, reply: { code: (status: number) => { send: (body: object) => unknown } }, action: (hash: string) => T) => {
+      try { return action(playerCredentials.get(request)!); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Active character access required.") return reply.code(403).send({ message: "Изменять данные может только игрок активной сессии с назначенным персонажем." });
+        if (message === "Personal note not found." || message === "Activity is not visible to this player.") return reply.code(404).send({ message: "Запись недоступна." });
+        if (/constraint|UNIQUE/i.test(message)) return reply.code(409).send({ message: "Это имя уже занято в сессии." });
+        throw error;
+      }
+    };
+    player.post<{ Body: { shortDescription: string; personalGoal: string } }>("/api/player/profile", {
+      schema: { body: { type: "object", additionalProperties: false, required: ["shortDescription", "personalGoal"], properties: {
+        shortDescription: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 }
+      } } }
+    }, async (request, reply) => activeAction(request, reply, (hash) => ({ character: database.updatePlayerProfile(hash, request.body) })));
+    player.post<{ Body: { displayName: string } }>("/api/player/settings", {
+      schema: { body: { type: "object", additionalProperties: false, required: ["displayName"], properties: {
+        displayName: { type: "string", minLength: 1, maxLength: 60, pattern: "\\S" }
+      } } }
+    }, async (request, reply) => activeAction(request, reply, (hash) => ({ player: database.updatePlayerDisplayName(hash, request.body.displayName) })));
+    const noteBody = { type: "object", additionalProperties: false, required: ["body"], properties: {
+      body: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S" }
+    } };
+    player.post<{ Body: { body: string } }>("/api/player/notes", { schema: { body: noteBody } },
+      async (request, reply) => activeAction(request, reply, (hash) => ({ note: database.createPersonalNote(hash, request.body.body) })));
+    player.post<{ Params: { id: string }; Body: { body: string } }>("/api/player/notes/:id", {
+      schema: { params: { type: "object", required: ["id"], properties: { id: { type: "string", format: "uuid" } } }, body: noteBody }
+    }, async (request, reply) => activeAction(request, reply, (hash) => ({ note: database.updatePersonalNote(hash, request.params.id, request.body.body) })));
+    player.post<{ Body: { upToActivityId: string } }>("/api/player/activity/seen", {
+      schema: { body: { type: "object", additionalProperties: false, required: ["upToActivityId"], properties: {
+        upToActivityId: { type: "string", format: "uuid" }
+      } } }
+    }, async (request, reply) => activeAction(request, reply, (hash) => ({ marker: database.markPlayerActivitySeen(hash, request.body.upToActivityId) })));
   });
 
   app.post<{ Params: { token: string }; Body: { displayName: string; playerToken: string } }>(
@@ -198,7 +231,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3] }
       } } }
     }, async (request, reply) => {
       try {
@@ -235,6 +268,29 @@ export function createApp(options: {
           throw error;
         }
       });
+    dm.post<{ Params: { id: string }; Body: { name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string } }>(
+      "/api/dm/characters/:id/profile", {
+        schema: { params: idParams, body: { type: "object", additionalProperties: false,
+          required: ["name", "shortDescription", "archetype", "origin", "personalGoal", "dmNotes"], properties: {
+            name: { type: "string", minLength: 1, maxLength: 120, pattern: "\\S" },
+            shortDescription: { type: "string", maxLength: 500 }, archetype: { type: "string", maxLength: 120 },
+            origin: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 },
+            dmNotes: { type: "string", maxLength: 2000 }
+          } } }
+      }, async (request, reply) => {
+        try { return { character: database.updateCharacterProfile(request.params.id, request.body) }; }
+        catch (error) {
+          if (error instanceof Error && error.message === "Character not found.") return reply.code(404).send({ message: "Персонаж не найден." });
+          throw error;
+        }
+      }
+    );
+    dm.get<{ Params: { id: string } }>("/api/dm/characters/:id/notes", { schema: { params: idParams } },
+      async (request) => ({ notes: database.listPersonalNotesByCharacter(request.params.id) }));
+    dm.get<{ Params: { id: string } }>("/api/dm/characters/:id/activity", { schema: { params: idParams } },
+      async (request) => ({ activity: database.listCharacterActivity(request.params.id) }));
+    dm.get<{ Params: { id: string } }>("/api/dm/characters/:id/overview", { schema: { params: idParams } },
+      async (request, reply) => database.getCharacterOverview(request.params.id) ?? reply.code(404).send({ message: "Персонаж не найден." }));
     for (const action of ["archive", "restore"] as const) {
       dm.post<{ Params: { id: string } }>(`/api/dm/characters/:id/${action}`, { schema: { params: idParams } }, async (request, reply) => {
         try {

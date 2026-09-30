@@ -52,6 +52,44 @@ test("DM can inspect history, archive characters and check local data", async (t
   assert.equal(health.json().ok, true);
 });
 
+test("player profile and notes enforce active assignment and field permissions", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Campaign");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const nora = database.createCharacter(campaign.id, "Nora");
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const aToken = "A".repeat(43);
+  const bToken = "B".repeat(43);
+  for (const [name, token] of [["A", aToken], ["B", bToken]]) {
+    assert.equal((await post(app, `/api/join/${session.joinToken}/request`, { displayName: name, playerToken: token })).statusCode, 200);
+  }
+  const players = database.listPlayersByCampaign(campaign.id);
+  database.approvePlayer(players.find((player) => player.displayName === "A").id, { characterId: mira.id });
+  database.approvePlayer(players.find((player) => player.displayName === "B").id, { characterId: nora.id });
+  const playerPost = (token, path, payload) => app.inject({ method: "POST", url: path,
+    headers: { authorization: "Bearer " + token }, payload });
+  const playerGet = (token) => app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: "Bearer " + token } });
+  assert.equal((await post(app, `/api/dm/characters/${mira.id}/profile`, {
+    name: "Mira", shortDescription: "DM text", archetype: "Scout", origin: "North", personalGoal: "Explore", dmNotes: "Hidden from players"
+  })).statusCode, 200);
+  assert.equal((await playerPost(aToken, "/api/player/profile", { shortDescription: "Player text", personalGoal: "Find clues", dmNotes: "Injected" })).statusCode, 400);
+  assert.equal((await playerPost(aToken, "/api/player/profile", { shortDescription: "Player text", personalGoal: "Find clues" })).statusCode, 200);
+  assert.equal((await playerGet(aToken)).json().profile.dmNotes, undefined);
+  assert.equal((await playerGet(aToken)).json().profile.archetype, "Scout");
+  assert.equal(database.listCharactersByCampaign(campaign.id).find((row) => row.id === mira.id).dmNotes, "Hidden from players");
+  const note = (await playerPost(aToken, "/api/player/notes", { body: "My theory" })).json().note;
+  assert.equal((await playerGet(aToken)).json().notes[0].id, note.id);
+  assert.deepEqual((await playerGet(bToken)).json().notes, []);
+  assert.equal((await playerPost(bToken, `/api/player/notes/${note.id}`, { body: "Stolen" })).statusCode, 404);
+  assert.equal((await get(app, `/api/dm/characters/${mira.id}/overview`)).json().notes[0].body, "My theory");
+  assert.equal((await playerPost(aToken, "/api/player/settings", { displayName: "New A" })).statusCode, 200);
+  assert.equal((await playerGet(aToken)).json().displayName, "New A");
+  database.endSession(session.id);
+  assert.equal((await playerPost(aToken, "/api/player/notes", { body: "Too late" })).statusCode, 403);
+  assert.equal((await playerGet(aToken)).json().notes.length, 0);
+});
+
 test("all DM reads and writes require the key, including through a proxy", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Campaign");
@@ -63,7 +101,9 @@ test("all DM reads and writes require the key, including through a proxy", async
     ["POST", "/api/dm/sessions/" + session.id + "/start"],
     ["POST", "/api/dm/sessions/" + session.id + "/end"],
     ["POST", "/api/dm/data/health"], ["GET", "/api/dm/campaigns/" + campaign.id + "/activity"],
-    ["GET", "/api/dm/sessions/" + session.id + "/activity"]
+    ["GET", "/api/dm/sessions/" + session.id + "/activity"],
+    ["GET", "/api/dm/characters/00000000-0000-4000-8000-000000000001/overview"],
+    ["POST", "/api/dm/characters/00000000-0000-4000-8000-000000000001/profile"]
   ];
   for (const [method, url] of routes) {
     for (const authorization of ["", "Bearer wrong-key", "Bearer " + dmToken + "x"]) {
