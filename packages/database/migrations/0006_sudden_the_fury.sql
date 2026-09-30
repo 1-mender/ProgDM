@@ -37,7 +37,7 @@ SELECT k.`id`, k.`campaign_id`, k.`category`, k.`title`, k.`description`,
 	k.`created_at`
 FROM `__old_knowledge_entries_for_migration` k;--> statement-breakpoint
 ALTER TABLE `__new_knowledge_entries` RENAME TO `knowledge_entries`;--> statement-breakpoint
-CREATE TABLE `knowledge_migration_issues` (
+CREATE TABLE IF NOT EXISTS `knowledge_migration_issues` (
 	`knowledge_entry_id` text NOT NULL,
 	`legacy_player_id` text NOT NULL,
 	`reason` text NOT NULL,

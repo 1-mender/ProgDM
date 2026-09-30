@@ -115,43 +115,38 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     return backup;
   }
 
-  function restoreBackupFile(sourceFile: string, allowMigration = true): void {
-    const source = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
-    let sourceTables: string[];
+  function restoreBackupFile(sourceFile: string): void {
+    const original = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
     try {
-      if (source.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Backup file is damaged.");
-      sourceTables = (source.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((row) => row.name);
-    } finally { source.close(); }
+      if (original.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Backup file is damaged.");
+    } finally { original.close(); }
 
-    if (JSON.stringify(sourceTables!) !== JSON.stringify([...backupTables].sort())) {
-      if (!allowMigration) throw new Error("Backup schema is not supported.");
-      const stagedFile = join(backupsDirectory, `.migrate-restore-${randomUUID()}.db`);
-      copyFileSync(sourceFile, stagedFile);
+    const stagedFile = join(backupsDirectory, `.migrate-restore-${randomUUID()}.db`);
+    copyFileSync(sourceFile, stagedFile);
+    try {
+      const staged = new SQLite(stagedFile);
       try {
-        const staged = new SQLite(stagedFile);
-        try {
-          staged.pragma("foreign_keys = OFF");
-          migrate(drizzle(staged, { schema }), { migrationsFolder });
-          staged.pragma("foreign_keys = ON");
-        } finally { staged.close(); }
-        restoreBackupFile(stagedFile, false);
-      } finally {
-        rmSync(stagedFile, { force: true });
-        rmSync(stagedFile + "-wal", { force: true });
-        rmSync(stagedFile + "-shm", { force: true });
-      }
-      return;
+        staged.pragma("foreign_keys = OFF");
+        migrate(drizzle(staged, { schema }), { migrationsFolder });
+        staged.pragma("foreign_keys = ON");
+
+        if (staged.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Migrated backup failed integrity check.");
+        if ((staged.pragma("foreign_key_check") as unknown[]).length) throw new Error("Migrated backup contains invalid references.");
+        const schemaSignature = (database: SQLite.Database, schemaName: string) =>
+          (database.prepare(`SELECT type, name, tbl_name, sql FROM ${schemaName}.sqlite_master WHERE type IN ('table', 'index', 'view', 'trigger') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type, name`).all() as { type: string; name: string; tbl_name: string; sql: string }[])
+            .map((object) => ({ ...object, sql: object.sql.replace(/\s+/g, " ").trim() }));
+        if (JSON.stringify(schemaSignature(staged, "main")) !== JSON.stringify(schemaSignature(client, "main"))) {
+          throw new Error("Backup schema is not supported.");
+        }
+      } finally { staged.close(); }
+
+      client.prepare("ATTACH DATABASE ? AS restore_source").run(stagedFile);
+    } catch (error) {
+      rmSync(stagedFile, { force: true });
+      rmSync(stagedFile + "-wal", { force: true });
+      rmSync(stagedFile + "-shm", { force: true });
+      throw error;
     }
-
-    const sourceWithSchema = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
-    try {
-      for (const table of backupTables) {
-        const columns = (database: SQLite.Database, schemaName: string) => (database.prepare(`PRAGMA ${schemaName}.table_info("${table}")`).all() as { name: string }[]).map((row) => row.name);
-        if (JSON.stringify(columns(client, "main")) !== JSON.stringify(columns(sourceWithSchema, "main"))) throw new Error("Backup schema is not supported.");
-      }
-    } finally { sourceWithSchema.close(); }
-
-    client.prepare("ATTACH DATABASE ? AS restore_source").run(sourceFile);
     client.pragma("foreign_keys = OFF");
     try {
       client.transaction(() => {
@@ -167,6 +162,9 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     } finally {
       client.prepare("DETACH DATABASE restore_source").run();
       client.pragma("foreign_keys = ON");
+      rmSync(stagedFile, { force: true });
+      rmSync(stagedFile + "-wal", { force: true });
+      rmSync(stagedFile + "-shm", { force: true });
     }
   }
 

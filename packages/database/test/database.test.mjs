@@ -354,8 +354,19 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     .run("00000000-0000-4000-8000-000000000103", "00000000-0000-4000-8000-000000000102", "00000000-0000-4000-8000-000000000104", "2026-02-01T00:00:00.000Z");
   legacy.prepare("INSERT INTO knowledge_entries (id, campaign_id, category, title, description, visibility, visible_to_player_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
     .run("00000000-0000-4000-8000-000000000105", "00000000-0000-4000-8000-000000000101", "note", "Old private clue", "Keep this through restore.", "player", "00000000-0000-4000-8000-000000000103", "2026-02-01T00:00:00.000Z");
+  legacy.exec(`CREATE TABLE \`knowledge_migration_issues\` (
+    \`knowledge_entry_id\` text NOT NULL,
+    \`legacy_player_id\` text NOT NULL,
+    \`reason\` text NOT NULL,
+    \`created_at\` text NOT NULL,
+    FOREIGN KEY (\`knowledge_entry_id\`) REFERENCES \`knowledge_entries\`(\`id\`) ON UPDATE no action ON DELETE cascade,
+    CONSTRAINT "knowledge_migration_issue_reason_valid" CHECK(\`reason\` in ('missing_assignment', 'campaign_mismatch'))
+  )`);
   await legacy.backup(join(backups, backupName));
   legacy.close();
+  const legacyBackup = new SQLite(join(backups, backupName), { readonly: true });
+  const legacyTableNames = legacyBackup.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(({ name }) => name);
+  legacyBackup.close();
 
   const database = openDatabase({ file, backupsDirectory: backups, uploadsDirectory: uploads });
   try {
@@ -364,6 +375,11 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     rawAfterStartup.close();
     assert.equal(database.getCampaign("00000000-0000-4000-8000-000000000101").name, "Campaign from v5");
     database.createCampaign("Change after migration");
+
+    const currentRaw = new SQLite(file, { readonly: true });
+    const currentTableNames = currentRaw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(({ name }) => name);
+    currentRaw.close();
+    assert.deepEqual(legacyTableNames, currentTableNames, "backup must have the same table list but the previous knowledge columns");
 
     await database.restoreBackup(backupName);
 
