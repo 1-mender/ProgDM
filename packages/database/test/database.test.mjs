@@ -86,12 +86,18 @@ test("character-assignment migration preserves legacy assignments and inventory"
     .run("00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000001", "Old session", "ended", "A".repeat(43), "2026-01-01T00:00:00.000Z");
   legacy.prepare("INSERT INTO players (id, session_id, display_name, token_hash, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run("00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000002", "Player", "legacy-player-hash", "approved", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO players (id, session_id, display_name, token_hash, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000007", "00000000-0000-4000-8000-000000000002", "Unassigned", "unassigned-player-hash", "approved", "2026-01-01T00:00:00.000Z");
   legacy.prepare("INSERT INTO characters (id, campaign_id, name, player_id, created_at) VALUES (?, ?, ?, ?, ?)")
     .run("00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000001", "Persistent hero", "00000000-0000-4000-8000-000000000003", "2026-01-01T00:00:00.000Z");
   legacy.prepare("INSERT INTO catalog_items (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)")
     .run("00000000-0000-4000-8000-000000000005", "00000000-0000-4000-8000-000000000001", "Old item", "2026-01-01T00:00:00.000Z");
   legacy.prepare("INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, created_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run("00000000-0000-4000-8000-000000000006", "00000000-0000-4000-8000-000000000004", "00000000-0000-4000-8000-000000000005", "Old item", 3, "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO knowledge_entries (id, campaign_id, category, title, description, visibility, visible_to_player_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000008", "00000000-0000-4000-8000-000000000001", "note", "Mira's secret", "Keep this knowledge.", "player", "00000000-0000-4000-8000-000000000003", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO knowledge_entries (id, campaign_id, category, title, description, visibility, visible_to_player_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("00000000-0000-4000-8000-000000000009", "00000000-0000-4000-8000-000000000001", "note", "Unassigned secret", "Preserve this too.", "player", "00000000-0000-4000-8000-000000000007", "2026-01-01T00:00:00.000Z");
   legacy.close();
 
   const database = openDatabase({ file });
@@ -106,6 +112,11 @@ test("character-assignment migration preserves legacy assignments and inventory"
     const oldPlayer = database.listPlayersByCampaign("00000000-0000-4000-8000-000000000001")[0];
     assert.equal(oldPlayer.characterId, "00000000-0000-4000-8000-000000000004");
     assert.equal(database.getSession("00000000-0000-4000-8000-000000000002").status, "ended");
+    const migratedKnowledge = database.listKnowledgeByCampaign("00000000-0000-4000-8000-000000000001");
+    assert.equal(migratedKnowledge.find((entry) => entry.id === "00000000-0000-4000-8000-000000000008").visibility, "character");
+    assert.equal(migratedKnowledge.find((entry) => entry.id === "00000000-0000-4000-8000-000000000008").visibleToCharacterId, "00000000-0000-4000-8000-000000000004");
+    assert.equal(migratedKnowledge.find((entry) => entry.id === "00000000-0000-4000-8000-000000000009").visibility, "hidden");
+    assert.equal(migratedKnowledge.find((entry) => entry.id === "00000000-0000-4000-8000-000000000009").description, "Preserve this too.");
     const oldPlayerState = database.getPlayerState("legacy-player-hash");
     assert.equal(oldPlayerState.characterName, "Persistent hero");
     assert.deepEqual(oldPlayerState.inventory.map(({ name, quantity }) => ({ name, quantity })), [
@@ -115,6 +126,12 @@ test("character-assignment migration preserves legacy assignments and inventory"
     try {
       assert.equal(raw.prepare("SELECT count(*) AS count FROM session_character_assignments").get().count, 1);
       assert.equal(raw.prepare("SELECT count(*) AS count FROM pragma_table_info('characters') WHERE name = 'player_id'").get().count, 0);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM pragma_table_info('knowledge_entries') WHERE name = 'visible_to_player_id'").get().count, 0);
+      assert.deepEqual(raw.prepare("SELECT knowledge_entry_id, legacy_player_id, reason FROM knowledge_migration_issues").all(), [{
+        knowledge_entry_id: "00000000-0000-4000-8000-000000000009",
+        legacy_player_id: "00000000-0000-4000-8000-000000000007",
+        reason: "missing_assignment"
+      }]);
       assert.deepEqual(raw.pragma("foreign_key_check"), []);
     } finally { raw.close(); }
   } finally { database.close(); }
@@ -238,7 +255,7 @@ test("campaign export and import preserve history and inventory without copying 
   database.approvePlayer(player.id, { characterId: character.id });
   database.grantInventoryItem(character.id, item.id, 2);
   const entry = database.createKnowledge(campaign.id, "npc", "Keeper", "Knows the old road.");
-  database.setKnowledgeVisibility(entry.id, "party");
+  database.setKnowledgeVisibility(entry.id, "character", character.id);
 
   const archive = database.exportCampaign(campaign.id);
   const serialized = JSON.stringify(archive);
@@ -256,7 +273,9 @@ test("campaign export and import preserve history and inventory without copying 
   assert.deepEqual(importedArchive.inventoryItems.map(({ name, quantity }) => ({ name, quantity })), [
     { name: "Compass", quantity: 2 }
   ]);
-  assert.equal(importedArchive.knowledge[0].visibility, "party");
+  assert.equal(importedArchive.knowledge[0].visibility, "character");
+  assert.equal(importedArchive.knowledge[0].visibleToCharacterId, importedArchive.characters[0].id);
+  assert.notEqual(importedArchive.knowledge[0].visibleToCharacterId, character.id);
   assert.throws(() => database.importCampaign({ ...archive, assignments: [{ ...archive.assignments[0], characterId: "missing" }] }), /invalid reference/);
   assert.equal(database.listCampaigns().length, 2);
 });

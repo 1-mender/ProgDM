@@ -120,7 +120,7 @@ function DmWorkspace() {
   const [knowledgeCategory, setKnowledgeCategory] = useState<KnowledgeCategory>("note");
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
-  const [knowledgeDrafts, setKnowledgeDrafts] = useState<Record<string, { visibility: KnowledgeVisibility; playerId: string }>>({});
+  const [knowledgeDrafts, setKnowledgeDrafts] = useState<Record<string, { visibility: KnowledgeVisibility; characterId: string }>>({});
   const [joinAddress, setJoinAddress] = useState("");
   const [manualJoinAddress, setManualJoinAddress] = useState("");
   const [copied, setCopied] = useState(false);
@@ -307,14 +307,14 @@ function DmWorkspace() {
       setNotice("Кампания импортирована.");
     });
   }
-  function saveKnowledgeVisibility(entry: KnowledgeEntry, draft: { visibility: KnowledgeVisibility; playerId: string }) {
+  function saveKnowledgeVisibility(entry: KnowledgeEntry, draft: { visibility: KnowledgeVisibility; characterId: string }) {
     const unchanged = draft.visibility === entry.visibility &&
-      (draft.visibility !== "player" || draft.playerId === (entry.visibleToPlayerId ?? ""));
+      (draft.visibility !== "character" || draft.characterId === (entry.visibleToCharacterId ?? ""));
     const visibility: KnowledgeVisibility = unchanged && entry.visibility !== "hidden" ? "hidden" : draft.visibility;
     if (visibility === "hidden" && entry.visibility === "hidden") return;
     void mutate(async () => {
-      await request(token, "/api/dm/knowledge/" + entry.id + "/visibility", visibility === "player"
-        ? { visibility, playerId: draft.playerId }
+      await request(token, "/api/dm/knowledge/" + entry.id + "/visibility", visibility === "character"
+        ? { visibility, characterId: draft.characterId }
         : { visibility });
       setKnowledgeDrafts((previous) => { const next = { ...previous }; delete next[entry.id]; return next; });
       setNotice(visibility === "hidden" ? "Запись скрыта от игроков." : "Доступ к записи обновлён.");
@@ -560,12 +560,12 @@ function DmWorkspace() {
               {campaignKnowledge.map((entry) => {
                 const draft = knowledgeDrafts[entry.id] ?? {
                   visibility: entry.visibility,
-                  playerId: entry.visibleToPlayerId ?? ""
+                  characterId: entry.visibleToCharacterId ?? ""
                 };
                 const unchanged = draft.visibility === entry.visibility &&
-                  (draft.visibility !== "player" || draft.playerId === (entry.visibleToPlayerId ?? ""));
+                  (draft.visibility !== "character" || draft.characterId === (entry.visibleToCharacterId ?? ""));
                 const nextVisibility: KnowledgeVisibility = unchanged && entry.visibility !== "hidden" ? "hidden" : draft.visibility;
-                const targetMissing = nextVisibility === "player" && !grantablePlayers.some((player) => player.id === draft.playerId);
+                const targetMissing = nextVisibility === "character" && !state?.characters.some((character) => character.id === draft.characterId && character.campaignId === selectedId);
                 const actionLabel = nextVisibility === "hidden"
                   ? entry.visibility === "hidden" ? "Скрыта" : "Скрыть"
                   : entry.visibility !== "hidden" && !unchanged ? "Обновить доступ" : "Открыть";
@@ -575,7 +575,7 @@ function DmWorkspace() {
                       <strong>{entry.title}</strong></div>
                     <p>{entry.description}</p>
                     <span className={"knowledge-visibility " + entry.visibility}>
-                      {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Открыто всей партии" : "Открыто: " + (state?.players.find((player) => player.id === entry.visibleToPlayerId)?.displayName ?? "игроку")}
+                      {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Открыто всей партии" : "Знает персонаж: " + (state?.characters.find((character) => character.id === entry.visibleToCharacterId)?.name ?? "персонаж")}
                     </span>
                   </div>
                   {workspaceMode === "live" ? <form className="knowledge-controls" onSubmit={(event) => { event.preventDefault(); saveKnowledgeVisibility(entry, draft); }}>
@@ -583,18 +583,18 @@ function DmWorkspace() {
                     <select id={"knowledge-visibility-" + entry.id} value={draft.visibility} disabled={locked}
                       onChange={(event) => setKnowledgeDrafts((previous) => ({ ...previous, [entry.id]: {
                         ...draft, visibility: event.target.value as KnowledgeVisibility,
-                        playerId: event.target.value === "player" ? draft.playerId : ""
+                        characterId: event.target.value === "character" ? draft.characterId : ""
                       } }))}>
                       <option value="hidden">Скрыто</option>
-                      <option value="player">Одному игроку</option>
+                      <option value="character">Одному персонажу</option>
                       <option value="party">Всем игрокам</option>
                     </select>
-                    {draft.visibility === "player" && <>
-                      <label className="visually-hidden" htmlFor={"knowledge-player-" + entry.id}>Выберите игрока</label>
-                      <select id={"knowledge-player-" + entry.id} value={draft.playerId} disabled={locked}
-                        onChange={(event) => setKnowledgeDrafts((previous) => ({ ...previous, [entry.id]: { ...draft, playerId: event.target.value } }))}>
-                        <option value="">Выберите игрока</option>
-                        {grantablePlayers.map((player) => <option key={player.id} value={player.id}>{player.displayName}</option>)}
+                    {draft.visibility === "character" && <>
+                      <label className="visually-hidden" htmlFor={"knowledge-character-" + entry.id}>Выберите персонажа</label>
+                      <select id={"knowledge-character-" + entry.id} value={draft.characterId} disabled={locked}
+                        onChange={(event) => setKnowledgeDrafts((previous) => ({ ...previous, [entry.id]: { ...draft, characterId: event.target.value } }))}>
+                        <option value="">Выберите персонажа</option>
+                        {(state?.characters ?? []).filter((character) => character.campaignId === selectedId).map((character) => <option key={character.id} value={character.id}>{character.name}</option>)}
                       </select>
                     </>}
                     <button className={nextVisibility === "hidden" ? "secondary" : "primary"}

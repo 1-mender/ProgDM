@@ -1,0 +1,801 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "c2d81102-5ecf-44a6-adeb-6c92d0d83fd2",
+  "prevId": "c75f014b-7cb6-40ae-8290-61a1ef824e07",
+  "tables": {
+    "campaigns": {
+      "name": "campaigns",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "campaign_name_valid": {
+          "name": "campaign_name_valid",
+          "value": "length(trim(\"campaigns\".\"name\")) between 1 and 120"
+        }
+      }
+    },
+    "catalog_items": {
+      "name": "catalog_items",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "campaign_id": {
+          "name": "campaign_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "catalog_items_campaign_name_unique": {
+          "name": "catalog_items_campaign_name_unique",
+          "columns": [
+            "campaign_id",
+            "lower(trim(\"name\"))"
+          ],
+          "isUnique": true
+        },
+        "catalog_items_campaign_id_idx": {
+          "name": "catalog_items_campaign_id_idx",
+          "columns": [
+            "campaign_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "catalog_items_campaign_id_campaigns_id_fk": {
+          "name": "catalog_items_campaign_id_campaigns_id_fk",
+          "tableFrom": "catalog_items",
+          "tableTo": "campaigns",
+          "columnsFrom": [
+            "campaign_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "catalog_item_name_valid": {
+          "name": "catalog_item_name_valid",
+          "value": "length(trim(\"catalog_items\".\"name\")) between 1 and 120"
+        }
+      }
+    },
+    "characters": {
+      "name": "characters",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "campaign_id": {
+          "name": "campaign_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "characters_campaign_id_idx": {
+          "name": "characters_campaign_id_idx",
+          "columns": [
+            "campaign_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "characters_campaign_id_campaigns_id_fk": {
+          "name": "characters_campaign_id_campaigns_id_fk",
+          "tableFrom": "characters",
+          "tableTo": "campaigns",
+          "columnsFrom": [
+            "campaign_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "character_name_valid": {
+          "name": "character_name_valid",
+          "value": "length(trim(\"characters\".\"name\")) between 1 and 120"
+        }
+      }
+    },
+    "inventory_items": {
+      "name": "inventory_items",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "character_id": {
+          "name": "character_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "catalog_item_id": {
+          "name": "catalog_item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "inventory_items_character_id_idx": {
+          "name": "inventory_items_character_id_idx",
+          "columns": [
+            "character_id"
+          ],
+          "isUnique": false
+        },
+        "inventory_items_character_name_unique": {
+          "name": "inventory_items_character_name_unique",
+          "columns": [
+            "character_id",
+            "lower(trim(\"name\"))"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "inventory_items_character_id_characters_id_fk": {
+          "name": "inventory_items_character_id_characters_id_fk",
+          "tableFrom": "inventory_items",
+          "tableTo": "characters",
+          "columnsFrom": [
+            "character_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "inventory_items_catalog_item_id_catalog_items_id_fk": {
+          "name": "inventory_items_catalog_item_id_catalog_items_id_fk",
+          "tableFrom": "inventory_items",
+          "tableTo": "catalog_items",
+          "columnsFrom": [
+            "catalog_item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "inventory_item_name_valid": {
+          "name": "inventory_item_name_valid",
+          "value": "length(trim(\"inventory_items\".\"name\")) between 1 and 120"
+        },
+        "inventory_item_quantity_valid": {
+          "name": "inventory_item_quantity_valid",
+          "value": "\"inventory_items\".\"quantity\" between 1 and 9999"
+        }
+      }
+    },
+    "knowledge_entries": {
+      "name": "knowledge_entries",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "campaign_id": {
+          "name": "campaign_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "visibility": {
+          "name": "visibility",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'hidden'"
+        },
+        "visible_to_character_id": {
+          "name": "visible_to_character_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "knowledge_entries_campaign_id_idx": {
+          "name": "knowledge_entries_campaign_id_idx",
+          "columns": [
+            "campaign_id"
+          ],
+          "isUnique": false
+        },
+        "knowledge_entries_visible_character_idx": {
+          "name": "knowledge_entries_visible_character_idx",
+          "columns": [
+            "visible_to_character_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "knowledge_entries_campaign_id_campaigns_id_fk": {
+          "name": "knowledge_entries_campaign_id_campaigns_id_fk",
+          "tableFrom": "knowledge_entries",
+          "tableTo": "campaigns",
+          "columnsFrom": [
+            "campaign_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "knowledge_entries_visible_to_character_id_characters_id_fk": {
+          "name": "knowledge_entries_visible_to_character_id_characters_id_fk",
+          "tableFrom": "knowledge_entries",
+          "tableTo": "characters",
+          "columnsFrom": [
+            "visible_to_character_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "knowledge_category_valid": {
+          "name": "knowledge_category_valid",
+          "value": "\"knowledge_entries\".\"category\" in ('npc', 'monster', 'note', 'quest')"
+        },
+        "knowledge_visibility_valid": {
+          "name": "knowledge_visibility_valid",
+          "value": "\"knowledge_entries\".\"visibility\" in ('hidden', 'character', 'party')"
+        },
+        "knowledge_visibility_target_valid": {
+          "name": "knowledge_visibility_target_valid",
+          "value": "(\"knowledge_entries\".\"visibility\" = 'character' and \"knowledge_entries\".\"visible_to_character_id\" is not null) or (\"knowledge_entries\".\"visibility\" != 'character' and \"knowledge_entries\".\"visible_to_character_id\" is null)"
+        },
+        "knowledge_title_valid": {
+          "name": "knowledge_title_valid",
+          "value": "length(trim(\"knowledge_entries\".\"title\")) between 1 and 120"
+        },
+        "knowledge_description_valid": {
+          "name": "knowledge_description_valid",
+          "value": "length(\"knowledge_entries\".\"description\") <= 2000"
+        }
+      }
+    },
+    "knowledge_migration_issues": {
+      "name": "knowledge_migration_issues",
+      "columns": {
+        "knowledge_entry_id": {
+          "name": "knowledge_entry_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "legacy_player_id": {
+          "name": "legacy_player_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "knowledge_migration_issues_knowledge_entry_id_knowledge_entries_id_fk": {
+          "name": "knowledge_migration_issues_knowledge_entry_id_knowledge_entries_id_fk",
+          "tableFrom": "knowledge_migration_issues",
+          "tableTo": "knowledge_entries",
+          "columnsFrom": [
+            "knowledge_entry_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "knowledge_migration_issue_reason_valid": {
+          "name": "knowledge_migration_issue_reason_valid",
+          "value": "\"knowledge_migration_issues\".\"reason\" in ('missing_assignment', 'campaign_mismatch')"
+        }
+      }
+    },
+    "players": {
+      "name": "players",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "players_token_hash_unique": {
+          "name": "players_token_hash_unique",
+          "columns": [
+            "token_hash"
+          ],
+          "isUnique": true
+        },
+        "players_session_name_unique": {
+          "name": "players_session_name_unique",
+          "columns": [
+            "session_id",
+            "lower(trim(\"display_name\"))"
+          ],
+          "isUnique": true
+        },
+        "players_session_status_idx": {
+          "name": "players_session_status_idx",
+          "columns": [
+            "session_id",
+            "status"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "players_session_id_sessions_id_fk": {
+          "name": "players_session_id_sessions_id_fk",
+          "tableFrom": "players",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "player_name_valid": {
+          "name": "player_name_valid",
+          "value": "length(trim(\"players\".\"display_name\")) between 1 and 60"
+        },
+        "player_status_valid": {
+          "name": "player_status_valid",
+          "value": "\"players\".\"status\" in ('pending', 'approved', 'rejected')"
+        }
+      }
+    },
+    "session_character_assignments": {
+      "name": "session_character_assignments",
+      "columns": {
+        "player_id": {
+          "name": "player_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "character_id": {
+          "name": "character_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "session_character_assignments_session_character_unique": {
+          "name": "session_character_assignments_session_character_unique",
+          "columns": [
+            "session_id",
+            "character_id"
+          ],
+          "isUnique": true
+        },
+        "session_character_assignments_character_idx": {
+          "name": "session_character_assignments_character_idx",
+          "columns": [
+            "character_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "session_character_assignments_player_id_players_id_fk": {
+          "name": "session_character_assignments_player_id_players_id_fk",
+          "tableFrom": "session_character_assignments",
+          "tableTo": "players",
+          "columnsFrom": [
+            "player_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "session_character_assignments_session_id_sessions_id_fk": {
+          "name": "session_character_assignments_session_id_sessions_id_fk",
+          "tableFrom": "session_character_assignments",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "session_character_assignments_character_id_characters_id_fk": {
+          "name": "session_character_assignments_character_id_characters_id_fk",
+          "tableFrom": "session_character_assignments",
+          "tableTo": "characters",
+          "columnsFrom": [
+            "character_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "sessions": {
+      "name": "sessions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "campaign_id": {
+          "name": "campaign_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'planned'"
+        },
+        "join_token": {
+          "name": "join_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "sessions_campaign_id_idx": {
+          "name": "sessions_campaign_id_idx",
+          "columns": [
+            "campaign_id"
+          ],
+          "isUnique": false
+        },
+        "sessions_join_token_unique": {
+          "name": "sessions_join_token_unique",
+          "columns": [
+            "join_token"
+          ],
+          "isUnique": true
+        },
+        "sessions_one_active": {
+          "name": "sessions_one_active",
+          "columns": [
+            "status"
+          ],
+          "isUnique": true,
+          "where": "\"sessions\".\"status\" = 'active'"
+        }
+      },
+      "foreignKeys": {
+        "sessions_campaign_id_campaigns_id_fk": {
+          "name": "sessions_campaign_id_campaigns_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "campaigns",
+          "columnsFrom": [
+            "campaign_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "session_status_valid": {
+          "name": "session_status_valid",
+          "value": "\"sessions\".\"status\" in ('planned', 'active', 'ended')"
+        },
+        "session_name_valid": {
+          "name": "session_name_valid",
+          "value": "length(trim(\"sessions\".\"name\")) between 1 and 120"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {
+      "\"knowledge_entries\".\"visible_to_player_id\"": "\"knowledge_entries\".\"visible_to_character_id\""
+    }
+  },
+  "internal": {
+    "indexes": {
+      "catalog_items_campaign_name_unique": {
+        "columns": {
+          "lower(trim(\"name\"))": {
+            "isExpression": true
+          }
+        }
+      },
+      "inventory_items_character_name_unique": {
+        "columns": {
+          "lower(trim(\"name\"))": {
+            "isExpression": true
+          }
+        }
+      },
+      "players_session_name_unique": {
+        "columns": {
+          "lower(trim(\"display_name\"))": {
+            "isExpression": true
+          }
+        }
+      }
+    }
+  }
+}

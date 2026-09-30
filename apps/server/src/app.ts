@@ -300,7 +300,7 @@ export function createApp(options: {
     );
     type VisibilityBody =
       | { visibility: "hidden" | "party" }
-      | { visibility: "player"; playerId: string };
+      | { visibility: "character"; characterId: string };
     dm.post<{ Params: { id: string }; Body: VisibilityBody }>("/api/dm/knowledge/:id/visibility", {
       schema: {
         params: idParams,
@@ -308,8 +308,8 @@ export function createApp(options: {
           oneOf: [
             { type: "object", additionalProperties: false, required: ["visibility"], properties: { visibility: { const: "hidden" } } },
             { type: "object", additionalProperties: false, required: ["visibility"], properties: { visibility: { const: "party" } } },
-            { type: "object", additionalProperties: false, required: ["visibility", "playerId"], properties: {
-              visibility: { const: "player" }, playerId: { type: "string", format: "uuid" }
+            { type: "object", additionalProperties: false, required: ["visibility", "characterId"], properties: {
+              visibility: { const: "character" }, characterId: { type: "string", format: "uuid" }
             } }
           ]
         }
@@ -318,14 +318,14 @@ export function createApp(options: {
       try {
         return { entry: database.setKnowledgeVisibility(
           request.params.id, request.body.visibility as KnowledgeVisibility,
-          request.body.visibility === "player" ? request.body.playerId : undefined
+          request.body.visibility === "character" ? request.body.characterId : undefined
         ) };
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         if (message === "Knowledge entry not found.") return reply.code(404).send({ message: "Запись не найдена." });
-        if (message === "A player must be selected.") return reply.code(400).send({ message: "Выберите игрока." });
-        if (message === "Player is not in the active campaign session.") {
-          return reply.code(409).send({ message: "Открыть запись можно только принятому игроку текущей сессии." });
+        if (message === "A character must be selected.") return reply.code(400).send({ message: "Выберите персонажа." });
+        if (message === "Character is not in this campaign.") {
+          return reply.code(409).send({ message: "Выберите персонажа этой кампании." });
         }
         throw error;
       }

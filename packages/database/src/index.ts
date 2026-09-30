@@ -78,7 +78,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   const client = new SQLite(file);
   const db = drizzle(client, { schema });
   const backupIdPattern = /^progdm-backup-([0-9a-f-]{36})\.db$/;
-  const backupTables = ["campaigns", "sessions", "players", "characters", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "__drizzle_migrations"];
+  const backupTables = ["campaigns", "sessions", "players", "characters", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "__drizzle_migrations"];
 
   async function createBackup() {
     mkdirSync(backupsDirectory, { recursive: true });
@@ -250,7 +250,6 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         id: schema.players.id, sessionId: schema.players.sessionId, displayName: schema.players.displayName,
         status: schema.players.status, createdAt: schema.players.createdAt
       }).from(schema.players).where(or(...sessionIds.map((sessionId) => eq(schema.players.sessionId, sessionId)))).all() : [];
-      const playerIds = players.map((player) => player.id);
       const characters = db.select({
         id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt
       }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all();
@@ -274,9 +273,9 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const knowledge = db.select({
         id: schema.knowledgeEntries.id, category: schema.knowledgeEntries.category, title: schema.knowledgeEntries.title,
         description: schema.knowledgeEntries.description, visibility: schema.knowledgeEntries.visibility,
-        visibleToPlayerId: schema.knowledgeEntries.visibleToPlayerId, createdAt: schema.knowledgeEntries.createdAt
+        visibleToCharacterId: schema.knowledgeEntries.visibleToCharacterId, createdAt: schema.knowledgeEntries.createdAt
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
-        .map((entry) => ({ ...entry, visibleToPlayerId: entry.visibleToPlayerId && playerIds.includes(entry.visibleToPlayerId) ? entry.visibleToPlayerId : null }));
+        .map((entry) => ({ ...entry }));
       return {
         format: "progdm-campaign", version: 1, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, catalogItems, inventoryItems, knowledge
@@ -363,14 +362,25 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         }
         for (const row of knowledge) {
           const category = transferString(row, "category");
-          const visibility = transferString(row, "visibility");
-          if (!["npc", "monster", "note", "quest"].includes(category) || !["hidden", "player", "party"].includes(visibility)) throw new Error("Campaign file is invalid.");
-          const visibleToPlayerId = visibility === "player" ? requireMapped(playerIds, row.visibleToPlayerId) : null;
+          const sourceVisibility = transferString(row, "visibility");
+          if (!["npc", "monster", "note", "quest"].includes(category) || !["hidden", "character", "party", "player"].includes(sourceVisibility)) throw new Error("Campaign file is invalid.");
+          let visibility: KnowledgeVisibility = sourceVisibility === "player" ? "hidden" : sourceVisibility as KnowledgeVisibility;
+          let visibleToCharacterId: string | null = null;
+          if (sourceVisibility === "character") {
+            visibleToCharacterId = requireMapped(characterIds, row.visibleToCharacterId);
+          } else if (sourceVisibility === "player") {
+            const sourcePlayerId = typeof row.visibleToPlayerId === "string" ? row.visibleToPlayerId : "";
+            const assignment = assignments.find((item) => item.playerId === sourcePlayerId);
+            if (assignment && characterIds.has(String(assignment.characterId))) {
+              visibility = "character";
+              visibleToCharacterId = requireMapped(characterIds, assignment.characterId);
+            }
+          }
           db.insert(schema.knowledgeEntries).values({
             id: newId(), campaignId, category: category as KnowledgeCategory,
             title: validatedName(transferString(row, "title", 120)),
             description: validatedDescription(transferString(row, "description", 2000)),
-            visibility: visibility as KnowledgeVisibility, visibleToPlayerId, createdAt: createdAt(row)
+            visibility, visibleToCharacterId, createdAt: createdAt(row)
           }).run();
         }
         return campaign;
@@ -432,8 +442,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             or(
               eq(schema.knowledgeEntries.visibility, "party"),
               and(
-                eq(schema.knowledgeEntries.visibility, "player"),
-                eq(schema.knowledgeEntries.visibleToPlayerId, player.id)
+                eq(schema.knowledgeEntries.visibility, "character"),
+                eq(schema.knowledgeEntries.visibleToCharacterId, player.characterId ?? "")
               )
             )
           ))
@@ -537,30 +547,27 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       if (!campaign) throw new Error("Campaign not found.");
       return db.insert(schema.knowledgeEntries).values({
         id: randomUUID(), campaignId, category, title: validatedName(title),
-        description: validatedDescription(description), visibility: "hidden", visibleToPlayerId: null,
+        description: validatedDescription(description), visibility: "hidden", visibleToCharacterId: null,
         createdAt: new Date().toISOString()
       }).returning().get();
     },
-    setKnowledgeVisibility(entryId: string, visibility: KnowledgeVisibility, playerId?: string) {
+    setKnowledgeVisibility(entryId: string, visibility: KnowledgeVisibility, characterId?: string) {
       return db.transaction(() => {
         const entry = db.select({ id: schema.knowledgeEntries.id, campaignId: schema.knowledgeEntries.campaignId })
           .from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.id, entryId)).get();
         if (!entry) throw new Error("Knowledge entry not found.");
-        let visibleToPlayerId: string | null = null;
-        if (visibility === "player") {
-          if (!playerId) throw new Error("A player must be selected.");
-          const player = db.select({ id: schema.players.id }).from(schema.players)
-            .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
+        let visibleToCharacterId: string | null = null;
+        if (visibility === "character") {
+          if (!characterId) throw new Error("A character must be selected.");
+          const character = db.select({ id: schema.characters.id }).from(schema.characters)
             .where(and(
-              eq(schema.players.id, playerId),
-              eq(schema.players.status, "approved"),
-              eq(schema.sessions.status, "active"),
-              eq(schema.sessions.campaignId, entry.campaignId)
+              eq(schema.characters.id, characterId),
+              eq(schema.characters.campaignId, entry.campaignId)
             )).get();
-          if (!player) throw new Error("Player is not in the active campaign session.");
-          visibleToPlayerId = player.id;
+          if (!character) throw new Error("Character is not in this campaign.");
+          visibleToCharacterId = character.id;
         }
-        return db.update(schema.knowledgeEntries).set({ visibility, visibleToPlayerId })
+        return db.update(schema.knowledgeEntries).set({ visibility, visibleToCharacterId })
           .where(eq(schema.knowledgeEntries.id, entryId)).returning().get()!;
       });
     },

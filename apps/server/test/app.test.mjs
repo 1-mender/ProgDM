@@ -176,6 +176,58 @@ test("campaign character can be reassigned next session with inventory and old s
   assert.equal(oldTokenWrite.statusCode, 401);
 });
 
+test("character knowledge follows its character across sessions without leaking to others", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Knowledge campaign");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const secondCharacter = database.createCharacter(campaign.id, "Rowan");
+  const personal = database.createKnowledge(campaign.id, "note", "Mira's clue", "Only Mira knows this.");
+  const party = database.createKnowledge(campaign.id, "quest", "Shared lead", "Everyone knows this.");
+  const hidden = database.createKnowledge(campaign.id, "monster", "Unrevealed", "Keep this from players.");
+
+  const firstSession = database.createSession(campaign.id, "Session 1");
+  database.activateSession(firstSession.id);
+  const requestPlayer = async (session, name, token) => {
+    const response = await post(app, "/api/join/" + session.joinToken + "/request", { displayName: name, playerToken: token });
+    assert.equal(response.statusCode, 200);
+    return database.listPlayersByCampaign(campaign.id).find((player) => player.sessionId === session.id && player.displayName === name);
+  };
+  const miraA = await requestPlayer(firstSession, "Player A", "D".repeat(43));
+  const miraAssignment = await post(app, "/api/dm/players/" + miraA.id + "/approve", { characterId: mira.id });
+  assert.equal(miraAssignment.statusCode, 200);
+  assert.equal((await post(app, "/api/dm/knowledge/" + personal.id + "/visibility", { visibility: "character", characterId: mira.id })).statusCode, 200);
+  assert.equal((await post(app, "/api/dm/knowledge/" + party.id + "/visibility", { visibility: "party" })).statusCode, 200);
+
+  const readPlayer = (token) => app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: "Bearer " + token } });
+  const firstState = (await readPlayer("D".repeat(43))).json();
+  assert.deepEqual(firstState.knowledge.map((entry) => entry.id).sort(), [personal.id, party.id].sort());
+  assert.equal(firstState.knowledge.some((entry) => entry.id === hidden.id), false);
+  await post(app, "/api/dm/sessions/" + firstSession.id + "/end");
+
+  const secondSession = database.createSession(campaign.id, "Session 2");
+  database.activateSession(secondSession.id);
+  const miraB = await requestPlayer(secondSession, "Player B", "E".repeat(43));
+  const rowanPlayer = await requestPlayer(secondSession, "Player C", "F".repeat(43));
+  assert.equal((await post(app, "/api/dm/players/" + miraB.id + "/approve", { characterId: mira.id })).statusCode, 200);
+  assert.equal((await post(app, "/api/dm/players/" + rowanPlayer.id + "/approve", { characterId: secondCharacter.id })).statusCode, 200);
+
+  const miraState = (await readPlayer("E".repeat(43))).json();
+  assert.deepEqual(miraState.knowledge.map((entry) => entry.id).sort(), [personal.id, party.id].sort());
+  const rowanState = (await readPlayer("F".repeat(43))).json();
+  assert.deepEqual(rowanState.knowledge.map((entry) => entry.id), [party.id]);
+  assert.equal(rowanState.knowledge.some((entry) => entry.id === hidden.id), false);
+
+  const history = database.listPlayersByCampaign(campaign.id);
+  assert.equal(history.find((player) => player.id === miraA.id).characterId, mira.id);
+  assert.equal(history.find((player) => player.id === miraB.id).characterId, mira.id);
+  assert.equal(database.getSession(firstSession.id).status, "ended");
+  assert.equal(database.getSession(secondSession.id).status, "active");
+  assert.equal(database.listKnowledgeByCampaign(campaign.id).find((entry) => entry.id === personal.id).visibleToCharacterId, mira.id);
+  const historicalPlayerState = (await readPlayer("D".repeat(43))).json();
+  assert.equal(historicalPlayerState.sessionName, "Session 1");
+  assert.deepEqual(historicalPlayerState.knowledge.map((entry) => entry.id).sort(), [personal.id, party.id].sort());
+});
+
 test("invalid names, malformed JSON, unknown records and transitions are rejected", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Campaign");
@@ -206,6 +258,8 @@ test("campaign export and import are authenticated and omit player and invitatio
   const player = database.submitPlayerRequest(session.id, "Player", "b".repeat(64));
   database.approvePlayer(player.id, { characterId: character.id });
   database.grantInventoryItem(character.id, catalogItem.id, 1);
+  const personalKnowledge = database.createKnowledge(campaign.id, "note", "Personal clue", "Known to Mira.");
+  database.setKnowledgeVisibility(personalKnowledge.id, "character", character.id);
 
   const exported = await get(app, "/api/dm/campaigns/" + campaign.id + "/export");
   assert.equal(exported.statusCode, 200);
@@ -221,6 +275,9 @@ test("campaign export and import are authenticated and omit player and invitatio
   const importedData = database.exportCampaign(imported.json().campaign.id);
   assert.equal(importedData.characters[0].name, "Mira");
   assert.equal(importedData.inventoryItems[0].quantity, 1);
+  assert.equal(importedData.knowledge[0].visibility, "character");
+  assert.equal(importedData.knowledge[0].visibleToCharacterId, importedData.characters[0].id);
+  assert.notEqual(importedData.knowledge[0].visibleToCharacterId, character.id);
   const invalid = await post(app, "/api/dm/campaigns/import", { ...archive, inventoryItems: [{ ...archive.inventoryItems[0], characterId: "missing" }] });
   assert.equal(invalid.statusCode, 400);
   assert.equal(database.listCampaigns().length, 2);

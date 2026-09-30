@@ -191,7 +191,7 @@ dialog::backdrop { background: #20252a66; }
 .knowledge-entry-copy p { margin: 0 0 8px; color: #626870; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .knowledge-visibility { color: #777e85; font-size: 12px; }
 .knowledge-visibility.party { color: #286f63; }
-.knowledge-visibility.player { color: #8a6618; }
+.knowledge-visibility.character { color: #8a6618; }
 .knowledge-controls { min-width: 0; display: grid; align-items: center; gap: 8px; }
 .knowledge-controls button { width: 100%; min-height: 40px; }
 .player-knowledge { margin-top: 28px; padding-top: 22px; border-top: 1px solid #dce0e3; }

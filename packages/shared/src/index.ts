@@ -86,7 +86,7 @@ export interface PlayerState {
 }
 
 export type KnowledgeCategory = "npc" | "monster" | "note" | "quest";
-export type KnowledgeVisibility = "hidden" | "player" | "party";
+export type KnowledgeVisibility = "hidden" | "character" | "party";
 
 export interface KnowledgeEntry {
   id: EntityId;
@@ -95,7 +95,7 @@ export interface KnowledgeEntry {
   title: string;
   description: string;
   visibility: KnowledgeVisibility;
-  visibleToPlayerId: EntityId | null;
+  visibleToCharacterId: EntityId | null;
   createdAt: string;
 }
 

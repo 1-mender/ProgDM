@@ -90,15 +90,24 @@ export const knowledgeEntries = sqliteTable("knowledge_entries", {
   category: text("category", { enum: ["npc", "monster", "note", "quest"] }).notNull(),
   title: text("title").notNull(),
   description: text("description").notNull(),
-  visibility: text("visibility", { enum: ["hidden", "player", "party"] }).notNull().default("hidden"),
-  visibleToPlayerId: text("visible_to_player_id").references(() => players.id, { onDelete: "restrict" }),
+  visibility: text("visibility", { enum: ["hidden", "character", "party"] }).notNull().default("hidden"),
+  visibleToCharacterId: text("visible_to_character_id").references(() => characters.id, { onDelete: "restrict" }),
   createdAt: text("created_at").notNull()
 }, (table) => [
   index("knowledge_entries_campaign_id_idx").on(table.campaignId),
-  index("knowledge_entries_visible_player_idx").on(table.visibleToPlayerId),
+  index("knowledge_entries_visible_character_idx").on(table.visibleToCharacterId),
   check("knowledge_category_valid", sql`${table.category} in ('npc', 'monster', 'note', 'quest')`),
-  check("knowledge_visibility_valid", sql`${table.visibility} in ('hidden', 'player', 'party')`),
-  check("knowledge_visibility_target_valid", sql`(${table.visibility} = 'player' and ${table.visibleToPlayerId} is not null) or (${table.visibility} != 'player' and ${table.visibleToPlayerId} is null)`),
+  check("knowledge_visibility_valid", sql`${table.visibility} in ('hidden', 'character', 'party')`),
+  check("knowledge_visibility_target_valid", sql`(${table.visibility} = 'character' and ${table.visibleToCharacterId} is not null) or (${table.visibility} != 'character' and ${table.visibleToCharacterId} is null)`),
   check("knowledge_title_valid", sql`length(trim(${table.title})) between 1 and 120`),
   check("knowledge_description_valid", sql`length(${table.description}) <= 2000`)
+]);
+
+export const knowledgeMigrationIssues = sqliteTable("knowledge_migration_issues", {
+  knowledgeEntryId: text("knowledge_entry_id").notNull().references(() => knowledgeEntries.id, { onDelete: "cascade" }),
+  legacyPlayerId: text("legacy_player_id").notNull(),
+  reason: text("reason", { enum: ["missing_assignment", "campaign_mismatch"] }).notNull(),
+  createdAt: text("created_at").notNull()
+}, (table) => [
+  check("knowledge_migration_issue_reason_valid", sql`${table.reason} in ('missing_assignment', 'campaign_mismatch')`)
 ]);
