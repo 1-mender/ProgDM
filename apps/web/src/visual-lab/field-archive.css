@@ -1,0 +1,117 @@
+/* B2 codex screen layout. B1, A and C keep the shared Visual Lab styles. */
+.vl-b-refined { position: relative; height: 690px; max-height: calc(100vh - 190px); min-height: 540px; overflow: hidden; display: flex; flex-direction: column; }
+.vl-b-refined .vl-player-header { flex: 0 0 52px; min-height: 52px; padding: 8px 16px; }
+.vl-b-refined .vl-player-header > span:first-child { font: 20px Georgia, serif; }
+.vl-b-refined .vl-player-header > span:first-child svg { color: #c2beb1; width: 18px; height: 18px; }
+.vl-b-refined .vl-player-header .vl-meta { font: 13px Arial, sans-serif; color: #d4cec1; }
+.vl-b-refined .vl-player-content { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden; margin: 0; padding: 0; border: 0; background: none; }
+.vl-b-refined .vl-player-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 18px 14px; background: var(--vl-surface); background-image: repeating-linear-gradient(0deg, transparent 0, transparent 6px, #73654803 6px, #73654803 7px); }
+.vl-b-refined .vl-meta, .vl-b-refined .vl-counter { font: 13px/1.45 Arial, sans-serif; color: var(--vl-muted); }
+.vl-b-refined .vl-identity { grid-template-columns: 92px minmax(0, 1fr); gap: 15px; align-items: center; margin: 0 0 25px; padding: 0 0 22px; border-bottom: 1px solid var(--vl-border); }
+.vl-b-refined .vl-identity figure { width: 92px; margin: 0; padding: 0; border: 0; transform: none; background: none; }
+.vl-b-refined .vl-identity img { display: block; width: 92px; height: 122px; object-fit: cover; object-position: center 28%; border-radius: 3px; filter: saturate(.65); }
+.vl-b-refined .vl-identity-text { min-width: 0; }
+.vl-b-refined h1 { margin: 0 0 7px; font: 400 30px/1.14 Georgia, serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-identity-text > p { margin: 0 0 7px; color: var(--vl-text); font-size: 15px; }
+.vl-b-refined .vl-origin { display: grid; gap: 2px; margin: 0; }
+.vl-b-refined .vl-origin > span { color: var(--vl-muted); font: 13px/1.45 Arial, sans-serif; }
+.vl-b-refined .vl-origin strong { font: 14px/1.45 Arial, sans-serif; color: var(--vl-text); }
+.vl-b-refined .vl-heading { margin: 0 0 9px; }
+.vl-b-refined .vl-heading h2 { font: 400 23px/1.3 Georgia, serif; }
+.vl-b-refined .vl-heading h2 svg, .vl-b-refined .vl-heading > svg { display: none; }
+.vl-b-refined .vl-heading button { width: 44px; height: 44px; min-height: 44px; }
+.vl-b-refined .vl-update, .vl-b-refined .vl-item { border-color: var(--vl-border); }
+.vl-b-refined .vl-update summary { min-height: 56px; gap: 10px; padding: 10px 0; font: 15px/1.45 Arial, sans-serif; }
+.vl-b-refined .vl-marker { color: var(--vl-muted); width: 22px; }
+.vl-b-refined .vl-marker svg, .vl-b-refined .vl-item-icon svg, .vl-b-refined .vl-item summary > svg:first-child { width: 20px; height: 20px; stroke-width: 1.5; color: var(--vl-muted); }
+.vl-b-refined .vl-update summary > span { flex: 1; min-width: 0; }
+.vl-b-refined .vl-update summary > svg, .vl-b-refined .vl-player-scroll .vl-item summary > svg:last-child { width: 18px; height: 18px; flex: 0 0 auto; }
+.vl-b-refined .vl-player-scroll button { color: var(--vl-text); }
+.vl-b-refined .vl-journal-link { display: flex; min-height: 44px; margin: 7px 0 0 auto; padding: 8px 0; color: var(--vl-accent) !important; font: 14px Arial, sans-serif; }
+.vl-b-refined .vl-journal-link svg { width: 18px; height: 18px; }
+.vl-b-refined .vl-item summary { min-height: 56px; padding: 10px 0; gap: 10px; font: 15px/1.45 Arial, sans-serif; }
+.vl-b-refined .vl-item strong { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.vl-b-refined .vl-item strong small { display: block; margin-top: 3px; color: var(--vl-muted); font: 13px/1.4 Arial, sans-serif; }
+.vl-b-refined .vl-item-icon { width: 22px; color: var(--vl-muted); }
+.vl-b-refined .vl-quantity { color: var(--vl-muted); font: 14px Arial, sans-serif; white-space: nowrap; }
+.vl-b-refined .vl-player-scroll details p { margin: 0; padding: 0 12px 15px 32px; color: var(--vl-muted); font: 14px/1.6 Arial, sans-serif; }
+.vl-b-refined .vl-codex-entry summary { min-height: 62px; }
+.vl-b-refined .vl-journal-tabs { display: flex; gap: 20px; margin: 0 0 14px; border-bottom: 1px solid var(--vl-border); }
+.vl-b-refined .vl-journal-tabs button { position: relative; min-height: 44px; padding: 8px 2px; font: 15px Arial,sans-serif; color: var(--vl-muted); }
+.vl-b-refined .vl-journal-tabs button[aria-selected=true] { color: var(--vl-text); box-shadow: inset 0 -2px var(--vl-accent); }
+.vl-b-refined .vl-chronicle h3 { margin: 2px 0 5px; font: 16px Georgia,serif; }
+.vl-b-refined .vl-personal-notes form, .vl-b-refined .vl-codex-profile form { display: grid; gap: 10px; margin-top: 14px; }
+.vl-b-refined .vl-personal-notes label, .vl-b-refined .vl-codex-profile label { margin: 0; color: var(--vl-muted); font: 14px Arial,sans-serif; }
+.vl-b-refined .vl-personal-notes textarea, .vl-b-refined .vl-codex-profile textarea, .vl-b-refined .vl-codex-profile input { margin-top: 6px; font: 15px/1.5 Arial,sans-serif; }
+.vl-b-refined .vl-new-note, .vl-b-refined .vl-profile-edit, .vl-b-refined form > button { min-height: 44px; margin-top: 12px; border: 1px solid var(--vl-border); padding: 9px 13px; background: transparent; font: 14px Arial,sans-serif; }
+.vl-b-refined .vl-new-note { display: inline-flex; gap: 8px; }
+.vl-b-refined .vl-profile-fields { margin: 0; border-top: 1px solid var(--vl-border); }
+.vl-b-refined .vl-profile-fields > div { display: block; padding: 13px 0; border-bottom: 1px solid var(--vl-border); }
+.vl-b-refined .vl-profile-fields dt { margin: 0 0 4px; color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
+.vl-b-refined .vl-profile-fields dd { margin: 0; font: 15px/1.55 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-record-footer { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--vl-border); }
+.vl-b-refined .vl-record-footer .vl-meta { font: 12px/1.5 Arial,sans-serif; }
+.vl-b-refined .vl-player-nav { flex: 0 0 66px; min-height: 66px; padding: 5px 3px; gap: 0; background: var(--vl-bg); border-top: 0; }
+.vl-b-refined .vl-player-nav button { min-width: 0; min-height: 56px; padding: 5px 0; gap: 4px; border: 0; border-radius: 0; color: #c8c4b9; font: 11px Arial,sans-serif; }
+.vl-b-refined .vl-player-nav button svg { width: 19px; height: 19px; }
+.vl-b-refined .vl-player-nav button[aria-current=page] { color: #f1ebdd; background: #3b3d36; box-shadow: inset 0 2px var(--vl-accent); }
+.vl-b-refined .vl-player-nav button:hover { background: #41443b !important; }
+.vl-b-refined .vl-codex-inventory { display: grid; gap: 23px; }
+.vl-b-refined .vl-inventory-title { margin: 0 0 3px; }
+.vl-b-refined .vl-inventory-title h2 { font: 23px/1.3 Georgia,serif; }
+.vl-b-refined .vl-capacity { color: var(--vl-muted); font: 14px/1.4 Arial,sans-serif; white-space: nowrap; }
+.vl-b-refined .vl-equipped .vl-heading, .vl-b-refined .vl-bag .vl-heading { margin: 0 0 10px; }
+.vl-b-refined .vl-equipped .vl-heading h3, .vl-b-refined .vl-bag .vl-heading h3 { margin: 0; font: 20px/1.35 Georgia,serif; }
+.vl-b-refined .vl-equipped-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.vl-b-refined .vl-equipment-slot { display: flex; align-items: center; min-width: 0; min-height: 72px; gap: 9px; padding: 8px 9px; border: 1px solid var(--vl-border); border-radius: 3px; background: #f5f0e5; text-align: left; }
+.vl-b-refined .vl-equipment-slot.is-empty { border-style: dashed; background: #eae5da; color: var(--vl-muted); }
+.vl-b-refined .vl-equipment-icon { flex: 0 0 24px; display: grid; place-items: center; color: var(--vl-muted); }
+.vl-b-refined .vl-equipment-icon svg { width: 19px; height: 19px; stroke-width: 1.6; }
+.vl-b-refined .vl-equipment-copy { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.vl-b-refined .vl-equipment-copy small { color: var(--vl-muted); font: 12px/1.3 Arial,sans-serif; }
+.vl-b-refined .vl-equipment-copy strong { color: var(--vl-text); font: 13px/1.35 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-equipment-slot > svg:last-child { flex: 0 0 15px; width: 15px; height: 15px; color: var(--vl-muted); }
+.vl-b-refined .vl-bag-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); grid-auto-rows: 112px; gap: 8px; }
+.vl-b-refined .vl-bag-cell { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; padding: 10px; border: 1px solid var(--vl-border); border-radius: 3px; text-align: left; }
+.vl-b-refined button.vl-bag-cell.is-filled { background: #f7f3e9; }
+.vl-b-refined .vl-bag-cell.is-filled > svg { width: 21px; height: 21px; color: var(--vl-muted); stroke-width: 1.6; align-self: flex-start; }
+.vl-b-refined .vl-bag-cell strong { min-width: 0; width: 100%; font: 13px/1.3 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-bag-cell > span { font: 12px/1.2 Arial,sans-serif; color: var(--vl-muted); align-self: flex-end; }
+.vl-b-refined .vl-bag-cell.is-empty { align-items: center; justify-content: center; border-style: dashed; background: #eae5da; color: #898374; }
+.vl-b-refined .vl-bag-cell.is-empty > span { align-self: center; font-size: 12px; }
+.vl-b-refined .vl-bag-cell.is-filled:hover, .vl-b-refined .vl-equipment-slot:hover { background: #eee7d8; }
+.vl-b-refined .vl-equipment-slot.is-empty:hover, .vl-b-refined .vl-bag-cell.is-empty:hover { background: #eae5da; }
+.vl-item-detail-overlay { position: absolute; z-index: 5; inset: 52px 0 66px; display: flex; align-items: flex-end; }
+.vl-item-detail-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: #1719168c; }
+.vl-item-detail { position: relative; z-index: 1; width: 100%; max-height: 100%; overflow-y: auto; padding: 18px 18px 20px; background: var(--vl-surface); border-top: 1px solid var(--vl-border); box-shadow: 0 -8px 24px #14141420; }
+.vl-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.vl-detail-heading > div { display: flex; align-items: center; min-width: 0; gap: 12px; }
+.vl-detail-heading h3 { margin: 0; font: 22px/1.3 Georgia,serif; overflow-wrap: anywhere; }
+.vl-detail-icon { flex: 0 0 50px; width: 50px; height: 50px; display: grid; place-items: center; border: 1px solid var(--vl-border); color: var(--vl-muted); }
+.vl-detail-close { width: 42px; height: 42px; min-height: 42px; padding: 8px; border: 1px solid var(--vl-border); }
+.vl-detail-close svg { width: 20px; height: 20px; }
+.vl-detail-state { color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
+.vl-detail-description { margin: 16px 0 12px; color: var(--vl-text); font: 15px/1.55 Arial,sans-serif; }
+.vl-detail-facts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: 0; border-top: 1px solid var(--vl-border); border-bottom: 1px solid var(--vl-border); }
+.vl-detail-facts > div { padding: 10px 8px 10px 0; }
+.vl-detail-facts dt { color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
+.vl-detail-facts dd { margin: 3px 0 0; color: var(--vl-text); font: 15px/1.4 Arial,sans-serif; }
+.vl-detail-equip { display: flex; justify-content: center; gap: 8px; width: 100%; min-height: 46px; margin-top: 14px; padding: 10px; border: 1px solid var(--vl-border); background: #e9e1d1; font: 15px Arial,sans-serif; }
+.vl-detail-equip svg { width: 18px; height: 18px; }
+.vl-equip-notice { margin: 10px 0 0; color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
+.vl-preview-desktop.vl-single .vl-b-refined { width: min(100%,390px); justify-self: center; height: 690px; max-height: calc(100vh - 190px); }
+.vl-preview-desktop.vl-single .vl-b-refined .vl-player-content { display: flex; grid-template-columns: none; padding: 0; margin: 0; }
+.vl-preview-desktop.vl-single .vl-b-refined .vl-player-scroll { padding: 18px 18px 14px; }
+.vl-preview-mobile.vl-single .vl-b-refined { height: min(690px,calc(100vh - 190px)); max-height: calc(100vh - 190px); }
+.vl-codex-atmosphere > div span { min-width: 0; }
+@media(max-width:620px) {
+ .vl-preview-mobile.vl-single .vl-b-refined { height: min(690px,calc(100vh - 310px)); max-height: calc(100vh - 310px); min-height: 460px; }
+ .vl-codex-atmosphere > div { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px 12px; }
+ .vl-b-refined { max-height: 690px; }
+ .vl-b-refined .vl-player-scroll { padding: 15px 14px 12px; }
+ .vl-b-refined .vl-identity { grid-template-columns: 82px minmax(0,1fr); gap: 12px; }
+ .vl-b-refined .vl-identity figure, .vl-b-refined .vl-identity img { width: 82px; }
+ .vl-b-refined .vl-identity img { height: 112px; }
+ .vl-b-refined h1 { font-size: 28px; }
+ .vl-b-refined .vl-player-nav button { font-size: 10px; }
+}
