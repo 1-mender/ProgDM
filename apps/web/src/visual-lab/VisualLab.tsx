@@ -111,19 +111,34 @@ function PlayerPreview({ variant, view, onView, refined = false }: { variant: Va
 }
 
 function CodexInventory({ bagItems, equippedItems, bagSlotsUsed, onSelect }: { bagItems: LabInventoryItem[]; equippedItems: LabEquipmentSlot[]; bagSlotsUsed: number; onSelect: (item: LabInventoryItem, source: ItemSelection["source"], slotId?: string) => void }) {
+  const raritySamples = [
+    { key: "common", label: "Обычный" },
+    { key: "uncommon", label: "Необычный" },
+    { key: "rare", label: "Редкий" },
+    { key: "unique", label: "Уникальный" },
+  ] as const;
   return <div className="vl-codex-inventory">
     <div className="vl-heading vl-inventory-title"><h2>Инвентарь</h2></div>
     <section className="vl-equipped"><div className="vl-heading"><h3>Экипировано</h3></div><div className="vl-equipped-grid">{equippedItems.map(slot => { const SlotIcon = equipmentIcons[slot.icon]; const ItemIcon = slot.item && codexItemIcons[slot.item.icon]; return slot.item ? <button className={`vl-equipment-slot is-equipped vl-rarity-${slot.item.rarityKey}`} key={slot.id} onClick={() => onSelect(slot.item!, "equipment", slot.id)} aria-label={`${slot.name}: ${slot.item.name}`}>
-      <span className="vl-equipment-icon">{ItemIcon && <ItemIcon size={22} />}</span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>{slot.item.name}</strong><span className="vl-equipment-meta"><i className="vl-rarity-mark" />{slot.item.rarity}</span></span><ChevronRight size={16} />
+      <span className="vl-equipment-icon">{ItemIcon && <ItemIcon size={22} />}</span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>{slot.item.name}</strong></span><ChevronRight size={16} />
     </button> : <div className="vl-equipment-slot is-empty" key={slot.id} aria-label={`${slot.name}: пусто`}>
       <span className="vl-equipment-icon"><SlotIcon size={19} /></span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>Пусто</strong></span>
     </div>; })}</div></section>
     <section className="vl-bag"><div className="vl-heading"><h3>Сумка</h3><span className="vl-capacity">{bagSlotsUsed} / {bagCapacity}</span></div><div className="vl-bag-grid" aria-label={`Сумка: занято ${bagSlotsUsed} из ${bagCapacity} слотов`}>
       {bagItems.map(item => { const Icon = codexItemIcons[item.icon]; return <button className={`vl-bag-cell is-filled vl-rarity-${item.rarityKey}${item.status ? " has-status" : ""}`} key={item.id} onClick={() => onSelect(item, "bag")} aria-label={`${item.name}, ${item.category}, ${item.rarity}${item.status ? `, ${item.status}` : ""}${item.quantity > 1 ? `, количество ${item.quantity}` : ""}`}>
-        <span className="vl-item-card-art"><Icon size={27} /></span><strong>{item.name}</strong><span className="vl-item-category">{item.category}</span><span className="vl-item-card-meta"><span className="vl-rarity-label"><i className="vl-rarity-mark" />{item.rarity}</span>{item.quantity > 1 && <span className="vl-item-quantity">×{item.quantity}</span>}</span>{item.status && <span className="vl-item-status">{item.status}</span>}
+        <span className="vl-item-card-art"><Icon size={27} /></span><strong>{item.name}</strong><span className="vl-item-category">{item.category}</span><span className="vl-item-card-meta">{item.status && <span className="vl-item-status"><i aria-hidden="true" />{item.status}</span>}{item.quantity > 1 && <span className="vl-item-quantity">×{item.quantity}</span>}</span>
       </button>; })}
       {Array.from({ length: Math.max(0, bagCapacity - bagSlotsUsed) }, (_, index) => <div className="vl-bag-cell is-empty" key={`empty-${index}`} aria-label="Пустой слот"><span aria-hidden="true">Пусто</span></div>)}
     </div></section>
+    <section className="vl-rarity-comparison" aria-label="Сравнение оформления редкости">
+      <h3>Сравнение рамок</h3>
+      <div className="vl-rarity-comparison-grid">{raritySamples.map(sample => <div className="vl-rarity-comparison-entry" key={sample.key}>
+        <div className={`vl-bag-cell is-filled vl-rarity-${sample.key}`} aria-label={`Амулет, редкость: ${sample.label}`}>
+          <span className="vl-item-card-art"><Diamond size={22} /></span><strong>Амулет</strong><span className="vl-item-category">Артефакт</span>
+        </div><span className="vl-rarity-demo-label">{sample.label}</span>
+      </div>)}</div>
+      <div className="vl-status-comparison"><span>Статус предмета</span><div><span className="vl-item-status"><i aria-hidden="true" />Ключевой</span><span className="vl-item-status"><i aria-hidden="true" />Сюжетный</span></div></div>
+    </section>
   </div>;
 }
 
@@ -137,7 +152,7 @@ function ItemDetailPanel({ selection, equippedItems, bagSlotsUsed, equipNotice, 
   return <div className="vl-item-detail-overlay"><button className="vl-item-detail-backdrop" onClick={onClose} aria-label="Закрыть сведения о предмете" />
     <section className="vl-item-detail" role="dialog" aria-modal="true" aria-labelledby="vl-item-detail-title">
       <div className="vl-detail-heading"><div><span className={`vl-detail-icon vl-rarity-${item.rarityKey}`}><Icon size={28} /></span><div><h3 id="vl-item-detail-title">{item.name}</h3><span className="vl-detail-category">{item.category}</span></div></div><button autoFocus className="vl-detail-close" onClick={onClose} aria-label="Закрыть" title="Закрыть"><X size={20} /></button></div>
-      <div className="vl-detail-markers"><span className={`vl-rarity-label vl-rarity-${item.rarityKey}`}><i className="vl-rarity-mark" />Редкость: {item.rarity}</span>{item.status && <span className="vl-item-status">{item.status}</span>}</div>
+      <div className="vl-detail-markers"><span className={`vl-rarity-label vl-rarity-${item.rarityKey}`}><i className="vl-rarity-mark" />Редкость: {item.rarity}</span>{item.status && <span className="vl-item-status vl-item-status-detail"><i aria-hidden="true" />Статус: {item.status}</span>}</div>
       <p className="vl-detail-description">{item.description}</p>
       <dl className="vl-detail-facts"><div><dt>Количество</dt><dd>×{item.quantity}</dd></div><div><dt>Занимает</dt><dd>{item.slots} {item.slots === 1 ? "слот" : "слота"}</dd></div>{source === "equipment" && equipmentSlot && <div><dt>Сейчас экипировано</dt><dd>{equipmentSlot.name}</dd></div>}</dl>
       {source === "equipment" && <button className="vl-detail-equip" onClick={onUnequip} disabled={!canUnequip}><Check size={18} />Снять</button>}

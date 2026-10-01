@@ -5,6 +5,7 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/visual-lab/model.ts", import.meta.url), "utf8");
 const visualSource = readFileSync(new URL("../src/visual-lab/VisualLab.tsx", import.meta.url), "utf8");
+const visualCss = readFileSync(new URL("../src/visual-lab/field-archive.css", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
 const { variants, refinedArchive, codexInventory, equipmentSlots, bagCapacity, canFitInBag } = await import("data:text/javascript;base64," + Buffer.from(compiled).toString("base64"));
 
@@ -64,4 +65,28 @@ test("B2 inventory refuses to return equipped items when the bag has no free slo
   assert.equal(canFitInBag(12, 1), false);
   assert.equal(canFitInBag(10, 2), true);
   assert.equal(canFitInBag(11, 2), false);
+});
+
+test("B2 item cards encode rarity in their frames and keep rarity text in the detail sheet", () => {
+  const cardMarkup = visualSource.match(/bagItems\.map\(item => \{[\s\S]*?<\/button>; \}\)/)?.[0];
+  assert.ok(cardMarkup);
+  assert.match(cardMarkup, /vl-item-card-art/);
+  assert.match(cardMarkup, /vl-item-category/);
+  assert.match(cardMarkup, /vl-item-status/);
+  assert.doesNotMatch(cardMarkup, /vl-rarity-label/);
+  assert.match(visualSource, /Редкость: \{item\.rarity\}/);
+  assert.match(visualCss, /vl-rarity-uncommon::after/);
+  assert.match(visualCss, /vl-rarity-rare::before/);
+  assert.match(visualCss, /vl-rarity-unique::before/);
+});
+
+test("B2 inventory includes a four-step frame comparison and separate ticket-style status samples", () => {
+  const inventoryMarkup = visualSource.match(/function CodexInventory[\s\S]*?\n}\n\nfunction ItemDetailPanel/)?.[0];
+  assert.ok(inventoryMarkup);
+  for (const rarity of ["common", "uncommon", "rare", "unique"]) assert.match(inventoryMarkup, new RegExp(`key: "${rarity}"`));
+  assert.match(inventoryMarkup, /Сравнение рамок/);
+  assert.match(inventoryMarkup, /vl-item-status[\s\S]*?Ключевой/);
+  assert.match(inventoryMarkup, /vl-item-status[\s\S]*?Сюжетный/);
+  assert.match(visualSource, /Статус: \{item\.status\}/);
+  assert.match(visualCss, /clip-path: polygon\(0 0,100% 0,100% 32%/);
 });

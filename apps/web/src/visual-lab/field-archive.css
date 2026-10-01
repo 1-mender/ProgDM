@@ -70,18 +70,20 @@
 .vl-b-refined .vl-equipment-copy { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .vl-b-refined .vl-equipment-copy small { color: var(--vl-muted); font: 12px/1.3 Arial,sans-serif; }
 .vl-b-refined .vl-equipment-copy strong { color: var(--vl-text); font: 13px/1.35 Arial,sans-serif; overflow-wrap: anywhere; }
-.vl-b-refined .vl-equipment-meta { display: inline-flex; align-items: center; gap: 4px; color: var(--vl-rarity-color,#77776f); font: 10px/1.2 Arial,sans-serif; }
 .vl-b-refined .vl-equipment-slot > svg:last-child { flex: 0 0 15px; width: 15px; height: 15px; color: var(--vl-muted); }
-.vl-b-refined .vl-bag-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); grid-auto-rows: 152px; gap: 8px; }
+.vl-b-refined .vl-bag-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); grid-auto-rows: 146px; gap: 8px; }
 .vl-b-refined .vl-bag-cell { position: relative; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; padding: 8px; border: 1px solid var(--vl-border); border-radius: 3px; text-align: left; }
-.vl-b-refined button.vl-bag-cell.is-filled { background: #f7f3e9; box-shadow: inset 0 2px var(--vl-rarity-color,#a9a79e); }
+.vl-b-refined button.vl-bag-cell.is-filled { overflow: hidden; background: #f7f3e9; }
+.vl-b-refined .vl-bag-cell.is-filled::before, .vl-b-refined .vl-bag-cell.is-filled::after { content: ""; position: absolute; z-index: 1; pointer-events: none; }
 .vl-b-refined .vl-bag-cell.is-filled.has-status { border-left: 2px solid var(--vl-accent); }
-.vl-b-refined .vl-item-card-art { width: 100%; height: 35px; flex: 0 0 35px; display: grid; place-items: center; color: var(--vl-muted); background: #eae5da; }
+.vl-b-refined .vl-item-card-art { position: relative; width: 100%; height: 38px; flex: 0 0 38px; display: grid; place-items: center; overflow: hidden; color: var(--vl-muted); background: #eae5da; border-bottom: 1px solid var(--vl-border); }
+.vl-b-refined .vl-item-card-art::before { content: ""; position: absolute; inset: 0; opacity: .32; background: repeating-linear-gradient(135deg, transparent 0 9px, #776d5d12 9px 10px); }
 .vl-b-refined .vl-item-card-art svg { width: 26px; height: 26px; stroke-width: 1.55; }
+.vl-b-refined .vl-item-card-art svg { position: relative; }
 .vl-b-refined .vl-bag-cell strong { min-width: 0; width: 100%; color: var(--vl-text); font: 600 13px/1.25 Arial,sans-serif; overflow-wrap: anywhere; }
-.vl-b-refined .vl-item-category { min-width: 0; width: 100%; color: var(--vl-muted); font: 11px/1.2 Arial,sans-serif; overflow-wrap: anywhere; }
-.vl-b-refined .vl-item-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 3px; width: 100%; margin-top: auto; color: var(--vl-muted); }
-.vl-b-refined .vl-rarity-label { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--vl-rarity-color,#77776f); font: 10px/1.2 Arial,sans-serif; }
+.vl-b-refined .vl-item-category { min-width: 0; width: 100%; color: var(--vl-muted); font: 12px/1.2 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-item-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 3px; width: 100%; min-height: 15px; margin-top: auto; color: var(--vl-muted); }
+.vl-b-refined .vl-rarity-label { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--vl-rarity-color,#77776f); font: 12px/1.3 Arial,sans-serif; }
 .vl-rarity-mark { display: inline-block; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--vl-rarity-color,#a9a79e); }
 .vl-b-refined { --vl-rarity-common: #85867f; --vl-rarity-uncommon: #71836c; --vl-rarity-rare: #718394; --vl-rarity-unique: #8b7b91; }
 .vl-rarity-common { --vl-rarity-color: var(--vl-rarity-common,#85867f); }
@@ -89,7 +91,32 @@
 .vl-rarity-rare { --vl-rarity-color: var(--vl-rarity-rare,#718394); }
 .vl-rarity-unique { --vl-rarity-color: var(--vl-rarity-unique,#8b7b91); }
 .vl-b-refined .vl-item-quantity { flex: 0 0 auto; color: var(--vl-text); font: 600 11px/1 Arial,sans-serif; }
-.vl-b-refined .vl-item-status { display: inline-flex; align-self: flex-start; max-width: 100%; padding: 2px 5px; border: 1px solid color-mix(in srgb,var(--vl-accent) 32%,transparent); color: var(--vl-accent); font: 10px/1.15 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-item-status { position: relative; display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; max-width: 100%; padding: 3px 6px; border: 1px dashed color-mix(in srgb,var(--vl-accent) 46%,var(--vl-border)); background: #eee8dc; color: var(--vl-accent); font: 10px/1.15 Arial,sans-serif; overflow-wrap: anywhere; clip-path: polygon(0 0,100% 0,100% 32%,calc(100% - 3px) 50%,100% 68%,100% 100%,0 100%,0 68%,3px 50%,0 32%); }
+.vl-b-refined .vl-item-status > i { width: 5px; height: 5px; flex: 0 0 5px; background: var(--vl-accent); transform: rotate(45deg); }
+.vl-b-refined .vl-bag-cell.vl-rarity-uncommon::after { inset: 4px; opacity: .65; background: linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) left top/7px 1px no-repeat,linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) left top/1px 7px no-repeat,linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) right bottom/7px 1px no-repeat,linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) right bottom/1px 7px no-repeat; }
+.vl-b-refined .vl-bag-cell.vl-rarity-rare::before, .vl-b-refined .vl-equipment-slot.vl-rarity-rare::before { inset: 4px; border: 1px solid var(--vl-rarity-color); opacity: .62; }
+.vl-b-refined .vl-bag-cell.vl-rarity-rare::after { inset: 4px; opacity: .55; background: linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) right top/9px 1px no-repeat,linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) left bottom/9px 1px no-repeat; }
+.vl-b-refined .vl-equipment-slot.vl-rarity-rare::after { inset: 4px; opacity: .42; background: linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) right top/7px 1px no-repeat,linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) left bottom/7px 1px no-repeat; }
+.vl-b-refined .vl-bag-cell.vl-rarity-unique::before, .vl-b-refined .vl-equipment-slot.vl-rarity-unique::before { inset: 3px; border: 1px double var(--vl-rarity-color); opacity: .8; }
+.vl-b-refined .vl-bag-cell.vl-rarity-unique::after { top: 3px; right: 3px; left: auto; width: 6px; height: 6px; background: var(--vl-rarity-color); clip-path: polygon(50% 0,100% 50%,50% 100%,0 50%); }
+.vl-b-refined .vl-equipment-slot.is-equipped { position: relative; overflow: hidden; }
+.vl-b-refined .vl-equipment-slot.is-equipped::before, .vl-b-refined .vl-equipment-slot.is-equipped::after { content: ""; position: absolute; z-index: 1; pointer-events: none; }
+.vl-b-refined .vl-equipment-slot.vl-rarity-uncommon::after { content: ""; position: absolute; inset: 4px; pointer-events: none; opacity: .55; background: linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) left top/6px 1px no-repeat,linear-gradient(var(--vl-rarity-color),var(--vl-rarity-color)) right bottom/6px 1px no-repeat; }
+.vl-b-refined .vl-equipment-slot.vl-rarity-unique::after { top: 3px; right: 3px; left: auto; width: 6px; height: 6px; background: var(--vl-rarity-color); clip-path: polygon(50% 0,100% 50%,50% 100%,0 50%); }
+.vl-b-refined .vl-rarity-comparison { display: grid; gap: 9px; padding-top: 3px; }
+.vl-b-refined .vl-rarity-comparison > h3 { margin: 0; color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
+.vl-b-refined .vl-rarity-comparison-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 6px; }
+.vl-b-refined .vl-rarity-comparison-entry { display: grid; min-width: 0; gap: 4px; }
+.vl-b-refined .vl-rarity-comparison-entry .vl-bag-cell { height: 96px; min-height: 96px; gap: 3px; padding: 6px; background: #f7f3e9; }
+.vl-b-refined .vl-rarity-comparison-entry .vl-item-card-art { height: 25px; flex-basis: 25px; }
+.vl-b-refined .vl-rarity-comparison-entry .vl-item-card-art svg { width: 20px; height: 20px; }
+.vl-b-refined .vl-rarity-comparison-entry .vl-bag-cell strong { font-size: 12px; }
+.vl-b-refined .vl-rarity-comparison-entry .vl-item-category { font-size: 11px; }
+.vl-b-refined .vl-rarity-demo-label { min-width: 0; color: var(--vl-muted); font: 11px/1.25 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-status-comparison { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--vl-border); }
+.vl-b-refined .vl-status-comparison > span { color: var(--vl-muted); font: 12px/1.35 Arial,sans-serif; }
+.vl-b-refined .vl-status-comparison > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.vl-b-refined .vl-item-status-detail { font-size: 11px; }
 .vl-b-refined .vl-bag-cell.is-empty { align-items: center; justify-content: center; border-style: dashed; background: #eae5da; color: #898374; }
 .vl-b-refined .vl-bag-cell.is-empty > span { align-self: center; color: #898374; font: 11px/1.2 Arial,sans-serif; }
 .vl-b-refined .vl-bag-cell.is-filled:hover, .vl-b-refined .vl-equipment-slot:hover { background: #eee7d8; }
