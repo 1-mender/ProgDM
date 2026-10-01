@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { BookOpen, Check, CircleHelp, Clock3, Home, Package, RefreshCw, ScrollText, Settings, UserRound } from "lucide-react";
 import type { CampaignActivity, JoinInfo, KnowledgeCategory, PlayerState } from "@progdm/shared";
+import { joinName, loadJoinSnapshot } from "./sync";
 
 const statusCopy = { rejected: "Нужно повторно попросить ведущего" };
 const knowledgeCategoryLabels: Record<KnowledgeCategory, string> = {
@@ -140,32 +141,32 @@ export function JoinPage({ invite }: { invite: string }) {
     try { return localStorage.getItem(playerKey(invite)) ?? ""; } catch { return ""; }
   });
   const [player, setPlayer] = useState<PlayerState | null>(null);
-  const [name, setName] = useState(() => {
-    try { return localStorage.getItem("progdm.playerName:" + invite) ?? ""; } catch { return ""; }
+  const [name, setName] = useState<string | null>(() => {
+    try { return localStorage.getItem("progdm.playerName:" + invite); } catch { return null; }
   });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [unavailable, setUnavailable] = useState(false);
   const requestSequence = useRef(0);
+  const submitting = useRef(false);
+  const displayName = joinName(name, player?.displayName);
 
   useEffect(() => {
     let disposed = false;
+    let inFlight = false;
     const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
       const sequence = ++requestSequence.current;
       try {
-        if (!information) {
-          const inviteResponse = await readResponse<JoinInfo>(await fetch("/api/join/" + encodeURIComponent(invite), { cache: "no-store" }));
-          if (disposed) return;
-          setInformation(inviteResponse);
-          setUnavailable(false);
-        }
-        if (credential) {
-          const current = await getPlayerState(credential);
-          if (disposed || sequence !== requestSequence.current) return;
-          setPlayer(current);
-        }
-        if (!disposed) { setLoading(false); setError(""); }
+        const snapshot = await loadJoinSnapshot(credential, getPlayerState, async () =>
+          readResponse<JoinInfo>(await fetch("/api/join/" + encodeURIComponent(invite), { cache: "no-store" })));
+        if (disposed || sequence !== requestSequence.current) return;
+        if (snapshot.information) setInformation(snapshot.information);
+        setPlayer(snapshot.player);
+        setUnavailable(false);
+        setLoading(false); setError("");
       } catch (failure) {
         if (disposed || sequence !== requestSequence.current) return;
         if (failure instanceof Error && (failure as ApiFailure).status === 401 && credential) {
@@ -179,25 +180,27 @@ export function JoinPage({ invite }: { invite: string }) {
           setError(failure instanceof Error ? failure.message : "Нет связи с приложением.");
         }
         setLoading(false);
-      }
+      } finally { inFlight = false; }
     };
     void refresh();
-    const interval = window.setInterval(() => { void refresh(); }, 3000);
+    const interval = window.setInterval(() => { if (!submitting.current) void refresh(); }, 3000);
     return () => { disposed = true; requestSequence.current++; window.clearInterval(interval); };
-  }, [credential, information, invite]);
+  }, [credential, invite]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy || unavailable || !information) return;
-    const displayName = name.trim();
+    if (submitting.current || unavailable || !information || !displayName.trim()) return;
+    submitting.current = true;
+    requestSequence.current++;
     setBusy(true); setError("");
     const key = credential || makeToken();
     try {
       localStorage.setItem(playerKey(invite), key);
-      localStorage.setItem("progdm.playerName:" + invite, displayName);
+      localStorage.setItem("progdm.playerName:" + invite, displayName.trim());
     } catch {
       setError("Браузер не смог сохранить доступ. Разреши локальное хранилище и повтори.");
       setBusy(false);
+      submitting.current = false;
       return;
     }
     void (async () => {
@@ -205,19 +208,21 @@ export function JoinPage({ invite }: { invite: string }) {
         await readResponse(await fetch("/api/join/" + encodeURIComponent(invite) + "/request", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ displayName, playerToken: key }),
+          body: JSON.stringify({ displayName: displayName.trim(), playerToken: key }),
           cache: "no-store"
         }));
         setCredential(key);
-        setPlayer(await getPlayerState(key));
+        const sequence = ++requestSequence.current;
+        const current = await getPlayerState(key);
+        if (sequence === requestSequence.current) setPlayer(current);
       } catch (failure) {
         setError(failure instanceof Error ? failure.message : "Не удалось отправить заявку.");
         if ((failure as ApiFailure).status === 404) setUnavailable(true);
-      } finally { setBusy(false); }
+      } finally { submitting.current = false; setBusy(false); }
     })();
   }
 
-  if (loading && !information) return <main className="join-shell"><p role="status">Проверяем приглашение...</p></main>;
+  if (loading && !information && !player) return <main className="join-shell"><p role="status">Проверяем приглашение...</p></main>;
 
   return <main className="join-shell">
     {player?.status !== "approved" && <header className="join-brand"><BookOpen /><strong>ProgDM</strong></header>}
@@ -227,11 +232,16 @@ export function JoinPage({ invite }: { invite: string }) {
         <CircleHelp className="join-state-icon error-icon" />
         <h1>Ссылка недоступна</h1>
         <p className="join-description">{error || "Попроси ведущего прислать новое приглашение."}</p>
-      </> : player?.status === "approved" ? <PlayerWorkspace player={player} credential={credential} refresh={async () => setPlayer(await getPlayerState(credential))} /> : player?.status === "pending" ? <>
+      </> : player?.status === "approved" ? <PlayerWorkspace player={player} credential={credential} refresh={async () => {
+        const sequence = ++requestSequence.current;
+        const current = await getPlayerState(credential);
+        if (sequence === requestSequence.current) setPlayer(current);
+      }} /> : player?.status === "pending" ? <>
         <Clock3 className="join-state-icon pending-icon" />
         <h1>Заявка отправлена</h1>
         <p className="join-description">{player.displayName}, ведущий увидит запрос и ответит здесь.</p>
         <p className="join-caption"><RefreshCw size={14} /> Статус обновляется автоматически</p>
+        {error && <p className="message error" role="alert">{error}</p>}
       </> : player?.status === "rejected" ? <>
         <CircleHelp className="join-state-icon" />
         <h1>Запрос пока не принят</h1>
@@ -239,8 +249,8 @@ export function JoinPage({ invite }: { invite: string }) {
         {error && <p className="message error" role="alert">{error}</p>}
         <form className="join-form" onSubmit={submit}>
           <label htmlFor="player-name">Твоё имя</label>
-          <input id="player-name" autoComplete="name" maxLength={60} required value={name || player.displayName} onChange={(event) => setName(event.target.value)} />
-          <button className="primary" disabled={busy || !name.trim()}>{busy ? "Отправляем..." : "Отправить снова"}</button>
+          <input id="player-name" autoComplete="name" maxLength={60} required value={displayName} disabled={busy} onChange={(event) => setName(event.target.value)} />
+          <button className="primary" disabled={busy || !displayName.trim()}>{busy ? "Отправляем..." : "Отправить снова"}</button>
         </form>
       </> : <>
         <h1>Войти в партию</h1>
@@ -248,8 +258,8 @@ export function JoinPage({ invite }: { invite: string }) {
         {error && <p className="message error" role="alert">{error}</p>}
         <form className="join-form" onSubmit={submit}>
           <label htmlFor="player-name">Твоё имя</label>
-          <input id="player-name" autoComplete="name" autoFocus maxLength={60} required value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
-          <button className="primary" disabled={busy || !name.trim()}>{busy ? "Отправляем..." : "Попросить доступ"}</button>
+          <input id="player-name" autoComplete="name" autoFocus maxLength={60} required value={displayName} disabled={busy} onChange={(event) => setName(event.target.value)} />
+          <button className="primary" disabled={busy || !displayName.trim()}>{busy ? "Отправляем..." : "Попросить доступ"}</button>
         </form>
       </>}
       {player?.status === "rejected" && <p className="join-caption"><Check size={14} />{statusCopy.rejected}</p>}

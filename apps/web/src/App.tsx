@@ -3,6 +3,7 @@ import { Archive, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy
 import { QRCodeSVG } from "qrcode.react";
 import type { ActivityType, Campaign, CampaignActivity, Character, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
+import { approvalTarget, LatestRequest, mergeProfileDraft } from "./sync";
 
 const tokenKey = "progdm.dmToken";
 const campaignKey = "progdm.campaign";
@@ -121,6 +122,11 @@ function DmWorkspace() {
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [characterOverview, setCharacterOverview] = useState<CharacterOverview | null>(null);
   const [profileDraft, setProfileDraft] = useState<Character | null>(null);
+  const [openedCharacterId, setOpenedCharacterId] = useState("");
+  const openedCharacter = useRef("");
+  const overviewRequests = useRef(new LatestRequest());
+  const historyRequests = useRef(new LatestRequest());
+  const profileBase = useRef<Character | null>(null);
   const [backupId, setBackupId] = useState("");
   const [health, setHealth] = useState<DataHealth | null>(null);
   const [selectedId, setSelectedId] = useState(() => readStored(campaignKey));
@@ -177,6 +183,59 @@ function DmWorkspace() {
       throw failure;
     }
   }, [token]);
+
+  const refreshOverview = useCallback(async (resetDraft = false) => {
+    const characterId = openedCharacter.current;
+    if (!characterId) return;
+    const ticket = overviewRequests.current.begin();
+    let overview: CharacterOverview;
+    try { overview = await request<CharacterOverview>(token, `/api/dm/characters/${characterId}/overview`); }
+    catch (failure) {
+      if (overviewRequests.current.isCurrent(ticket) && openedCharacter.current === characterId) throw failure;
+      return;
+    }
+    if (!overviewRequests.current.isCurrent(ticket) || openedCharacter.current !== characterId) return;
+    const previous = profileBase.current;
+    profileBase.current = overview.character;
+    setCharacterOverview(overview);
+    setProfileDraft((draft) => resetDraft ? overview.character : mergeProfileDraft(draft, previous, overview.character));
+  }, [token]);
+
+  useEffect(() => {
+    if (!openedCharacterId || !token) return;
+    let inFlight = false;
+    const update = () => {
+      if (busyRef.current || inFlight) return;
+      inFlight = true;
+      void refreshOverview().catch((failure: Error) => {
+        if (openedCharacter.current === openedCharacterId) setError(failure.message);
+      }).finally(() => { inFlight = false; });
+    };
+    update();
+    const interval = window.setInterval(update, 3000);
+    return () => { overviewRequests.current.invalidate(); window.clearInterval(interval); };
+  }, [openedCharacterId, token, refreshOverview]);
+
+  useEffect(() => {
+    if (section !== "history" || !selectedId || !token) return;
+    let disposed = false;
+    let inFlight = false;
+    setFullActivity(null);
+    const update = async () => {
+      if (busyRef.current || inFlight) return;
+      inFlight = true;
+      const ticket = historyRequests.current.begin();
+      try {
+        const result = await request<{ activity: CampaignActivity[] }>(token, `/api/dm/campaigns/${selectedId}/activity`);
+        if (!disposed && historyRequests.current.isCurrent(ticket)) setFullActivity(result.activity);
+      } catch (failure) {
+        if (!disposed && historyRequests.current.isCurrent(ticket)) setError((failure as Error).message);
+      } finally { inFlight = false; }
+    };
+    void update();
+    const interval = window.setInterval(() => { void update(); }, 3000);
+    return () => { disposed = true; historyRequests.current.invalidate(); window.clearInterval(interval); };
+  }, [section, selectedId, token]);
 
   useEffect(() => {
     if (token) void refresh().catch((failure: Error) => setError(failure.message));
@@ -235,6 +294,7 @@ function DmWorkspace() {
 
   async function mutate(action: () => Promise<void>) {
     if (busyRef.current || phase !== "ready") return;
+    overviewRequests.current.invalidate(); historyRequests.current.invalidate();
     busyRef.current = true; setBusy(true); setError(""); setNotice("");
     try {
       await action();
@@ -252,21 +312,20 @@ function DmWorkspace() {
     } finally { busyRef.current = false; setBusy(false); }
   }
 
-  function chooseCampaign(id: string) { setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setCharacterOverview(null); setProfileDraft(null); setSection("sessions"); setWorkspaceMode("prepare"); setFullActivity(null); setKnowledgeTargetId(""); setSelectedKnowledgeId(""); }
+  function closeCharacter() {
+    overviewRequests.current.invalidate(); openedCharacter.current = ""; profileBase.current = null;
+    setOpenedCharacterId(""); setCharacterOverview(null); setProfileDraft(null);
+  }
+  function chooseCampaign(id: string) { closeCharacter(); historyRequests.current.invalidate(); setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setSection("sessions"); setWorkspaceMode("prepare"); setFullActivity(null); setKnowledgeTargetId(""); setSelectedKnowledgeId(""); setKnowledgeSearch(""); }
   function showSection(next: DmSection) {
     setSection(next);
+    historyRequests.current.invalidate();
     if (next !== "character") setGrantOpen(false);
-    if (next === "history" && selected) {
-      setFullActivity(null);
-      void request<{ activity: CampaignActivity[] }>(token, `/api/dm/campaigns/${selected.id}/activity`)
-        .then((result) => setFullActivity(result.activity)).catch((failure: Error) => setError(failure.message));
-    }
   }
   function openCharacter(characterId: string) {
-    void request<CharacterOverview>(token, `/api/dm/characters/${characterId}/overview`).then((overview) => {
-      setCharacterOverview(overview); setProfileDraft(overview.character);
-      setSection("character"); setGrantOpen(false);
-    }).catch((failure: Error) => setError(failure.message));
+    closeCharacter();
+    openedCharacter.current = characterId;
+    setOpenedCharacterId(characterId); setSection("character"); setGrantOpen(false);
   }
   function saveCharacterProfile(event: FormEvent) {
     event.preventDefault();
@@ -276,8 +335,7 @@ function DmWorkspace() {
         name: profileDraft.name, shortDescription: profileDraft.shortDescription, archetype: profileDraft.archetype,
         origin: profileDraft.origin, personalGoal: profileDraft.personalGoal, dmNotes: profileDraft.dmNotes
       });
-      const overview = await request<CharacterOverview>(token, `/api/dm/characters/${profileDraft.id}/overview`);
-      setCharacterOverview(overview); setProfileDraft(overview.character); setNotice("Профиль сохранён.");
+      await refreshOverview(true); setNotice("Профиль сохранён.");
     });
   }
   function editProfile(field: "name" | "shortDescription" | "archetype" | "origin" | "personalGoal" | "dmNotes", value: string) {
@@ -289,7 +347,7 @@ function DmWorkspace() {
     event.preventDefault();
     void mutate(async () => {
       const result = await request<{ campaign: Campaign }>(token, "/api/dm/campaigns", { name: campaignName.trim() });
-      setSelectedId(result.campaign.id); setCampaignForm(false); setCampaignName(""); setSessionName("");
+      chooseCampaign(result.campaign.id); setCampaignForm(false); setCampaignName(""); setSessionName("");
       setNotice("Кампания создана.");
     });
   }
@@ -326,7 +384,7 @@ function DmWorkspace() {
       await request(token, "/api/dm/characters/" + selectedPlayer.characterId + "/items", {
         catalogItemId: selectedCatalogItem.id, quantity: Number(itemQuantity)
       });
-      if (characterOverview?.character.id === selectedPlayer.characterId) setCharacterOverview(await request<CharacterOverview>(token, `/api/dm/characters/${selectedPlayer.characterId}/overview`));
+      await refreshOverview();
       setNotice("Предмет выдан игроку.");
     });
   }
@@ -352,6 +410,7 @@ function DmWorkspace() {
     if (!backupId || !window.confirm("Текущая база будет заменена выбранной копией. Перед восстановлением приложение автоматически сохранит текущие данные. Продолжить?")) return;
     void mutate(async () => {
       await request(token, "/api/dm/backups/restore", { id: backupId }, 120000);
+      closeCharacter(); historyRequests.current.invalidate(); setFullActivity(null);
       setNotice("Копия восстановлена. Перед восстановлением создана страховочная копия.");
     });
   }
@@ -366,8 +425,7 @@ function DmWorkspace() {
     void mutate(async () => {
       await request(token, `/api/dm/characters/${character.id}/${character.archivedAt ? "restore" : "archive"}`, {});
       if (characterOverview?.character.id === character.id) {
-        const overview = await request<CharacterOverview>(token, `/api/dm/characters/${character.id}/overview`);
-        setCharacterOverview(overview); setProfileDraft(overview.character);
+        await refreshOverview();
       }
       setNotice(character.archivedAt ? "Персонаж восстановлен." : "Персонаж архивирован.");
     });
@@ -386,7 +444,7 @@ function DmWorkspace() {
       try { archive = JSON.parse(await file.text()); }
       catch { throw new Error("Файл не является корректным JSON."); }
       const result = await request<{ campaign: Campaign }>(token, "/api/dm/campaigns/import", archive, 120000);
-      setSelectedId(result.campaign.id);
+      chooseCampaign(result.campaign.id);
       setNotice("Кампания импортирована.");
     });
   }
@@ -397,17 +455,16 @@ function DmWorkspace() {
       await request(token, "/api/dm/knowledge/" + entry.id + "/visibility", visibility === "character"
         ? { visibility, characterId: draft.characterId }
         : { visibility });
-      if (characterOverview) setCharacterOverview(await request<CharacterOverview>(token, `/api/dm/characters/${characterOverview.character.id}/overview`));
+      await refreshOverview();
       setNotice(visibility === "hidden" ? "Запись скрыта от игроков." : "Доступ к записи обновлён.");
     });
   }
   function approvePlayer(player: Player) {
     const choice = characterChoices[player.id] ?? "";
-    const character = availableCharacters.find((item) => item.id === choice);
     const characterName = (playerNames[player.id] ?? player.displayName).trim();
     void mutate(async () => {
       await request(token, "/api/dm/players/" + player.id + "/approve",
-        character ? { characterId: character.id } : { characterName });
+        approvalTarget(choice, characterName));
       setNotice("Игрок принят.");
     });
   }
@@ -431,6 +488,7 @@ function DmWorkspace() {
     });
   }
   function logout() {
+    closeCharacter(); historyRequests.current.invalidate();
     loadId.current++; storeValue(tokenKey, ""); setToken(""); setState(null); setError(""); setNotice("");
   }
   const alerts = <>
@@ -633,9 +691,10 @@ function DmWorkspace() {
             {pendingPlayers.length === 0 && approvedPlayers.length === 0 && <p className="empty-list">Заявок пока нет</p>}
           </section>
           }
+          {section === "character" && !characterOverview && <p role="status">Загружаем профиль...</p>}
           {section === "character" && characterOverview?.character.campaignId === selectedId && profileDraft && <section id="character-overview" className="character-overview" aria-labelledby="character-overview-title">
             <div className="section-heading"><h2 id="character-overview-title">{characterOverview.character.name}{characterOverview.character.archivedAt ? " · В архиве" : ""}</h2>
-              <button className="icon-button" title="Закрыть профиль" aria-label="Закрыть профиль" onClick={() => { setCharacterOverview(null); setProfileDraft(null); showSection(workspaceMode === "live" ? "players" : "characters"); }}><X /></button></div>
+              <button className="icon-button" title="Закрыть профиль" aria-label="Закрыть профиль" onClick={() => { closeCharacter(); showSection(workspaceMode === "live" ? "players" : "characters"); }}><X /></button></div>
             <p className="muted">{characterOverview.player ? `Сейчас играет: ${characterOverview.player.displayName}` : "Сейчас не назначен"}</p>
             <div className="character-profile-readout">
               <p><strong>Архетип:</strong> {characterOverview.character.archetype || "Не указан"}</p>

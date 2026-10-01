@@ -3,7 +3,7 @@ import { accessSync, constants, cpSync, copyFileSync, mkdirSync, readdirSync, re
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
-import { and, asc, desc, eq, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
@@ -93,7 +93,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     return db.select({ playerId: schema.players.id, sessionId: schema.sessions.id, campaignId: schema.sessions.campaignId, characterId: schema.characters.id })
       .from(schema.players)
       .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
-      .innerJoin(schema.sessionCharacterAssignments, eq(schema.sessionCharacterAssignments.playerId, schema.players.id))
+      .innerJoin(schema.sessionCharacterAssignments, and(eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
+        eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)))
       .innerJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
       .where(and(eq(schema.players.tokenHash, tokenHash), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"), eq(schema.characters.campaignId, schema.sessions.campaignId))).get() ?? null;
   }
@@ -190,6 +191,22 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     return backup;
   }
 
+  function migrationHistoryMatches(database: SQLite.Database, complete: boolean): boolean {
+    const expected = readMigrationFiles({ migrationsFolder });
+    const applied = database.prepare("SELECT hash, created_at AS createdAt FROM __drizzle_migrations ORDER BY created_at, rowid")
+      .all() as { hash: string; createdAt: number }[];
+    return (complete ? applied.length === expected.length : applied.length <= expected.length) &&
+      applied.every((row, index) => {
+        const migration = expected[index];
+        if (!migration || row.createdAt !== migration.folderMillis) return false;
+        const sql = migration.sql.join("--> statement-breakpoint").replace(/\r\n/g, "\n");
+        // Git may check out the same migration using LF or CRLF on another machine.
+        const hashes = [migration.hash, createHash("sha256").update(sql).digest("hex"),
+          createHash("sha256").update(sql.replace(/\n/g, "\r\n")).digest("hex")];
+        return hashes.includes(row.hash);
+      });
+  }
+
   function restoreBackupFile(sourceFile: string): void {
     const original = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
     try {
@@ -201,9 +218,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     try {
       const staged = new SQLite(stagedFile);
       try {
+        if (!migrationHistoryMatches(staged, false)) throw new Error("Backup migration history is not supported.");
         staged.pragma("foreign_keys = OFF");
         migrate(drizzle(staged, { schema }), { migrationsFolder });
         staged.pragma("foreign_keys = ON");
+        if (!migrationHistoryMatches(staged, true)) throw new Error("Backup migration history is not supported.");
 
         if (staged.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Migrated backup failed integrity check.");
         if ((staged.pragma("foreign_key_check") as unknown[]).length) throw new Error("Migrated backup contains invalid references.");
@@ -349,11 +368,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           : { status: "error", message: `Найдено нарушений ссылок: ${count}.` };
       });
       check("Миграции", () => {
-        const expected = readMigrationFiles({ migrationsFolder }).map((migration) => migration.folderMillis);
-        const applied = client.prepare("SELECT created_at AS createdAt FROM __drizzle_migrations ORDER BY id")
-          .all() as { createdAt: number }[];
-        const matches = applied.length === expected.length && applied.every((row, index) => row.createdAt === expected[index]);
-        return matches ? { status: "ok", message: `Применены все миграции: ${expected.length}.` }
+        const expected = readMigrationFiles({ migrationsFolder });
+        return migrationHistoryMatches(client, true) ? { status: "ok", message: `Применены все миграции: ${expected.length}.` }
           : { status: "error", message: "Версия схемы не соответствует ожидаемым миграциям." };
       });
       for (const [name, path] of [
@@ -412,7 +428,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const players = sessionIds.length ? db.select({
         id: schema.players.id, sessionId: schema.players.sessionId, displayName: schema.players.displayName,
         status: schema.players.status, createdAt: schema.players.createdAt
-      }).from(schema.players).where(or(...sessionIds.map((sessionId) => eq(schema.players.sessionId, sessionId)))).all() : [];
+      }).from(schema.players).where(inArray(schema.players.sessionId, sessionIds)).all() : [];
       const characters = db.select({
         id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt, archivedAt: schema.characters.archivedAt,
         shortDescription: schema.characters.shortDescription, archetype: schema.characters.archetype,
@@ -420,14 +436,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all();
       const characterIds = characters.map((character) => character.id);
       const personalNotes = characterIds.length ? db.select().from(schema.characterPersonalNotes)
-        .where(or(...characterIds.map((characterId) => eq(schema.characterPersonalNotes.characterId, characterId)))).all() : [];
+        .where(inArray(schema.characterPersonalNotes.characterId, characterIds)).all() : [];
       const assignments = sessionIds.length ? db.select({
         playerId: schema.sessionCharacterAssignments.playerId,
         sessionId: schema.sessionCharacterAssignments.sessionId,
         characterId: schema.sessionCharacterAssignments.characterId,
         createdAt: schema.sessionCharacterAssignments.createdAt
       }).from(schema.sessionCharacterAssignments)
-        .where(or(...sessionIds.map((sessionId) => eq(schema.sessionCharacterAssignments.sessionId, sessionId)))).all() : [];
+        .where(inArray(schema.sessionCharacterAssignments.sessionId, sessionIds)).all() : [];
       const catalogItems = db.select({
         id: schema.catalogItems.id, name: schema.catalogItems.name, createdAt: schema.catalogItems.createdAt
       }).from(schema.catalogItems).where(eq(schema.catalogItems.campaignId, id)).all();
@@ -436,7 +452,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         catalogItemId: schema.inventoryItems.catalogItemId, name: schema.inventoryItems.name,
         quantity: schema.inventoryItems.quantity, createdAt: schema.inventoryItems.createdAt
       }).from(schema.inventoryItems)
-        .where(or(...characterIds.map((characterId) => eq(schema.inventoryItems.characterId, characterId)))).all() : [];
+        .where(inArray(schema.inventoryItems.characterId, characterIds)).all() : [];
       const knowledge = db.select({
         id: schema.knowledgeEntries.id, category: schema.knowledgeEntries.category, title: schema.knowledgeEntries.title,
         description: schema.knowledgeEntries.description, visibility: schema.knowledgeEntries.visibility,
@@ -573,6 +589,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         }
         for (const row of activity) {
           if (typeof row.type !== "string" || !ACTIVITY_TYPES.includes(row.type as ActivityType)) throw new Error("Campaign file contains an invalid event type.");
+          if (row.playerId !== null && playerSessionIds.get(String(row.playerId)) !== row.sessionId) throw new Error("Campaign file contains an invalid event session.");
           const mapped = (value: unknown, ids: Map<string, string>) => value === null ? null : requireMapped(ids, value);
           db.insert(schema.campaignActivity).values({
             id: newId(), campaignId,
@@ -644,7 +661,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
           eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
         ))
-        .leftJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
+        .leftJoin(schema.characters, and(eq(schema.characters.id, schema.sessionCharacterAssignments.characterId),
+          eq(schema.characters.campaignId, schema.sessions.campaignId), eq(schema.players.status, "approved")))
         .where(eq(schema.players.tokenHash, tokenHash)).get();
       if (!player) return null;
       const knowledge = player.status === "approved"
@@ -713,7 +731,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     updatePlayerDisplayName(tokenHash: string, displayName: string) {
       const active = requireActivePlayerCharacter(tokenHash);
-      return db.update(schema.players).set({ displayName: validatedPlayerName(displayName) })
+      const name = validatedPlayerName(displayName);
+      const duplicate = db.select().from(schema.players).where(eq(schema.players.sessionId, active.sessionId)).all()
+        .some((player) => player.id !== active.playerId && player.displayName.toLocaleLowerCase("ru") === name.toLocaleLowerCase("ru"));
+      if (duplicate) throw new Error("A player with this name already requested access.");
+      return db.update(schema.players).set({ displayName: name })
         .where(eq(schema.players.id, active.playerId)).returning().get();
     },
     createPersonalNote(tokenHash: string, body: string) {

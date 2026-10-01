@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { openDatabase } from "@progdm/database";
-import { createApp } from "../dist/app.js";
+import { createApp, requestLogFields } from "../dist/app.js";
 
 const dmToken = "test-dm-token";
 const headers = { authorization: "Bearer " + dmToken };
@@ -19,6 +19,72 @@ function fixture(t) {
 }
 function get(app, url) { return app.inject({ method: "GET", url, headers }); }
 function post(app, url, payload = {}) { return app.inject({ method: "POST", url, headers, payload }); }
+
+test("request logs redact invitation secrets and omit authorization headers", () => {
+  const token = "Z".repeat(43);
+  const fields = requestLogFields({ method: "POST", url: `/api/join/${token}/request`, headers: { authorization: "Bearer private" } });
+  assert.equal(JSON.stringify(fields).includes(token), false);
+  assert.equal(JSON.stringify(fields).includes("private"), false);
+  assert.equal(fields.url, "/api/join/[redacted]/request");
+});
+
+test("player write responses never return token hashes", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Campaign");
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const token = "T".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "A", playerToken: token });
+  database.approvePlayer(database.listPlayersByCampaign(campaign.id)[0].id, { characterName: "Mira" });
+  const result = await app.inject({ method: "POST", url: "/api/player/settings",
+    headers: { authorization: "Bearer " + token }, payload: { displayName: "New name" } });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.json().player.tokenHash, undefined);
+});
+
+test("pending, rejected and historical tokens cannot write private character data", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Campaign");
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const token = "V".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "A", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  const writes = [
+    ["/api/player/profile", { shortDescription: "Invalid", personalGoal: "Invalid" }],
+    ["/api/player/settings", { displayName: "Invalid" }],
+    ["/api/player/notes", { body: "Invalid" }],
+    ["/api/player/activity/seen", { upToActivityId: campaign.id }]
+  ];
+  const assertDenied = async () => {
+    for (const [url, payload] of writes) {
+      assert.equal((await app.inject({ method: "POST", url, headers: { authorization: "Bearer " + token }, payload })).statusCode, 403);
+    }
+  };
+  await assertDenied();
+  database.rejectPlayer(player.id);
+  await assertDenied();
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "A", playerToken: token });
+  database.approvePlayer(player.id, { characterName: "Mira" });
+  database.endSession(session.id);
+  await assertDenied();
+  const state = (await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: "Bearer " + token } })).json();
+  assert.equal(state.status, "approved");
+  assert.equal(state.canEdit, false);
+  assert.equal(state.profile, null);
+  assert.deepEqual(state.notes, []);
+});
+
+test("public and player validation and unexpected errors are sanitized", async (t) => {
+  const { app, database } = fixture(t);
+  const invalid = await app.inject({ method: "GET", url: "/api/join/invalid" });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(invalid.json().message, "Проверьте введённые данные и допустимые значения.");
+  database.getJoinInfo = () => { throw new Error("SQL confidential detail"); };
+  const failure = await app.inject({ method: "GET", url: "/api/join/" + "U".repeat(43) });
+  assert.equal(failure.statusCode, 500);
+  assert.equal(failure.body.includes("confidential"), false);
+});
 
 test("empty database has no session and health is public", async (t) => {
   const { app } = fixture(t);
@@ -74,7 +140,10 @@ test("player profile and notes enforce active assignment and field permissions",
     name: "Mira", shortDescription: "DM text", archetype: "Scout", origin: "North", personalGoal: "Explore", dmNotes: "Hidden from players"
   })).statusCode, 200);
   assert.equal((await playerPost(aToken, "/api/player/profile", { shortDescription: "Player text", personalGoal: "Find clues", dmNotes: "Injected" })).statusCode, 400);
-  assert.equal((await playerPost(aToken, "/api/player/profile", { shortDescription: "Player text", personalGoal: "Find clues" })).statusCode, 200);
+  const updatedProfile = await playerPost(aToken, "/api/player/profile", { shortDescription: "Player text", personalGoal: "Find clues" });
+  assert.equal(updatedProfile.statusCode, 200);
+  assert.equal(updatedProfile.json().character.dmNotes, undefined);
+  assert.equal(updatedProfile.body.includes("Hidden from players"), false);
   assert.equal((await playerGet(aToken)).json().profile.dmNotes, undefined);
   assert.equal((await playerGet(aToken)).json().profile.archetype, "Scout");
   assert.equal(database.listCharactersByCampaign(campaign.id).find((row) => row.id === mira.id).dmNotes, "Hidden from players");
@@ -83,11 +152,29 @@ test("player profile and notes enforce active assignment and field permissions",
   assert.deepEqual((await playerGet(bToken)).json().notes, []);
   assert.equal((await playerPost(bToken, `/api/player/notes/${note.id}`, { body: "Stolen" })).statusCode, 404);
   assert.equal((await get(app, `/api/dm/characters/${mira.id}/overview`)).json().notes[0].body, "My theory");
-  assert.equal((await playerPost(aToken, "/api/player/settings", { displayName: "New A" })).statusCode, 200);
+  const updatedSettings = await playerPost(aToken, "/api/player/settings", { displayName: "New A" });
+  assert.equal(updatedSettings.statusCode, 200);
+  assert.equal(updatedSettings.json().player.tokenHash, undefined);
   assert.equal((await playerGet(aToken)).json().displayName, "New A");
   database.endSession(session.id);
   assert.equal((await playerPost(aToken, "/api/player/notes", { body: "Too late" })).statusCode, 403);
   assert.equal((await playerGet(aToken)).json().notes.length, 0);
+});
+
+test("player settings cannot bypass Cyrillic case-insensitive name uniqueness", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Campaign");
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const token = "R".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Первый", playerToken: token });
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Аня", playerToken: "S".repeat(43) });
+  const player = database.listPlayersByCampaign(campaign.id).find((row) => row.displayName === "Первый");
+  database.approvePlayer(player.id, { characterName: "Mira" });
+  const renamed = await app.inject({ method: "POST", url: "/api/player/settings",
+    headers: { authorization: "Bearer " + token }, payload: { displayName: "  АНЯ  " } });
+  assert.equal(renamed.statusCode, 409);
+  assert.equal(database.listPlayersByCampaign(campaign.id).find((row) => row.id === player.id).displayName, "Первый");
 });
 
 test("all DM reads and writes require the key, including through a proxy", async (t) => {

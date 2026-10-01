@@ -7,6 +7,10 @@ import { openDatabase, type GameDatabase } from "@progdm/database";
 import { isDmAuthorized, loadDmToken } from "./dm-auth.js";
 import type { KnowledgeCategory, KnowledgeVisibility, NetworkAddress } from "@progdm/shared";
 
+export function requestLogFields(request: { method: string; url: string }) {
+  return { method: request.method, url: request.url.replace(/(\/(?:api\/)?join\/)[^/?]+/g, "$1[redacted]") };
+}
+
 function localAddresses(override?: string): NetworkAddress[] {
   const privateAddress = (address: string) => isIPv4(address) && (
     address.startsWith("10.") || address.startsWith("192.168.") ||
@@ -34,11 +38,18 @@ export function createApp(options: {
   const dmToken = options.dmToken ?? loadDmToken();
   const database = options.database ?? openDatabase();
   const app = Fastify({
-    logger: options.logger ? { redact: ["req.headers.authorization"] } : false,
+    logger: options.logger ? { redact: ["req.headers.authorization"], serializers: { req: requestLogFields } } : false,
     bodyLimit: 4096,
     ajv: { customOptions: { coerceTypes: false, removeAdditional: false } }
   });
   const playerCredentials = new WeakMap<object, string>();
+
+  app.setErrorHandler<FastifyError>((error, request, reply) => {
+    if (error.validation || error.statusCode === 400) return reply.code(400).send({ message: "Проверьте введённые данные и допустимые значения." });
+    if (error.statusCode && error.statusCode < 500) return reply.code(error.statusCode).send({ message: "Не удалось обработать запрос." });
+    request.log.error(error);
+    return reply.code(500).send({ message: "Не удалось выполнить запрос. Повторите позже." });
+  });
 
   app.addHook("onClose", async () => database.close());
 
@@ -86,7 +97,7 @@ export function createApp(options: {
         const message = error instanceof Error ? error.message : "";
         if (message === "Active character access required.") return reply.code(403).send({ message: "Изменять данные может только игрок активной сессии с назначенным персонажем." });
         if (message === "Personal note not found." || message === "Activity is not visible to this player.") return reply.code(404).send({ message: "Запись недоступна." });
-        if (/constraint|UNIQUE/i.test(message)) return reply.code(409).send({ message: "Это имя уже занято в сессии." });
+        if (/constraint|UNIQUE/i.test(message) || message === "A player with this name already requested access.") return reply.code(409).send({ message: "Это имя уже занято в сессии." });
         throw error;
       }
     };
@@ -94,12 +105,19 @@ export function createApp(options: {
       schema: { body: { type: "object", additionalProperties: false, required: ["shortDescription", "personalGoal"], properties: {
         shortDescription: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 }
       } } }
-    }, async (request, reply) => activeAction(request, reply, (hash) => ({ character: database.updatePlayerProfile(hash, request.body) })));
+    }, async (request, reply) => activeAction(request, reply, (hash) => {
+      const character = database.updatePlayerProfile(hash, request.body);
+      return { character: { id: character.id, name: character.name, archetype: character.archetype,
+        origin: character.origin, shortDescription: character.shortDescription, personalGoal: character.personalGoal } };
+    }));
     player.post<{ Body: { displayName: string } }>("/api/player/settings", {
       schema: { body: { type: "object", additionalProperties: false, required: ["displayName"], properties: {
         displayName: { type: "string", minLength: 1, maxLength: 60, pattern: "\\S" }
       } } }
-    }, async (request, reply) => activeAction(request, reply, (hash) => ({ player: database.updatePlayerDisplayName(hash, request.body.displayName) })));
+    }, async (request, reply) => activeAction(request, reply, (hash) => {
+      const player = database.updatePlayerDisplayName(hash, request.body.displayName)!;
+      return { player: { id: player.id, sessionId: player.sessionId, displayName: player.displayName, status: player.status } };
+    }));
     const noteBody = { type: "object", additionalProperties: false, required: ["body"], properties: {
       body: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S" }
     } };

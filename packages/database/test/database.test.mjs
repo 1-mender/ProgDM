@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { openDatabase, resolveDatabaseFile } from "../dist/index.js";
 
 function temporaryFile(t) {
@@ -24,6 +26,168 @@ function memoryDatabase(t) {
   t.after(() => database.close());
   return database;
 }
+
+test("failed activity append rolls back an inventory grant", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Campaign");
+    const mira = db.createCharacter(campaign.id, "Mira");
+    const item = db.createCatalogItem(campaign.id, "Key");
+    const session = db.createSession(campaign.id, "Session");
+    db.activateSession(session.id);
+    const player = db.submitPlayerRequest(session.id, "A", "hash-a");
+    db.approvePlayer(player.id, { characterId: mira.id });
+    const raw = new SQLite(file);
+    raw.exec("CREATE TRIGGER reject_grant_event BEFORE INSERT ON campaign_activity WHEN NEW.type='item_granted' BEGIN SELECT RAISE(ABORT, 'test activity failure'); END");
+    raw.close();
+    const before = db.listCampaignActivity(campaign.id);
+    assert.throws(() => db.grantInventoryItem(mira.id, item.id, 1), /test activity failure/);
+    assert.deepEqual(db.getPlayerState("hash-a").inventory, []);
+    assert.deepEqual(db.listCampaignActivity(campaign.id), before);
+  } finally { db.close(); }
+});
+
+test("backup migration hashes remain compatible across LF and CRLF checkouts", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    db.createCampaign("Portable backup");
+    const raw = new SQLite(file);
+    const migrations = readMigrationFiles({ migrationsFolder: fileURLToPath(new URL("../migrations/", import.meta.url)) });
+    for (const migration of migrations) {
+      const sql = migration.sql.join("--> statement-breakpoint");
+      const alternate = sql.includes("\r\n") ? sql.replace(/\r\n/g, "\n") : sql.replace(/\n/g, "\r\n");
+      raw.prepare("UPDATE __drizzle_migrations SET hash=? WHERE created_at=?")
+        .run(createHash("sha256").update(alternate).digest("hex"), migration.folderMillis);
+    }
+    raw.close();
+    assert.equal(db.checkDataHealth().ok, true);
+    const backup = await db.createBackup();
+    db.createCampaign("Later");
+    await db.restoreBackup(backup.id);
+    assert.deepEqual(db.listCampaigns().map((row) => row.name), ["Portable backup"]);
+    assert.equal(db.checkDataHealth().ok, true);
+  } finally { db.close(); }
+});
+
+test("legacy campaign formats v1 and v2 remain importable with character knowledge remapping", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Legacy");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "secret-hash");
+  db.approvePlayer(player.id, { characterId: mira.id });
+  const clue = db.createKnowledge(campaign.id, "note", "Clue", "Personal knowledge");
+  db.setKnowledgeVisibility(clue.id, "character", mira.id);
+  const current = db.exportCampaign(campaign.id);
+  for (const version of [1, 2]) {
+    const legacy = structuredClone(current);
+    legacy.version = version;
+    delete legacy.personalNotes;
+    if (version === 1) {
+      delete legacy.activity;
+      delete legacy.characters[0].archivedAt;
+      legacy.knowledge[0].visibility = "player";
+      legacy.knowledge[0].visibleToPlayerId = player.id;
+      delete legacy.knowledge[0].visibleToCharacterId;
+    }
+    const imported = db.importCampaign(legacy);
+    const exported = db.exportCampaign(imported.id);
+    assert.equal(exported.sessions[0].status, "ended");
+    assert.equal(exported.knowledge[0].visibility, "character");
+    assert.equal(exported.knowledge[0].visibleToCharacterId, exported.characters[0].id);
+    assert.equal(exported.assignments[0].playerId, exported.players[0].id);
+    assert.equal(exported.assignments[0].sessionId, exported.sessions[0].id);
+    assert.equal(JSON.stringify(exported).includes("secret-hash"), false);
+    assert.equal(db.checkDataHealth().ok, true);
+  }
+});
+
+test("campaign export supports more than SQLite's OR expression depth in characters", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Large campaign");
+  for (let i = 0; i < 1001; i++) db.createCharacter(campaign.id, "Character " + i);
+  const exported = db.exportCampaign(campaign.id);
+  assert.equal(exported.characters.length, 1001);
+  const imported = db.importCampaign(exported);
+  assert.equal(db.listCharactersByCampaign(imported.id).length, 1001);
+});
+
+test("inconsistent assignment sessions cannot grant private reads or writes", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Campaign");
+    const mira = db.createCharacter(campaign.id, "Mira");
+    const active = db.createSession(campaign.id, "Active");
+    const planned = db.createSession(campaign.id, "Planned");
+    db.activateSession(active.id);
+    const player = db.submitPlayerRequest(active.id, "A", "hash-a");
+    db.approvePlayer(player.id, { characterId: mira.id });
+    db.createPersonalNote("hash-a", "Private note");
+    const raw = new SQLite(file);
+    raw.prepare("UPDATE session_character_assignments SET session_id=? WHERE player_id=?").run(planned.id, player.id);
+    raw.close();
+    assert.equal(db.checkDataHealth().ok, false);
+    const view = db.getPlayerState("hash-a");
+    assert.equal(view.canEdit, false);
+    assert.deepEqual(view.notes, []);
+    assert.throws(() => db.updatePlayerProfile("hash-a", { shortDescription: "Invalid", personalGoal: "Invalid" }), /Active character/);
+    const other = db.createCampaign("Other");
+    const foreignCharacter = db.createCharacter(other.id, "Nora");
+    const rawForeign = new SQLite(file);
+    rawForeign.prepare("UPDATE session_character_assignments SET session_id=?, character_id=? WHERE player_id=?")
+      .run(active.id, foreignCharacter.id, player.id);
+    rawForeign.close();
+    const foreignView = db.getPlayerState("hash-a");
+    assert.equal(foreignView.characterId, null);
+    assert.equal(foreignView.canEdit, false);
+    assert.deepEqual(foreignView.inventory, []);
+  } finally { db.close(); }
+});
+
+test("import rejects activity tied to another player's session and rolls back", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Audit");
+  const first = db.createSession(campaign.id, "First");
+  db.activateSession(first.id);
+  const player = db.submitPlayerRequest(first.id, "A", "hash-a");
+  const second = db.createSession(campaign.id, "Second");
+  const archive = db.exportCampaign(campaign.id);
+  const event = archive.activity.find((row) => row.playerId === player.id);
+  event.sessionId = second.id;
+  const before = db.listCampaigns().length;
+  assert.throws(() => db.importCampaign(archive), /invalid event session/);
+  assert.equal(db.listCampaigns().length, before);
+});
+
+test("health and restore reject altered migration hashes without changing the backup", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Original");
+    const backup = await db.createBackup();
+    const raw = new SQLite(db.backupFile(backup.id));
+    assert.equal(raw.prepare("UPDATE __drizzle_migrations SET hash = 'tampered' WHERE rowid = 1").run().changes, 1);
+    raw.close();
+    const backupBytes = readFileSync(db.backupFile(backup.id));
+    const later = db.createCampaign("Later");
+    await assert.rejects(db.restoreBackup(backup.id), /migration history/);
+    assert.ok(db.getCampaign(campaign.id));
+    assert.ok(db.getCampaign(later.id));
+    assert.deepEqual(readFileSync(db.backupFile(backup.id)), backupBytes);
+    const live = new SQLite(file);
+    assert.equal(live.prepare("UPDATE __drizzle_migrations SET hash = 'tampered' WHERE rowid = 1").run().changes, 1);
+    live.close();
+    assert.equal(db.checkDataHealth().checks.find((check) => check.name === "Миграции").status, "error");
+  } finally { db.close(); }
+});
 
 test("migrations create an empty database and preserve data across process restarts", (t) => {
   const file = temporaryFile(t);
