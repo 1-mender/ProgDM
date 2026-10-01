@@ -63,34 +63,48 @@
 .vl-b-refined .vl-equipped .vl-heading, .vl-b-refined .vl-bag .vl-heading { margin: 0 0 10px; }
 .vl-b-refined .vl-equipped .vl-heading h3, .vl-b-refined .vl-bag .vl-heading h3 { margin: 0; font: 20px/1.35 Georgia,serif; }
 .vl-b-refined .vl-equipped-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
-.vl-b-refined .vl-equipment-slot { display: flex; align-items: center; min-width: 0; min-height: 72px; gap: 9px; padding: 8px 9px; border: 1px solid var(--vl-border); border-radius: 3px; background: #f5f0e5; text-align: left; }
+.vl-b-refined .vl-equipment-slot { display: flex; align-items: center; min-width: 0; min-height: 64px; gap: 9px; padding: 7px 9px; border: 1px solid var(--vl-border); border-radius: 3px; background: #f5f0e5; text-align: left; }
 .vl-b-refined .vl-equipment-slot.is-empty { border-style: dashed; background: #eae5da; color: var(--vl-muted); }
 .vl-b-refined .vl-equipment-icon { flex: 0 0 24px; display: grid; place-items: center; color: var(--vl-muted); }
 .vl-b-refined .vl-equipment-icon svg { width: 19px; height: 19px; stroke-width: 1.6; }
 .vl-b-refined .vl-equipment-copy { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .vl-b-refined .vl-equipment-copy small { color: var(--vl-muted); font: 12px/1.3 Arial,sans-serif; }
 .vl-b-refined .vl-equipment-copy strong { color: var(--vl-text); font: 13px/1.35 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-equipment-meta { display: inline-flex; align-items: center; gap: 4px; color: var(--vl-rarity-color,#77776f); font: 10px/1.2 Arial,sans-serif; }
 .vl-b-refined .vl-equipment-slot > svg:last-child { flex: 0 0 15px; width: 15px; height: 15px; color: var(--vl-muted); }
-.vl-b-refined .vl-bag-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); grid-auto-rows: 112px; gap: 8px; }
-.vl-b-refined .vl-bag-cell { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; padding: 10px; border: 1px solid var(--vl-border); border-radius: 3px; text-align: left; }
-.vl-b-refined button.vl-bag-cell.is-filled { background: #f7f3e9; }
-.vl-b-refined .vl-bag-cell.is-filled > svg { width: 21px; height: 21px; color: var(--vl-muted); stroke-width: 1.6; align-self: flex-start; }
-.vl-b-refined .vl-bag-cell strong { min-width: 0; width: 100%; font: 13px/1.3 Arial,sans-serif; overflow-wrap: anywhere; }
-.vl-b-refined .vl-bag-cell > span { font: 12px/1.2 Arial,sans-serif; color: var(--vl-muted); align-self: flex-end; }
+.vl-b-refined .vl-bag-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); grid-auto-rows: 152px; gap: 8px; }
+.vl-b-refined .vl-bag-cell { position: relative; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; padding: 8px; border: 1px solid var(--vl-border); border-radius: 3px; text-align: left; }
+.vl-b-refined button.vl-bag-cell.is-filled { background: #f7f3e9; box-shadow: inset 0 2px var(--vl-rarity-color,#a9a79e); }
+.vl-b-refined .vl-bag-cell.is-filled.has-status { border-left: 2px solid var(--vl-accent); }
+.vl-b-refined .vl-item-card-art { width: 100%; height: 35px; flex: 0 0 35px; display: grid; place-items: center; color: var(--vl-muted); background: #eae5da; }
+.vl-b-refined .vl-item-card-art svg { width: 26px; height: 26px; stroke-width: 1.55; }
+.vl-b-refined .vl-bag-cell strong { min-width: 0; width: 100%; color: var(--vl-text); font: 600 13px/1.25 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-item-category { min-width: 0; width: 100%; color: var(--vl-muted); font: 11px/1.2 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-item-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 3px; width: 100%; margin-top: auto; color: var(--vl-muted); }
+.vl-b-refined .vl-rarity-label { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--vl-rarity-color,#77776f); font: 10px/1.2 Arial,sans-serif; }
+.vl-rarity-mark { display: inline-block; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--vl-rarity-color,#a9a79e); }
+.vl-b-refined { --vl-rarity-common: #85867f; --vl-rarity-uncommon: #71836c; --vl-rarity-rare: #718394; --vl-rarity-unique: #8b7b91; }
+.vl-rarity-common { --vl-rarity-color: var(--vl-rarity-common,#85867f); }
+.vl-rarity-uncommon { --vl-rarity-color: var(--vl-rarity-uncommon,#71836c); }
+.vl-rarity-rare { --vl-rarity-color: var(--vl-rarity-rare,#718394); }
+.vl-rarity-unique { --vl-rarity-color: var(--vl-rarity-unique,#8b7b91); }
+.vl-b-refined .vl-item-quantity { flex: 0 0 auto; color: var(--vl-text); font: 600 11px/1 Arial,sans-serif; }
+.vl-b-refined .vl-item-status { display: inline-flex; align-self: flex-start; max-width: 100%; padding: 2px 5px; border: 1px solid color-mix(in srgb,var(--vl-accent) 32%,transparent); color: var(--vl-accent); font: 10px/1.15 Arial,sans-serif; overflow-wrap: anywhere; }
 .vl-b-refined .vl-bag-cell.is-empty { align-items: center; justify-content: center; border-style: dashed; background: #eae5da; color: #898374; }
-.vl-b-refined .vl-bag-cell.is-empty > span { align-self: center; font-size: 12px; }
+.vl-b-refined .vl-bag-cell.is-empty > span { align-self: center; color: #898374; font: 11px/1.2 Arial,sans-serif; }
 .vl-b-refined .vl-bag-cell.is-filled:hover, .vl-b-refined .vl-equipment-slot:hover { background: #eee7d8; }
 .vl-b-refined .vl-equipment-slot.is-empty:hover, .vl-b-refined .vl-bag-cell.is-empty:hover { background: #eae5da; }
-.vl-item-detail-overlay { position: absolute; z-index: 5; inset: 52px 0 66px; display: flex; align-items: flex-end; }
+.vl-item-detail-overlay { position: absolute; z-index: 5; inset: 52px 0 0; display: flex; align-items: flex-end; }
 .vl-item-detail-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: #1719168c; }
-.vl-item-detail { position: relative; z-index: 1; width: 100%; max-height: 100%; overflow-y: auto; padding: 18px 18px 20px; background: var(--vl-surface); border-top: 1px solid var(--vl-border); box-shadow: 0 -8px 24px #14141420; }
+.vl-item-detail { position: relative; z-index: 1; width: 100%; max-height: min(78%,560px); overflow-y: auto; padding: 18px 18px 20px; background: var(--vl-surface); border-top: 1px solid var(--vl-border); box-shadow: 0 -8px 24px #14141420; }
 .vl-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .vl-detail-heading > div { display: flex; align-items: center; min-width: 0; gap: 12px; }
 .vl-detail-heading h3 { margin: 0; font: 22px/1.3 Georgia,serif; overflow-wrap: anywhere; }
-.vl-detail-icon { flex: 0 0 50px; width: 50px; height: 50px; display: grid; place-items: center; border: 1px solid var(--vl-border); color: var(--vl-muted); }
+.vl-detail-icon { flex: 0 0 54px; width: 54px; height: 54px; display: grid; place-items: center; border: 1px solid var(--vl-border); color: var(--vl-rarity-color,var(--vl-muted)); background: #eae5da; }
 .vl-detail-close { width: 42px; height: 42px; min-height: 42px; padding: 8px; border: 1px solid var(--vl-border); }
 .vl-detail-close svg { width: 20px; height: 20px; }
-.vl-detail-state { color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
+.vl-detail-category { display: block; margin-top: 3px; color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
+.vl-detail-markers { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
 .vl-detail-description { margin: 16px 0 12px; color: var(--vl-text); font: 15px/1.55 Arial,sans-serif; }
 .vl-detail-facts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: 0; border-top: 1px solid var(--vl-border); border-bottom: 1px solid var(--vl-border); }
 .vl-detail-facts > div { padding: 10px 8px 10px 0; }
@@ -98,6 +112,7 @@
 .vl-detail-facts dd { margin: 3px 0 0; color: var(--vl-text); font: 15px/1.4 Arial,sans-serif; }
 .vl-detail-equip { display: flex; justify-content: center; gap: 8px; width: 100%; min-height: 46px; margin-top: 14px; padding: 10px; border: 1px solid var(--vl-border); background: #e9e1d1; font: 15px Arial,sans-serif; }
 .vl-detail-equip svg { width: 18px; height: 18px; }
+.vl-detail-equip:disabled { color: var(--vl-muted); background: #eae5da; cursor: not-allowed; }
 .vl-equip-notice { margin: 10px 0 0; color: var(--vl-muted); font: 13px/1.4 Arial,sans-serif; }
 .vl-preview-desktop.vl-single .vl-b-refined { width: min(100%,390px); justify-self: center; height: 690px; max-height: calc(100vh - 190px); }
 .vl-preview-desktop.vl-single .vl-b-refined .vl-player-content { display: flex; grid-template-columns: none; padding: 0; margin: 0; }

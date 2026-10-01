@@ -1,15 +1,15 @@
 import { useState, type CSSProperties } from "react";
-import { ArrowUpRight, Backpack, BookOpen, BriefcaseMedical, Check, ChevronRight, CircleDot, Compass, Crosshair, Diamond, FileText, Flashlight, FlaskConical, House, KeyRound, LayoutGrid, Mail, Monitor, NotebookPen, Plus, Shield, Smartphone, Sparkles, UserRound, Wrench, X } from "lucide-react";
-import { bagCapacity, character, codexInventory, equipmentSlots, inventory, knowledge, navigation, notes, profile, updates, variants, refinedArchive, type LabView, type Variant } from "./model";
+import { ArrowUpRight, Backpack, BookOpen, BriefcaseMedical, Check, ChevronRight, CircleDot, Compass, Crosshair, Diamond, FileText, Flashlight, FlaskConical, House, KeyRound, LayoutGrid, Link2, Mail, Monitor, NotebookPen, Plus, PocketKnife, Shield, Shirt, Smartphone, Sparkles, UserRound, Wrench, X } from "lucide-react";
+import { bagCapacity, canFitInBag, character, codexInventory, equipmentSlots, inventory, knowledge, navigation, notes, profile, updates, variants, refinedArchive, type LabEquipmentSlot, type LabInventoryItem, type LabView, type Variant } from "./model";
 import portrait from "./assets/mira.png";
 import "./visual-lab.css";
 import "./field-archive.css";
 
 const navigationIcons = [House, Backpack, BookOpen, NotebookPen, UserRound];
 const itemIcons = [KeyRound, NotebookPen, Compass];
-const codexItemIcons = { key: KeyRound, book: BookOpen, amulet: Diamond, flask: FlaskConical, letter: Mail, medical: BriefcaseMedical, compass: Compass, flashlight: Flashlight };
+const codexItemIcons = { key: KeyRound, book: BookOpen, amulet: Diamond, flask: FlaskConical, letter: Mail, medical: BriefcaseMedical, compass: Compass, flashlight: Flashlight, rope: Link2, knife: PocketKnife, jacket: Shirt, lockpicks: Wrench };
 const equipmentIcons = { primary: Crosshair, secondary: CircleDot, protection: Shield, accessory: Diamond, tool: Wrench, special: Sparkles };
-type ItemDetail = { name: string; description: string; quantity: number; slots: number; equipSlot?: string; equipped?: boolean; empty?: boolean };
+type ItemSelection = { item: LabInventoryItem; source: "bag" | "equipment"; slotId?: string };
 
 function VisualTokens({ variant }: { variant: Variant }) {
   return <details className="vl-tokens" open>
@@ -31,13 +31,45 @@ function PlayerPreview({ variant, view, onView, refined = false }: { variant: Va
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [personalNotes, setPersonalNotes] = useState([...notes]);
   const [profileDraft, setProfileDraft] = useState<{ description: string; goal: string }>({ ...profile });
-  const [selectedItem, setSelectedItem] = useState<ItemDetail | null>(null);
-  const [equipNotice, setEquipNotice] = useState("");
+  const [bagItems, setBagItems] = useState<LabInventoryItem[]>([...codexInventory]);
+  const [equippedItems, setEquippedItems] = useState<LabEquipmentSlot[]>(equipmentSlots.map(slot => ({ ...slot })));
+  const [selectedItem, setSelectedItem] = useState<ItemSelection | null>(null);
+  const [itemNotice, setItemNotice] = useState("");
   const style = {
     "--vl-bg": variant.background, "--vl-surface": variant.surface, "--vl-text": variant.text,
     "--vl-accent": variant.accent, "--vl-border": variant.border, "--vl-muted": variant.muted,
     "--vl-heading": variant.heading, "--vl-body": variant.body,
   } as CSSProperties;
+  const bagSlotsUsed = bagItems.reduce((total, item) => total + item.slots, 0);
+  const detailOpen = archive && view === "Инвентарь" && selectedItem !== null;
+  const equipSelectedItem = () => {
+    if (!selectedItem || selectedItem.source !== "bag" || !selectedItem.item.equipSlot) return;
+    const slotIndex = equippedItems.findIndex(slot => slot.name === selectedItem.item.equipSlot);
+    if (slotIndex < 0) return;
+    const replaced = equippedItems[slotIndex]!.item;
+    if (replaced && !canFitInBag(bagSlotsUsed - selectedItem.item.slots, replaced.slots)) {
+      setItemNotice("В сумке нет места для заменяемого предмета.");
+      return;
+    }
+    setBagItems(current => [...current.filter(item => item.id !== selectedItem.item.id), ...(replaced ? [replaced] : [])]);
+    setEquippedItems(current => current.map((slot, index) => index === slotIndex ? { ...slot, item: selectedItem.item } : slot));
+    setSelectedItem({ item: selectedItem.item, source: "equipment", slotId: equippedItems[slotIndex]!.id });
+    setItemNotice(`Экипировано: ${selectedItem.item.equipSlot}.`);
+  };
+  const unequipSelectedItem = () => {
+    if (!selectedItem || selectedItem.source !== "equipment" || !selectedItem.slotId) return;
+    if (!canFitInBag(bagSlotsUsed, selectedItem.item.slots)) {
+      setItemNotice("Сумка заполнена. Освободите место перед снятием предмета.");
+      return;
+    }
+    setEquippedItems(current => current.map(slot => slot.id === selectedItem.slotId ? { ...slot, item: null } : slot));
+    setBagItems(current => [...current, selectedItem.item]);
+    setSelectedItem({ item: selectedItem.item, source: "bag" });
+    setItemNotice("Предмет перемещён в сумку.");
+  };
+  const performItemAction = () => {
+    if (selectedItem?.item.action === "Открыть") setItemNotice("Письмо открыто в прототипе.");
+  };
   const hero = <section className="vl-identity" aria-label="Персонаж">
     <figure><img src={portrait} alt="Портрет Mira Voss" /></figure>
     <div className="vl-identity-text"><h1>{character.name}</h1><p>{character.archetype}</p><div className="vl-origin"><span>Происхождение</span><strong>{character.origin}</strong></div></div>
@@ -50,7 +82,7 @@ function PlayerPreview({ variant, view, onView, refined = false }: { variant: Va
         <button className="vl-journal-link" onClick={() => onView("Журнал")}>Весь журнал<ArrowUpRight size={18} /></button>
       </section>
     </>}
-    {view === "Инвентарь" && <CodexInventory onSelect={item => { setSelectedItem(item); setEquipNotice(""); }} onSelectSlot={slot => { setSelectedItem({ name: slot.item ?? slot.name, description: slot.description, quantity: 1, slots: 1, equipped: Boolean(slot.item), empty: !slot.item }); setEquipNotice(""); }} />}
+    {view === "Инвентарь" && <CodexInventory bagItems={bagItems} equippedItems={equippedItems} bagSlotsUsed={bagSlotsUsed} onSelect={(item, source, slotId) => { setSelectedItem({ item, source, slotId }); setItemNotice(""); }} />}
     {view === "Знания" && <section><div className="vl-heading"><h2>Знания</h2><span className="vl-counter">{knowledge.length}</span></div>{knowledge.map(entry => <details className="vl-item vl-codex-entry" key={entry.id}><summary><strong>{entry.name}<small>{entry.category}</small></strong><ChevronRight size={18} /></summary><p>{entry.detail}</p></details>)}</section>}
     {view === "Журнал" && <section className="vl-journal"><div className="vl-heading"><h2>Журнал</h2></div><div className="vl-journal-tabs" role="tablist" aria-label="Журнал"><button role="tab" aria-selected={journalTab === "chronicle"} onClick={() => { setJournalTab("chronicle"); setShowNoteForm(false); }}>Хроника</button><button role="tab" aria-selected={journalTab === "notes"} onClick={() => setJournalTab("notes")}>Мои заметки</button></div>
       {journalTab === "chronicle" ? <section className="vl-chronicle"><h3>18 сентября</h3>{updates.map(update => <details key={update.id} className="vl-item vl-codex-entry"><summary><strong>{update.text}<small>{update.detail}</small></strong><ChevronRight size={18} /></summary><p>{update.detail}</p></details>)}</section> : <section className="vl-personal-notes">{personalNotes.map(note => <details className="vl-item vl-codex-entry" key={note.id}><summary><strong>{note.title}<small>{note.detail}</small></strong><ChevronRight size={18} /></summary><p>{note.detail}</p></details>)}
@@ -72,36 +104,46 @@ function PlayerPreview({ variant, view, onView, refined = false }: { variant: Va
   </>;
   return <div className={`vl-player vl-${variant.id}${archive ? " vl-b-refined" : ""}`} style={style} aria-label={`Экран игрока: ${variant.name}`}>
     <header className="vl-player-header"><span><Compass size={18}/>ProgDM</span><span className="vl-meta">{archive ? "Сессия 01" : <>СЕССИЯ 01 <i/> В ИГРЕ</>}</span></header>
-    {archive ? <section className="vl-player-content" aria-label={view}><div className="vl-player-scroll">{codexSection}</div></section> : <main className="vl-player-content">{legacy}</main>}
-    <nav className="vl-player-nav" aria-label="Разделы игрока">{navigation.map((label,index)=>{const Icon=navigationIcons[index]!;return <button key={label} aria-current={view===label?"page":undefined} onClick={()=>onView(label)}><Icon size={19}/><span>{label}</span></button>;})}</nav>
-    {archive && view === "Инвентарь" && selectedItem && <ItemDetailPanel item={selectedItem} equipNotice={equipNotice} onEquip={() => setEquipNotice(`Выбрано для экипировки: ${selectedItem.equipSlot}`)} onClose={() => setSelectedItem(null)} />}
+    {archive ? <section className="vl-player-content" aria-label={view} inert={detailOpen || undefined}><div className="vl-player-scroll">{codexSection}</div></section> : <main className="vl-player-content">{legacy}</main>}
+    <nav className="vl-player-nav" aria-label="Разделы игрока" inert={detailOpen || undefined}>{navigation.map((label,index)=>{const Icon=navigationIcons[index]!;return <button key={label} aria-current={view===label?"page":undefined} onClick={()=>onView(label)}><Icon size={19}/><span>{label}</span></button>;})}</nav>
+    {detailOpen && selectedItem && <ItemDetailPanel selection={selectedItem} equippedItems={equippedItems} bagSlotsUsed={bagSlotsUsed} equipNotice={itemNotice} onEquip={equipSelectedItem} onUnequip={unequipSelectedItem} onAction={performItemAction} onClose={() => setSelectedItem(null)} />}
   </div>;
 }
 
-function CodexInventory({ onSelect, onSelectSlot }: { onSelect: (item: ItemDetail) => void; onSelectSlot: (slot: typeof equipmentSlots[number]) => void }) {
-  const occupied = codexInventory.reduce((total, item) => total + item.slots, 0);
+function CodexInventory({ bagItems, equippedItems, bagSlotsUsed, onSelect }: { bagItems: LabInventoryItem[]; equippedItems: LabEquipmentSlot[]; bagSlotsUsed: number; onSelect: (item: LabInventoryItem, source: ItemSelection["source"], slotId?: string) => void }) {
   return <div className="vl-codex-inventory">
-    <div className="vl-heading vl-inventory-title"><h2>Инвентарь</h2><span className="vl-capacity">{occupied} / {bagCapacity}</span></div>
-    <section className="vl-equipped"><div className="vl-heading"><h3>Экипировано</h3></div><div className="vl-equipped-grid">{equipmentSlots.map(slot => { const Icon = equipmentIcons[slot.icon as keyof typeof equipmentIcons]; return <button className={`vl-equipment-slot${slot.item ? " is-equipped" : " is-empty"}`} key={slot.id} onClick={() => onSelectSlot(slot)} aria-label={`${slot.name}: ${slot.item ?? "пусто"}`}>
-      <span className="vl-equipment-icon"><Icon size={19} /></span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>{slot.item ?? "Пусто"}</strong></span><ChevronRight size={16} />
-    </button>; })}</div></section>
-    <section className="vl-bag"><div className="vl-heading"><h3>Сумка</h3><span className="vl-capacity">{occupied} / {bagCapacity}</span></div><div className="vl-bag-grid" aria-label={`Сумка: ${occupied} из ${bagCapacity} ячеек занято`}>
-      {codexInventory.map(item => { const Icon = codexItemIcons[item.icon as keyof typeof codexItemIcons]; return <button className="vl-bag-cell is-filled" key={item.id} onClick={() => onSelect(item)} aria-label={`${item.name}, количество ${item.quantity}`}>
-        <Icon size={21} /><strong>{item.name}</strong><span>×{item.quantity}</span>
+    <div className="vl-heading vl-inventory-title"><h2>Инвентарь</h2></div>
+    <section className="vl-equipped"><div className="vl-heading"><h3>Экипировано</h3></div><div className="vl-equipped-grid">{equippedItems.map(slot => { const SlotIcon = equipmentIcons[slot.icon]; const ItemIcon = slot.item && codexItemIcons[slot.item.icon]; return slot.item ? <button className={`vl-equipment-slot is-equipped vl-rarity-${slot.item.rarityKey}`} key={slot.id} onClick={() => onSelect(slot.item!, "equipment", slot.id)} aria-label={`${slot.name}: ${slot.item.name}`}>
+      <span className="vl-equipment-icon">{ItemIcon && <ItemIcon size={22} />}</span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>{slot.item.name}</strong><span className="vl-equipment-meta"><i className="vl-rarity-mark" />{slot.item.rarity}</span></span><ChevronRight size={16} />
+    </button> : <div className="vl-equipment-slot is-empty" key={slot.id} aria-label={`${slot.name}: пусто`}>
+      <span className="vl-equipment-icon"><SlotIcon size={19} /></span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>Пусто</strong></span>
+    </div>; })}</div></section>
+    <section className="vl-bag"><div className="vl-heading"><h3>Сумка</h3><span className="vl-capacity">{bagSlotsUsed} / {bagCapacity}</span></div><div className="vl-bag-grid" aria-label={`Сумка: занято ${bagSlotsUsed} из ${bagCapacity} слотов`}>
+      {bagItems.map(item => { const Icon = codexItemIcons[item.icon]; return <button className={`vl-bag-cell is-filled vl-rarity-${item.rarityKey}${item.status ? " has-status" : ""}`} key={item.id} onClick={() => onSelect(item, "bag")} aria-label={`${item.name}, ${item.category}, ${item.rarity}${item.status ? `, ${item.status}` : ""}${item.quantity > 1 ? `, количество ${item.quantity}` : ""}`}>
+        <span className="vl-item-card-art"><Icon size={27} /></span><strong>{item.name}</strong><span className="vl-item-category">{item.category}</span><span className="vl-item-card-meta"><span className="vl-rarity-label"><i className="vl-rarity-mark" />{item.rarity}</span>{item.quantity > 1 && <span className="vl-item-quantity">×{item.quantity}</span>}</span>{item.status && <span className="vl-item-status">{item.status}</span>}
       </button>; })}
-      {Array.from({ length: Math.max(0, bagCapacity - occupied) }, (_, index) => <div className="vl-bag-cell is-empty" key={`empty-${index}`} aria-label="Пустая ячейка"><span aria-hidden="true">Пусто</span></div>)}
+      {Array.from({ length: Math.max(0, bagCapacity - bagSlotsUsed) }, (_, index) => <div className="vl-bag-cell is-empty" key={`empty-${index}`} aria-label="Пустой слот"><span aria-hidden="true">Пусто</span></div>)}
     </div></section>
   </div>;
 }
 
-function ItemDetailPanel({ item, equipNotice, onEquip, onClose }: { item: ItemDetail; equipNotice: string; onEquip: () => void; onClose: () => void }) {
-  const Icon = item.empty ? CircleDot : codexItemIcons[(codexInventory.find(entry => entry.name === item.name)?.icon ?? "key") as keyof typeof codexItemIcons];
+function ItemDetailPanel({ selection, equippedItems, bagSlotsUsed, equipNotice, onEquip, onUnequip, onAction, onClose }: { selection: ItemSelection; equippedItems: LabEquipmentSlot[]; bagSlotsUsed: number; equipNotice: string; onEquip: () => void; onUnequip: () => void; onAction: () => void; onClose: () => void }) {
+  const { item, source, slotId } = selection;
+  const Icon = codexItemIcons[item.icon];
+  const equipmentSlot = source === "equipment" ? equippedItems.find(slot => slot.id === slotId) : undefined;
+  const canUnequip = canFitInBag(bagSlotsUsed, item.slots);
+  const replaced = item.equipSlot ? equippedItems.find(slot => slot.name === item.equipSlot)?.item : null;
+  const canEquip = source === "bag" && (!replaced || canFitInBag(bagSlotsUsed - item.slots, replaced.slots));
   return <div className="vl-item-detail-overlay"><button className="vl-item-detail-backdrop" onClick={onClose} aria-label="Закрыть сведения о предмете" />
     <section className="vl-item-detail" role="dialog" aria-modal="true" aria-labelledby="vl-item-detail-title">
-      <div className="vl-detail-heading"><div><span className="vl-detail-icon"><Icon size={25} /></span><div><h3 id="vl-item-detail-title">{item.name}</h3>{item.equipped && <span className="vl-detail-state">Экипировано</span>}</div></div><button className="vl-detail-close" onClick={onClose} aria-label="Закрыть" title="Закрыть"><X size={20} /></button></div>
+      <div className="vl-detail-heading"><div><span className={`vl-detail-icon vl-rarity-${item.rarityKey}`}><Icon size={28} /></span><div><h3 id="vl-item-detail-title">{item.name}</h3><span className="vl-detail-category">{item.category}</span></div></div><button autoFocus className="vl-detail-close" onClick={onClose} aria-label="Закрыть" title="Закрыть"><X size={20} /></button></div>
+      <div className="vl-detail-markers"><span className={`vl-rarity-label vl-rarity-${item.rarityKey}`}><i className="vl-rarity-mark" />Редкость: {item.rarity}</span>{item.status && <span className="vl-item-status">{item.status}</span>}</div>
       <p className="vl-detail-description">{item.description}</p>
-      <dl className="vl-detail-facts">{!item.empty && <><div><dt>Количество</dt><dd>×{item.quantity}</dd></div><div><dt>Занимает</dt><dd>{item.slots} {item.slots === 1 ? "слот" : "слота"}</dd></div></>}</dl>
-      {item.equipSlot && !item.equipped && <button className="vl-detail-equip" onClick={onEquip}><Check size={18} />Экипировать</button>}
+      <dl className="vl-detail-facts"><div><dt>Количество</dt><dd>×{item.quantity}</dd></div><div><dt>Занимает</dt><dd>{item.slots} {item.slots === 1 ? "слот" : "слота"}</dd></div>{source === "equipment" && equipmentSlot && <div><dt>Сейчас экипировано</dt><dd>{equipmentSlot.name}</dd></div>}</dl>
+      {source === "equipment" && <button className="vl-detail-equip" onClick={onUnequip} disabled={!canUnequip}><Check size={18} />Снять</button>}
+      {source === "bag" && item.equipSlot && <button className="vl-detail-equip" onClick={onEquip} disabled={!canEquip}><Check size={18} />{replaced ? `Заменить в слоте ${item.equipSlot}` : `Экипировать как ${item.equipSlot.toLowerCase()}`}</button>}
+      {source === "bag" && item.action && <button className="vl-detail-equip" onClick={onAction}><ArrowUpRight size={18} />{item.action}</button>}
+      {source === "equipment" && !canUnequip && <p className="vl-equip-notice" role="status">Сумка заполнена. Освободите место перед снятием предмета.</p>}
       {equipNotice && <p className="vl-equip-notice" role="status">{equipNotice}</p>}
     </section>
   </div>;
