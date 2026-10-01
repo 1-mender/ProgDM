@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Archive, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
+import { Archive, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, ScrollText, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { ActivityType, Campaign, CampaignActivity, Character, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
@@ -27,6 +27,13 @@ function activitySummary(event: CampaignActivity): string {
 const sessionPlural = new Intl.PluralRules("ru");
 type BackupInfo = { id: string; createdAt: string; size: number };
 type CharacterOverview = { character: Character; player: { id: string; displayName: string } | null; inventory: InventoryItem[]; knowledge: KnowledgeEntry[]; notes: PersonalNote[]; activity: CampaignActivity[] };
+type DmSection = "sessions" | "players" | "join" | "characters" | "character" | "catalog" | "knowledge" | "history" | "data";
+function ActivityList({ activity }: { activity: CampaignActivity[] }) {
+  return activity.length ? <ol className="activity-list">{activity.map((event) => <li key={event.id}>
+    <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString("ru-RU")}</time>
+    <span>{activitySummary(event)}</span>
+  </li>)}</ol> : <p className="muted">Пока нет событий.</p>;
+}
 function sessionCount(count: number) {
   const word = { one: "сессия", few: "сессии", many: "сессий", other: "сессии" }[sessionPlural.select(count) as "one" | "few" | "many" | "other"];
   return count + " " + word;
@@ -130,15 +137,19 @@ function DmWorkspace() {
   const [playerNames, setPlayerNames] = useState<Record<string, string>>({});
   const [characterChoices, setCharacterChoices] = useState<Record<string, string>>({});
   const [newCharacterName, setNewCharacterName] = useState("");
-  const [itemTargetId, setItemTargetId] = useState("");
   const [catalogItemName, setCatalogItemName] = useState("");
   const [catalogItemId, setCatalogItemId] = useState("");
   const [itemQuantity, setItemQuantity] = useState("1");
   const [workspaceMode, setWorkspaceMode] = useState<"prepare" | "live">("prepare");
+  const [section, setSection] = useState<DmSection>("sessions");
+  const [grantOpen, setGrantOpen] = useState(false);
+  const [selectedKnowledgeId, setSelectedKnowledgeId] = useState("");
+  const [knowledgeSearch, setKnowledgeSearch] = useState("");
+  const [fullActivity, setFullActivity] = useState<CampaignActivity[] | null>(null);
   const [knowledgeCategory, setKnowledgeCategory] = useState<KnowledgeCategory>("note");
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
-  const [knowledgeDrafts, setKnowledgeDrafts] = useState<Record<string, { visibility: KnowledgeVisibility; characterId: string }>>({});
+  const [knowledgeTargetId, setKnowledgeTargetId] = useState("");
   const [joinAddress, setJoinAddress] = useState("");
   const [manualJoinAddress, setManualJoinAddress] = useState("");
   const [copied, setCopied] = useState(false);
@@ -184,15 +195,16 @@ function DmWorkspace() {
   const locked = busy || phase !== "ready";
   const current = state?.current;
   useEffect(() => {
-    setWorkspaceMode(current?.session.status === "active" ? "live" : "prepare");
-  }, [current?.session.id]);
+    const live = current?.session.status === "active" && current.campaign.id === selectedId;
+    setWorkspaceMode(live ? "live" : "prepare");
+    setSection(live ? "players" : "sessions");
+  }, [current?.session.id, selectedId]);
   const campaignPlayers = current?.campaign.id === selectedId
     ? (state?.players ?? []).filter((player) => player.sessionId === current.session.id)
     : [];
   const pendingPlayers = campaignPlayers.filter((player) => player.status === "pending");
   const approvedPlayers = campaignPlayers.filter((player) => player.status === "approved");
   const grantablePlayers = approvedPlayers.filter((player) => player.characterId && player.characterName);
-  const itemTarget = grantablePlayers.find((player) => player.id === itemTargetId) ?? grantablePlayers[0];
   const campaignItemCatalog = state?.itemCatalog.filter((item) => item.campaignId === selectedId) ?? [];
   const selectedCatalogItem = campaignItemCatalog.find((item) => item.id === catalogItemId) ?? campaignItemCatalog[0];
   const assignedCharacterIds = new Set(campaignPlayers.map((player) => player.characterId).filter((id): id is string => id !== null));
@@ -200,6 +212,9 @@ function DmWorkspace() {
   const availableCharacters = campaignCharacters.filter((character) => !character.archivedAt && !assignedCharacterIds.has(character.id));
   const campaignActivity = state?.activity.filter((event) => event.campaignId === selectedId) ?? [];
   const campaignKnowledge = state?.knowledge.filter((entry) => entry.campaignId === selectedId) ?? [];
+  const filteredKnowledge = campaignKnowledge.filter((entry) => entry.title.toLocaleLowerCase("ru").includes(knowledgeSearch.trim().toLocaleLowerCase("ru")));
+  const selectedKnowledge = filteredKnowledge.find((entry) => entry.id === selectedKnowledgeId) ?? filteredKnowledge[0];
+  const selectedPlayer = grantablePlayers.find((player) => player.characterId === characterOverview?.character.id);
   const addresses = state?.networkAddresses ?? [];
   const selectedAddress = addresses.find((entry) => entry.address === joinAddress)?.address ??
     (addresses.some((entry) => entry.address === window.location.hostname) ? window.location.hostname : addresses[0]?.address) ?? "";
@@ -237,11 +252,20 @@ function DmWorkspace() {
     } finally { busyRef.current = false; setBusy(false); }
   }
 
-  function chooseCampaign(id: string) { setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setCharacterOverview(null); setProfileDraft(null); }
+  function chooseCampaign(id: string) { setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setCharacterOverview(null); setProfileDraft(null); setSection("sessions"); setWorkspaceMode("prepare"); setFullActivity(null); setKnowledgeTargetId(""); setSelectedKnowledgeId(""); }
+  function showSection(next: DmSection) {
+    setSection(next);
+    if (next !== "character") setGrantOpen(false);
+    if (next === "history" && selected) {
+      setFullActivity(null);
+      void request<{ activity: CampaignActivity[] }>(token, `/api/dm/campaigns/${selected.id}/activity`)
+        .then((result) => setFullActivity(result.activity)).catch((failure: Error) => setError(failure.message));
+    }
+  }
   function openCharacter(characterId: string) {
     void request<CharacterOverview>(token, `/api/dm/characters/${characterId}/overview`).then((overview) => {
       setCharacterOverview(overview); setProfileDraft(overview.character);
-      window.setTimeout(() => document.getElementById("character-overview")?.scrollIntoView({ block: "start", behavior: "smooth" }), 0);
+      setSection("character"); setGrantOpen(false);
     }).catch((failure: Error) => setError(failure.message));
   }
   function saveCharacterProfile(event: FormEvent) {
@@ -297,12 +321,12 @@ function DmWorkspace() {
   }
   function grantItem(event: FormEvent) {
     event.preventDefault();
-    if (!itemTarget?.characterId || !selectedCatalogItem) return;
+    if (!selectedPlayer?.characterId || !selectedCatalogItem) return;
     void mutate(async () => {
-      await request(token, "/api/dm/characters/" + itemTarget.characterId + "/items", {
+      await request(token, "/api/dm/characters/" + selectedPlayer.characterId + "/items", {
         catalogItemId: selectedCatalogItem.id, quantity: Number(itemQuantity)
       });
-      if (characterOverview?.character.id === itemTarget.characterId) setCharacterOverview(await request<CharacterOverview>(token, `/api/dm/characters/${itemTarget.characterId}/overview`));
+      if (characterOverview?.character.id === selectedPlayer.characterId) setCharacterOverview(await request<CharacterOverview>(token, `/api/dm/characters/${selectedPlayer.characterId}/overview`));
       setNotice("Предмет выдан игроку.");
     });
   }
@@ -367,16 +391,13 @@ function DmWorkspace() {
     });
   }
   function saveKnowledgeVisibility(entry: KnowledgeEntry, draft: { visibility: KnowledgeVisibility; characterId: string }) {
-    const unchanged = draft.visibility === entry.visibility &&
-      (draft.visibility !== "character" || draft.characterId === (entry.visibleToCharacterId ?? ""));
-    const visibility: KnowledgeVisibility = unchanged && entry.visibility !== "hidden" ? "hidden" : draft.visibility;
-    if (visibility === "hidden" && entry.visibility === "hidden") return;
+    const visibility = draft.visibility;
+    if (visibility === entry.visibility && (visibility !== "character" || draft.characterId === entry.visibleToCharacterId)) return;
     void mutate(async () => {
       await request(token, "/api/dm/knowledge/" + entry.id + "/visibility", visibility === "character"
         ? { visibility, characterId: draft.characterId }
         : { visibility });
       if (characterOverview) setCharacterOverview(await request<CharacterOverview>(token, `/api/dm/characters/${characterOverview.character.id}/overview`));
-      setKnowledgeDrafts((previous) => { const next = { ...previous }; delete next[entry.id]; return next; });
       setNotice(visibility === "hidden" ? "Запись скрыта от игроков." : "Доступ к записи обновлён.");
     });
   }
@@ -446,41 +467,21 @@ function DmWorkspace() {
           </button>)}
         </nav>
         {state?.campaigns.length === 0 && <p className="muted sidebar-empty">Пока нет кампаний</p>}
+        {selected && <nav className="dm-navigation" aria-label="Разделы ведущего">
+          <p className="dm-nav-label">Рабочее место</p>
+          {(workspaceMode === "live" ? [
+            { id: "players", label: "Игроки", icon: Users }, { id: "join", label: "Подключение", icon: QrCode },
+            { id: "characters", label: "Персонажи", icon: UserPlus }, { id: "knowledge", label: "Знания", icon: Eye },
+            { id: "history", label: "История", icon: ScrollText }
+          ] : [
+            { id: "sessions", label: "Сессии", icon: CalendarDays }, { id: "characters", label: "Персонажи", icon: UserPlus },
+            { id: "catalog", label: "Предметы", icon: PackagePlus }, { id: "knowledge", label: "Знания", icon: Eye },
+            { id: "history", label: "История", icon: ScrollText }, { id: "data", label: "Данные", icon: Database }
+          ]).map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? "selected" : ""} aria-current={section === id ? "page" : undefined} onClick={() => showSection(id as DmSection)}><Icon size={17} />{label}</button>)}
+        </nav>}
       </aside>
       <main className="content">
         {!campaignForm && !confirmation && alerts}
-        {current && <section className="current-session" aria-label="Текущая сессия">
-          <div className="current-title"><span className="live-label"><i className="live-dot" />Сейчас за столом</span><strong>{current.session.name}</strong><button className="text-link" disabled={busy} onClick={() => chooseCampaign(current.campaign.id)}>{current.campaign.name}</button></div>
-          <button className="secondary" disabled={locked} onClick={() => confirm({ kind: "end", session: current.session, previousId: current.session.id })}><CircleStop />Завершить</button>
-        </section>}
-        {workspaceMode === "live" && current?.session.status === "active" && <section className="join-panel" aria-labelledby="join-title">
-          <div className="section-heading"><h2 id="join-title"><QrCode size={18} />Подключение игроков</h2></div>
-          <div className="join-share">
-            <div className="qr-frame">{invitationUrl
-              ? <QRCodeSVG value={invitationUrl} size={184} level="M" marginSize={3}
-                title={"Ссылка для входа в сессию «" + current.session.name + "»"} />
-              : <span className="muted">Адрес сети недоступен</span>}</div>
-            <div className="join-share-info">
-              {addresses.length > 1 && <div className="field"><label htmlFor="join-address">Сеть Wi-Fi</label>
-                <select id="join-address" value={selectedAddress} onChange={(event) => setJoinAddress(event.target.value)}>
-                  {addresses.map((address) => <option key={address.address} value={address.address}>{address.label} · {address.address}</option>)}
-                </select>
-              </div>}
-              {addresses.length === 0 && <div className="field"><label htmlFor="manual-join-ip">IP ноутбука в Wi-Fi</label>
-                <input id="manual-join-ip" inputMode="decimal" autoComplete="off" placeholder="192.168.1.20"
-                  value={manualJoinAddress} onChange={(event) => setManualJoinAddress(event.target.value)} />
-              </div>}
-              {invitationUrl && <code className="invite-url">{invitationUrl}</code>}
-              <p className="join-caption"><Link2 size={15} /> Игрокам нужно подключиться к той же сети Wi-Fi.</p>
-              <button className="secondary" disabled={!invitationUrl} onClick={() => {
-                if (!invitationUrl) return;
-                void navigator.clipboard.writeText(invitationUrl).then(() => {
-                  setCopied(true); window.setTimeout(() => setCopied(false), 1800);
-                }).catch(() => setError("Не удалось скопировать ссылку. Отсканируй QR-код."));
-              }}><Copy />{copied ? "Скопировано" : "Копировать ссылку"}</button>
-            </div>
-          </div>
-        </section>}
         {phase === "loading" && !state && <p role="status" className="empty">Загрузка кампаний...</p>}
         {phase === "error" && !state && <div className="empty"><h1>Данные недоступны</h1><button className="secondary" onClick={() => { setError(""); void refresh().catch((failure: Error) => setError(failure.message)); }}><RefreshCw />Повторить</button></div>}
         {state && !selected && <section className="empty">
@@ -490,10 +491,43 @@ function DmWorkspace() {
         {selected && <>
           <div className="page-heading"><div><p className="eyebrow">Кампания</p><h1>{selected.name}</h1></div><span className="muted">{sessionCount(sessions.length)}</span></div>
           <div className="workspace-tabs" role="tablist" aria-label="Режим работы">
-            <button role="tab" aria-selected={workspaceMode === "prepare"} className={workspaceMode === "prepare" ? "selected" : ""} onClick={() => setWorkspaceMode("prepare")}><ClipboardList size={17} />Подготовка</button>
-            <button role="tab" aria-selected={workspaceMode === "live"} className={workspaceMode === "live" ? "selected" : ""} disabled={!current || current.campaign.id !== selectedId} onClick={() => setWorkspaceMode("live")}><Radio size={17} />За столом</button>
+            <button role="tab" aria-selected={workspaceMode === "prepare"} className={workspaceMode === "prepare" ? "selected" : ""} onClick={() => { setWorkspaceMode("prepare"); showSection("sessions"); }}><ClipboardList size={17} />Подготовка</button>
+            <button role="tab" aria-selected={workspaceMode === "live"} className={workspaceMode === "live" ? "selected" : ""} disabled={!current || current.campaign.id !== selectedId} onClick={() => { setWorkspaceMode("live"); showSection("players"); }}><Radio size={17} />За столом</button>
           </div>
-          {workspaceMode === "prepare" && <>
+          <div className={"dm-layout" + (section === "history" ? " dm-layout-wide" : "")}><div className="dm-main">
+          {current?.campaign.id === selectedId && <section className="current-session" aria-label="Текущая сессия">
+            <div className="current-title"><span className="live-label"><i className="live-dot" />Сейчас за столом</span><strong>{current.session.name}</strong></div>
+            <button className="secondary" disabled={locked} onClick={() => confirm({ kind: "end", session: current.session, previousId: current.session.id })}><CircleStop />Завершить</button>
+          </section>}
+          {section === "join" && workspaceMode === "live" && current?.campaign.id === selectedId && <section className="join-panel" aria-labelledby="join-title">
+            <div className="section-heading"><h2 id="join-title"><QrCode size={18} />Подключение игроков</h2></div>
+            <div className="join-share">
+              <div className="qr-frame">{invitationUrl
+                ? <QRCodeSVG value={invitationUrl} size={184} level="M" marginSize={3}
+                  title={"Ссылка для входа в сессию «" + current.session.name + "»"} />
+                : <span className="muted">Адрес сети недоступен</span>}</div>
+              <div className="join-share-info">
+                {addresses.length > 1 && <div className="field"><label htmlFor="join-address">Сеть Wi-Fi</label>
+                  <select id="join-address" value={selectedAddress} onChange={(event) => setJoinAddress(event.target.value)}>
+                    {addresses.map((address) => <option key={address.address} value={address.address}>{address.label} · {address.address}</option>)}
+                  </select>
+                </div>}
+                {addresses.length === 0 && <div className="field"><label htmlFor="manual-join-ip">IP ноутбука в Wi-Fi</label>
+                  <input id="manual-join-ip" inputMode="decimal" autoComplete="off" placeholder="192.168.1.20"
+                    value={manualJoinAddress} onChange={(event) => setManualJoinAddress(event.target.value)} />
+                </div>}
+                {invitationUrl && <code className="invite-url">{invitationUrl}</code>}
+                <p className="join-caption"><Link2 size={15} /> Игрокам нужно подключиться к той же сети Wi-Fi.</p>
+                <button className="secondary" disabled={!invitationUrl} onClick={() => {
+                  if (!invitationUrl) return;
+                  void navigator.clipboard.writeText(invitationUrl).then(() => {
+                    setCopied(true); window.setTimeout(() => setCopied(false), 1800);
+                  }).catch(() => setError("Не удалось скопировать ссылку. Отсканируй QR-код."));
+                }}><Copy />{copied ? "Скопировано" : "Копировать ссылку"}</button>
+              </div>
+            </div>
+          </section>}
+          {section === "data" && workspaceMode === "prepare" &&
           <section className="data-tools" aria-labelledby="data-tools-title">
             <div className="section-heading"><h2 id="data-tools-title"><Database size={18} />Данные и копии</h2></div>
             <div className="data-tool-actions">
@@ -517,6 +551,8 @@ function DmWorkspace() {
               })}><Download /></button>
             </div>}
           </section>
+          }
+          {section === "sessions" && workspaceMode === "prepare" && <>
           <section className="session-create" aria-labelledby="new-session-title">
             <h2 id="new-session-title">Новая сессия</h2>
             <form className="inline-form" onSubmit={createSession}>
@@ -524,36 +560,46 @@ function DmWorkspace() {
               <button className="primary" disabled={locked || !sessionName.trim()}><Plus />Создать сессию</button>
             </form>
           </section>
+          <section className="session-history" aria-labelledby="sessions-title">
+            <div className="section-heading"><h2 id="sessions-title">Сессии</h2><CalendarDays size={18} className="muted" /></div>
+            {orderedSessions.length === 0 ? <p className="empty-list">Сессий пока нет</p> : <ul className="session-list">
+              {orderedSessions.map((session) => <li key={session.id} className="session-row">
+                <div className="session-info"><strong>{session.name}</strong><span className="muted">{new Date(session.createdAt).toLocaleDateString("ru-RU")}</span></div>
+                <span className={"badge " + session.status}>{statusLabels[session.status]}</span>
+                <div className="session-action">{session.status === "planned" && <button className="secondary" disabled={locked} onClick={() => startSession(session)}><Play />Начать</button>}
+                {session.status === "active" && <button className="secondary" disabled={locked} onClick={() => confirm({ kind: "end", session, previousId: session.id })}><CircleStop />Завершить</button>}
+                {session.status === "ended" && <Check size={18} className="muted" aria-label="Завершена" />}</div>
+              </li>)}
+            </ul>}
+          </section></>}
+          {section === "catalog" && workspaceMode === "prepare" &&
           <section className="catalog-section" aria-labelledby="catalog-title">
             <div className="section-heading"><h2 id="catalog-title">Справочник предметов <span className="count">{campaignItemCatalog.length}</span></h2></div>
             <form className="inline-form catalog-create-form" onSubmit={createCatalogItem}>
-              <div className="field"><label htmlFor="catalog-item-name">Название предмета</label><input id="catalog-item-name" value={catalogItemName} maxLength={120} required disabled={locked} onChange={(event) => setCatalogItemName(event.target.value)} placeholder="Например, зелье лечения" /></div>
+              <div className="field"><label htmlFor="catalog-item-name">Название предмета</label><input id="catalog-item-name" value={catalogItemName} maxLength={120} required disabled={locked} onChange={(event) => setCatalogItemName(event.target.value)} placeholder="Например, старинный ключ" /></div>
               <button className="secondary" disabled={locked || !catalogItemName.trim()}><Plus />Добавить в справочник</button>
             </form>
             {campaignItemCatalog.length > 0 && <ul className="character-list">{campaignItemCatalog.map((item) => <li key={item.id}><PackagePlus size={16} /><span>{item.name}</span></li>)}</ul>}
-          </section>
+          </section>}
+          {section === "characters" &&
           <section className="character-tools">
             <div className="section-heading"><h2>Персонажи <span className="count">{campaignCharacters.length}</span></h2></div>
-            <form className="inline-form character-create-form" onSubmit={createCharacter}>
+            {workspaceMode === "prepare" && <form className="inline-form character-create-form" onSubmit={createCharacter}>
               <div className="field"><label htmlFor="new-character-name">Имя персонажа</label><input id="new-character-name" value={newCharacterName} maxLength={120} disabled={locked} onChange={(event) => setNewCharacterName(event.target.value)} placeholder="Для назначения игроку" /></div>
               <button className="secondary" disabled={locked || !newCharacterName.trim()}><UserPlus />Добавить персонажа</button>
-            </form>
+            </form>}
             {campaignCharacters.length > 0 && <ul className="character-list">{campaignCharacters.map((character: Character) => <li key={character.id}>
               <Users size={16} /><button className="text-link" onClick={() => openCharacter(character.id)}>{character.name}{character.archivedAt ? " · В архиве" : ""}</button>
               <button className="icon-button" title={character.archivedAt ? "Вернуть из архива" : "Архивировать"} aria-label={(character.archivedAt ? "Вернуть из архива " : "Архивировать ") + character.name} disabled={locked || (!character.archivedAt && assignedCharacterIds.has(character.id))} onClick={() => changeCharacterArchive(character)}>{character.archivedAt ? <RotateCcw /> : <Archive />}</button>
             </li>)}</ul>}
-          </section>
-          <section className="activity-section" aria-labelledby="activity-title">
-            <div className="section-heading"><h2 id="activity-title">История</h2></div>
-            {campaignActivity.length ? <ol className="activity-list">{campaignActivity.map((event) => <li key={event.id}>
-              <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString("ru-RU")}</time>
-              <span>{activitySummary(event)}</span>
-            </li>)}</ol> : <p className="muted">Пока нет событий.</p>}
-          </section>
-          </>}
-          {workspaceMode === "live" && <section className="party-section" aria-labelledby="players-title">
+          </section>}
+          {section === "history" && <section className="activity-section" aria-labelledby="activity-title">
+            <div className="section-heading"><h2 id="activity-title">История кампании</h2></div>
+            <ActivityList activity={fullActivity ?? campaignActivity} />
+          </section>}
+          {workspaceMode === "live" && section === "players" && <section className="party-section" aria-labelledby="players-title">
             <div className="section-heading"><h2 id="players-title">Игроки <span className="count">{approvedPlayers.length}</span></h2>
-              {pendingPlayers.length > 0 && <span className="badge pending">{pendingPlayers.length} новых заявки</span>}
+              {pendingPlayers.length > 0 && <span className="badge pending">Новые заявки: {pendingPlayers.length}</span>}
             </div>
             {pendingPlayers.length > 0 && <ul className="party-list">
               {pendingPlayers.map((player) => {
@@ -584,41 +630,33 @@ function DmWorkspace() {
                 <button className="text-link character-name" onClick={() => player.characterId && openCharacter(player.characterId)}>{player.characterName}</button><span className="badge accepted"><Check size={15} />В партии</span>
               </li>)}
             </ul>}
-            {grantablePlayers.length > 0 && <div id="item-grant" className="item-grant">
-              <h3><PackagePlus size={18} />Выдать предмет</h3>
-              <form className="inline-form item-grant-form" onSubmit={grantItem}>
-                <div className="field"><label htmlFor="item-target">Игрок и персонаж</label>
-                  <select id="item-target" value={itemTarget?.id ?? ""} disabled={locked}
-                    onChange={(event) => setItemTargetId(event.target.value)}>
-                    {grantablePlayers.map((player) => <option key={player.id} value={player.id}>{player.displayName} · {player.characterName}</option>)}
-                  </select>
-                </div>
-                <div className="field"><label htmlFor="catalog-item">Предмет</label>
-                  {campaignItemCatalog.length > 0
-                    ? <select id="catalog-item" value={selectedCatalogItem?.id ?? ""} disabled={locked} onChange={(event) => setCatalogItemId(event.target.value)}>{campaignItemCatalog.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                    : <button type="button" className="text-link" onClick={() => setWorkspaceMode("prepare")}>Сначала заполните справочник предметов</button>}
-                </div>
-                <div className="field quantity-field"><label htmlFor="item-quantity">Количество</label>
-                  <input id="item-quantity" type="number" min={1} max={9999} step={1} required value={itemQuantity} disabled={locked}
-                    onChange={(event) => setItemQuantity(event.target.value)} />
-                </div>
-                <button className="primary" disabled={locked || !selectedCatalogItem || !itemTarget || !Number.isInteger(Number(itemQuantity)) || Number(itemQuantity) < 1 || Number(itemQuantity) > 9999}>
-                  <PackagePlus />Выдать
-                </button>
-              </form>
-            </div>}
             {pendingPlayers.length === 0 && approvedPlayers.length === 0 && <p className="empty-list">Заявок пока нет</p>}
           </section>
           }
-          {characterOverview?.character.campaignId === selectedId && profileDraft && <section id="character-overview" className="character-overview" aria-labelledby="character-overview-title">
+          {section === "character" && characterOverview?.character.campaignId === selectedId && profileDraft && <section id="character-overview" className="character-overview" aria-labelledby="character-overview-title">
             <div className="section-heading"><h2 id="character-overview-title">{characterOverview.character.name}{characterOverview.character.archivedAt ? " · В архиве" : ""}</h2>
-              <button className="icon-button" title="Закрыть профиль" aria-label="Закрыть профиль" onClick={() => { setCharacterOverview(null); setProfileDraft(null); }}><X /></button></div>
+              <button className="icon-button" title="Закрыть профиль" aria-label="Закрыть профиль" onClick={() => { setCharacterOverview(null); setProfileDraft(null); showSection(workspaceMode === "live" ? "players" : "characters"); }}><X /></button></div>
             <p className="muted">{characterOverview.player ? `Сейчас играет: ${characterOverview.player.displayName}` : "Сейчас не назначен"}</p>
+            <div className="character-profile-readout">
+              <p><strong>Архетип:</strong> {characterOverview.character.archetype || "Не указан"}</p>
+              <p><strong>Происхождение:</strong> {characterOverview.character.origin || "Не указано"}</p>
+              <p><strong>Описание:</strong> {characterOverview.character.shortDescription || "Не указано"}</p>
+              <p><strong>Личная цель:</strong> {characterOverview.character.personalGoal || "Не указана"}</p>
+              <p><strong>Заметки ведущего:</strong> {characterOverview.character.dmNotes || "Нет"}</p>
+            </div>
             <div className="character-overview-actions">
-              {characterOverview.player && <button className="secondary" onClick={() => { setWorkspaceMode("live"); setItemTargetId(characterOverview.player!.id); window.setTimeout(() => document.getElementById("item-grant")?.scrollIntoView({ behavior: "smooth" }), 0); }}><PackagePlus />Выдать предмет</button>}
-              <button className="secondary" onClick={() => document.getElementById("knowledge-title")?.scrollIntoView({ behavior: "smooth" })}><Eye />Открыть знание</button>
+              {selectedPlayer && <button className="secondary" aria-expanded={grantOpen} onClick={() => setGrantOpen(!grantOpen)}><PackagePlus />Выдать предмет</button>}
+              <button className="secondary" onClick={() => { setKnowledgeTargetId(characterOverview.character.id); showSection("knowledge"); }}><Eye />Открыть знание</button>
               <button className="secondary" disabled={locked || (!characterOverview.character.archivedAt && !!characterOverview.player)} onClick={() => changeCharacterArchive(characterOverview.character)}>{characterOverview.character.archivedAt ? <RotateCcw /> : <Archive />}{characterOverview.character.archivedAt ? "Вернуть" : "Архивировать"}</button>
             </div>
+            {grantOpen && selectedPlayer && <form className="item-grant-form contextual-grant" onSubmit={grantItem}>
+              <div className="field"><label htmlFor="catalog-item">Предмет для {characterOverview.character.name}</label>
+                {campaignItemCatalog.length ? <select id="catalog-item" value={selectedCatalogItem?.id ?? ""} disabled={locked} onChange={(event) => setCatalogItemId(event.target.value)}>{campaignItemCatalog.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                  : <button type="button" className="text-link" onClick={() => { setWorkspaceMode("prepare"); showSection("catalog"); }}>Открыть справочник предметов</button>}
+              </div>
+              <div className="field quantity-field"><label htmlFor="item-quantity">Количество</label><input id="item-quantity" type="number" min={1} max={9999} step={1} required value={itemQuantity} disabled={locked} onChange={(event) => setItemQuantity(event.target.value)} /></div>
+              <button className="primary" disabled={locked || !selectedCatalogItem || !Number.isInteger(Number(itemQuantity)) || Number(itemQuantity) < 1 || Number(itemQuantity) > 9999}><PackagePlus />Выдать</button>
+            </form>}
             <details className="character-edit"><summary>Редактировать профиль</summary>
               <form className="character-profile-form" onSubmit={saveCharacterProfile}>
                 <label>Имя<input value={profileDraft.name} maxLength={120} required disabled={locked} onChange={(event) => editProfile("name", event.target.value)} /></label>
@@ -634,12 +672,12 @@ function DmWorkspace() {
               <div><h3>Инвентарь</h3>{characterOverview.inventory.length ? <ul>{characterOverview.inventory.map((item) => <li key={item.id}>{item.name} · {item.quantity}</li>)}</ul> : <p className="muted">Пусто</p>}</div>
               <div><h3>Знания</h3>{characterOverview.knowledge.length ? <ul>{characterOverview.knowledge.map((entry) => <li key={entry.id}>{entry.title}</li>)}</ul> : <p className="muted">Нет открытых записей</p>}</div>
               <div><h3>Личные заметки</h3>{characterOverview.notes.length ? <ul>{characterOverview.notes.map((note) => <li key={note.id}>{note.body}</li>)}</ul> : <p className="muted">Пусто</p>}</div>
-              <div><h3>Последние события</h3>{characterOverview.activity.length ? <ul>{characterOverview.activity.map((event) => <li key={event.id}>{activitySummary(event)}</li>)}</ul> : <p className="muted">Пока нет событий</p>}</div>
+              <div><h3>Последние события</h3>{characterOverview.activity.length ? <ul>{characterOverview.activity.slice(0, 5).map((event) => <li key={event.id}>{activitySummary(event)}</li>)}</ul> : <p className="muted">Пока нет событий</p>}</div>
             </div>
           </section>}
-          <section className="knowledge-section" aria-labelledby="knowledge-title">
+          {section === "knowledge" && <section className="knowledge-section" aria-labelledby="knowledge-title">
             <div className="section-heading"><h2 id="knowledge-title">Знания партии <span className="count">{campaignKnowledge.length}</span></h2></div>
-            {workspaceMode === "prepare" && <form className="knowledge-create-form" onSubmit={createKnowledge}>
+            {workspaceMode === "prepare" && <details className="knowledge-add"><summary>Добавить запись</summary><form className="knowledge-create-form" onSubmit={createKnowledge}>
               <div className="knowledge-create-fields">
                 <div className="field"><label htmlFor="knowledge-category">Тип записи</label>
                   <select id="knowledge-category" value={knowledgeCategory} disabled={locked}
@@ -657,69 +695,51 @@ function DmWorkspace() {
                 </div>
               </div>
               <button className="secondary" disabled={locked || !knowledgeTitle.trim() || !knowledgeDescription.trim()}><Plus />Добавить скрытую запись</button>
-            </form>}
-            {campaignKnowledge.length === 0 ? <p className="empty-list">Записей пока нет</p> : <ul className="knowledge-list">
-              {campaignKnowledge.map((entry) => {
-                const draft = knowledgeDrafts[entry.id] ?? {
-                  visibility: entry.visibility,
-                  characterId: entry.visibleToCharacterId ?? ""
-                };
-                const unchanged = draft.visibility === entry.visibility &&
-                  (draft.visibility !== "character" || draft.characterId === (entry.visibleToCharacterId ?? ""));
-                const nextVisibility: KnowledgeVisibility = unchanged && entry.visibility !== "hidden" ? "hidden" : draft.visibility;
-                const targetMissing = nextVisibility === "character" && !state?.characters.some((character) => character.id === draft.characterId && character.campaignId === selectedId);
-                const actionLabel = nextVisibility === "hidden"
-                  ? entry.visibility === "hidden" ? "Скрыта" : "Скрыть"
-                  : entry.visibility !== "hidden" && !unchanged ? "Обновить доступ" : "Открыть";
-                return <li key={entry.id} className="knowledge-row">
+            </form></details>}
+            <div className="field knowledge-search"><label htmlFor="knowledge-search">Найти запись</label><input id="knowledge-search" value={knowledgeSearch} onChange={(event) => { setKnowledgeSearch(event.target.value); setSelectedKnowledgeId(""); setKnowledgeTargetId(characterOverview?.character.id ?? ""); }} placeholder="Название" /></div>
+            {campaignKnowledge.length === 0 ? <p className="empty-list">Записей пока нет</p> : filteredKnowledge.length === 0 ? <p className="empty-list">Ничего не найдено</p> : <div className="knowledge-workspace">
+              <ul className="knowledge-index">{filteredKnowledge.map((entry) => <li key={entry.id}><button className={selectedKnowledge?.id === entry.id ? "selected" : ""} onClick={() => { setSelectedKnowledgeId(entry.id); setKnowledgeTargetId(entry.visibleToCharacterId ?? characterOverview?.character.id ?? ""); }}>
+                <span>{entry.title}</span><small>{knowledgeCategories[entry.category]} · {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Вся партия" : "Персонаж"}</small>
+              </button></li>)}</ul>
+              {selectedKnowledge && (() => {
+                const entry = selectedKnowledge;
+                const targetMissing = !campaignCharacters.some((character) => character.id === knowledgeTargetId);
+                return <div className="knowledge-detail">
                   <div className="knowledge-entry-copy">
                     <div className="knowledge-entry-heading"><span className="knowledge-category">{knowledgeCategories[entry.category]}</span>
-                      <strong>{entry.title}</strong></div>
+                      <h3>{entry.title}</h3></div>
                     <p>{entry.description}</p>
                     <span className={"knowledge-visibility " + entry.visibility}>
                       {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Открыто всей партии" : "Знает персонаж: " + (state?.characters.find((character) => character.id === entry.visibleToCharacterId)?.name ?? "персонаж")}
                     </span>
                   </div>
-                  <form className="knowledge-controls" onSubmit={(event) => { event.preventDefault(); saveKnowledgeVisibility(entry, draft); }}>
-                    <label className="visually-hidden" htmlFor={"knowledge-visibility-" + entry.id}>Кому показать запись</label>
-                    <select id={"knowledge-visibility-" + entry.id} value={draft.visibility} disabled={locked}
-                      onChange={(event) => setKnowledgeDrafts((previous) => ({ ...previous, [entry.id]: {
-                        ...draft, visibility: event.target.value as KnowledgeVisibility,
-                        characterId: event.target.value === "character" ? draft.characterId : ""
-                      } }))}>
-                      <option value="hidden">Скрыто</option>
-                      <option value="character">Одному персонажу</option>
-                      <option value="party">Всем игрокам</option>
+                  <div className="knowledge-quick-actions">
+                    <button className="secondary" disabled={locked || entry.visibility === "party"} onClick={() => saveKnowledgeVisibility(entry, { visibility: "party", characterId: "" })}><Eye />Открыть партии</button>
+                    {characterOverview?.character.campaignId === selectedId && <button className="secondary" disabled={locked || (entry.visibility === "character" && entry.visibleToCharacterId === characterOverview.character.id)} onClick={() => saveKnowledgeVisibility(entry, { visibility: "character", characterId: characterOverview.character.id })}><Eye />Открыть {characterOverview.character.name}</button>}
+                    <button className="secondary" disabled={locked || entry.visibility === "hidden"} onClick={() => saveKnowledgeVisibility(entry, { visibility: "hidden", characterId: "" })}><EyeOff />Скрыть</button>
+                  </div>
+                  <form className="knowledge-controls" onSubmit={(event) => { event.preventDefault(); saveKnowledgeVisibility(entry, { visibility: "character", characterId: knowledgeTargetId }); }}>
+                    <label htmlFor={"knowledge-character-" + entry.id}>Конкретному персонажу</label>
+                    <select id={"knowledge-character-" + entry.id} value={knowledgeTargetId} disabled={locked} onChange={(event) => setKnowledgeTargetId(event.target.value)}>
+                      <option value="">Выберите персонажа</option>
+                      {campaignCharacters.map((character) => <option key={character.id} value={character.id}>{character.name}</option>)}
                     </select>
-                    {draft.visibility === "character" && <>
-                      <label className="visually-hidden" htmlFor={"knowledge-character-" + entry.id}>Выберите персонажа</label>
-                      <select id={"knowledge-character-" + entry.id} value={draft.characterId} disabled={locked}
-                        onChange={(event) => setKnowledgeDrafts((previous) => ({ ...previous, [entry.id]: { ...draft, characterId: event.target.value } }))}>
-                        <option value="">Выберите персонажа</option>
-                        {(state?.characters ?? []).filter((character) => character.campaignId === selectedId).map((character) => <option key={character.id} value={character.id}>{character.name}</option>)}
-                      </select>
-                    </>}
-                    <button className={nextVisibility === "hidden" ? "secondary" : "primary"}
-                      disabled={locked || (nextVisibility === "hidden" && entry.visibility === "hidden") || targetMissing}>
-                      {nextVisibility === "hidden" ? <EyeOff /> : <Eye />}{actionLabel}
-                    </button>
+                    <button className="secondary" disabled={locked || targetMissing || (entry.visibility === "character" && entry.visibleToCharacterId === knowledgeTargetId)}><Eye />Открыть персонажу</button>
                   </form>
-                </li>;
-              })}
-            </ul>}
-          </section>
-          {workspaceMode === "prepare" && <section className="session-history" aria-labelledby="sessions-title">
-            <div className="section-heading"><h2 id="sessions-title">Сессии</h2><CalendarDays size={18} className="muted" /></div>
-            {orderedSessions.length === 0 ? <p className="empty-list">Сессий пока нет</p> : <ul className="session-list">
-              {orderedSessions.map((session) => <li key={session.id} className="session-row">
-                <div className="session-info"><strong>{session.name}</strong><span className="muted">{new Date(session.createdAt).toLocaleDateString("ru-RU")}</span></div>
-                <span className={"badge " + session.status}>{statusLabels[session.status]}</span>
-                <div className="session-action">{session.status === "planned" && <button className="secondary" disabled={locked} onClick={() => startSession(session)}><Play />Начать</button>}
-                {session.status === "active" && <button className="secondary" disabled={locked} onClick={() => confirm({ kind: "end", session, previousId: session.id })}><CircleStop />Завершить</button>}
-                {session.status === "ended" && <Check size={18} className="muted" aria-label="Завершена" />}</div>
-              </li>)}
-            </ul>}
+                </div>;
+              })()}
+            </div>}
           </section>}
+          </div>{section !== "history" && <aside className="dm-context" aria-label="Контекст и последние события">
+            {workspaceMode === "live" && <section><h2>Быстрый доступ</h2>
+              <button className="secondary" onClick={() => showSection("players")}><Users />Игроки{pendingPlayers.length ? ` · ${pendingPlayers.length} ожидают` : ""}</button>
+              <button className="secondary" onClick={() => showSection("join")}><QrCode />Показать QR</button>
+              <button className="secondary" onClick={() => showSection("knowledge")}><Eye />Знания</button>
+            </section>}
+            <section><div className="section-heading"><h2>Последние события</h2><button className="icon-button" title="Вся история" aria-label="Вся история" onClick={() => showSection("history")}><ScrollText /></button></div>
+              <ActivityList activity={campaignActivity.slice(-5).reverse()} />
+            </section>
+          </aside>}</div>
         </>}
       </main>
     </div>

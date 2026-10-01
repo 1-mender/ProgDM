@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { BookOpen, Check, CircleHelp, Clock3, Home, NotebookPen, Package, RefreshCw, ScrollText, Settings, UserRound } from "lucide-react";
+import { BookOpen, Check, CircleHelp, Clock3, Home, Package, RefreshCw, ScrollText, Settings, UserRound } from "lucide-react";
 import type { CampaignActivity, JoinInfo, KnowledgeCategory, PlayerState } from "@progdm/shared";
 
 const statusCopy = { rejected: "Нужно повторно попросить ведущего" };
@@ -48,8 +48,9 @@ function playerEvent(event: CampaignActivity): string {
 }
 
 function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState; credential: string; refresh: () => Promise<void> }) {
-  type View = "home" | "profile" | "inventory" | "knowledge" | "journal" | "notes" | "settings";
+  type View = "home" | "profile" | "inventory" | "knowledge" | "journal" | "settings";
   const [view, setView] = useState<View>("home");
+  const [journalTab, setJournalTab] = useState<"activity" | "notes">("activity");
   const [bio, setBio] = useState(player.profile?.shortDescription ?? "");
   const [goal, setGoal] = useState(player.profile?.personalGoal ?? "");
   const [displayName, setDisplayName] = useState(player.displayName);
@@ -72,9 +73,9 @@ function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState;
     finally { setBusy(false); }
   };
   const nav: { id: View; label: string; icon: typeof Home }[] = [
-    { id: "home", label: "Главная", icon: Home }, { id: "profile", label: "Профиль", icon: UserRound },
-    { id: "inventory", label: "Инвентарь", icon: Package }, { id: "knowledge", label: "Знания", icon: BookOpen },
-    { id: "journal", label: "Журнал", icon: ScrollText }, { id: "notes", label: "Заметки", icon: NotebookPen }
+    { id: "home", label: "Главная", icon: Home }, { id: "inventory", label: "Инвентарь", icon: Package },
+    { id: "knowledge", label: "Знания", icon: BookOpen }, { id: "journal", label: "Журнал", icon: ScrollText },
+    { id: "profile", label: "Профиль", icon: UserRound }
   ];
   const latest = player.newActivity[0];
   return <div className="player-app">
@@ -85,24 +86,21 @@ function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState;
       {notice && <p className="message success" role="status">{notice}</p>}
       {view === "home" && <>
         <h1>{player.characterName ?? "Персонаж ещё не назначен"}</h1>
-        {player.profile?.archetype && <p className="muted">{player.profile.archetype}</p>}
-        {player.profile?.shortDescription && <p>{player.profile.shortDescription}</p>}
+        <p className="muted">{player.sessionName}{player.profile?.archetype ? ` · ${player.profile.archetype}` : ""}</p>
         <section className="player-section"><div className="section-heading"><h2>Новое</h2>{player.newActivity.length > 0 && <span className="count">{player.newActivity.length}</span>}</div>
           {player.newActivity.length ? <><ul className="player-simple-list">{player.newActivity.slice(0, 3).map((event) => <li key={event.id}>{playerEvent(event)}</li>)}</ul>
             <div className="player-actions"><button className="secondary" onClick={() => navigate("journal")}>В журнал</button>
               {latest && <button className="secondary" disabled={busy} onClick={() => void run(() => playerPost(credential, "/api/player/activity/seen", { upToActivityId: latest.id }), "Просмотрено.")}><Check />Просмотрено</button>}</div></>
             : <p className="muted">Новых записей нет.</p>}
         </section>
-        <section className="player-section"><h2>Важное</h2>
-          <ul className="player-simple-list">{player.knowledge.slice(-2).map((entry) => <li key={entry.id}><button className="text-link" onClick={() => { navigate("knowledge"); setExpandedKnowledge(entry.id); }}>{entry.title}</button></li>)}
-            {player.inventory.slice(-2).map((item) => <li key={item.id}>{item.name} · {item.quantity}</li>)}</ul>
-          {!player.knowledge.length && !player.inventory.length && <p className="muted">Пока нет записей.</p>}
-        </section>
       </>}
-      {view === "profile" && <><h1>Профиль</h1><p className="player-profile-name">{player.characterName}</p>
-        {player.profile?.archetype && <p><strong>Архетип:</strong> {player.profile.archetype}</p>}
-        {player.profile?.origin && <p><strong>Происхождение:</strong> {player.profile.origin}</p>}
-        {player.canEdit && <form className="player-form" onSubmit={(event) => { event.preventDefault(); void run(() => playerPost(credential, "/api/player/profile", { shortDescription: bio, personalGoal: goal }), "Профиль сохранён."); }}>
+      {view === "profile" && <><h1>Профиль</h1><section className="player-section player-profile-facts"><h2>{player.characterName}</h2>
+        <p><strong>Архетип</strong><span>{player.profile?.archetype || "Не указан"}</span></p>
+        <p><strong>Происхождение</strong><span>{player.profile?.origin || "Не указано"}</span></p>
+        {!player.canEdit && <><p><strong>Описание</strong><span>{player.profile?.shortDescription || "Не указано"}</span></p><p><strong>Личная цель</strong><span>{player.profile?.personalGoal || "Не указана"}</span></p></>}
+      </section>
+        {player.canEdit && <form className="player-form player-section" onSubmit={(event) => { event.preventDefault(); void run(() => playerPost(credential, "/api/player/profile", { shortDescription: bio, personalGoal: goal }), "Профиль сохранён."); }}>
+          <h2>Мои записи в профиле</h2>
           <label htmlFor="player-bio">Описание</label><textarea id="player-bio" value={bio} maxLength={500} rows={4} disabled={busy} onChange={(event) => setBio(event.target.value)} />
           <label htmlFor="player-goal">Личная цель</label><textarea id="player-goal" value={goal} maxLength={500} rows={3} disabled={busy} onChange={(event) => setGoal(event.target.value)} />
           <button className="primary" disabled={busy}>Сохранить</button>
@@ -113,10 +111,10 @@ function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState;
         <button className="text-link" aria-expanded={expandedKnowledge === entry.id} onClick={() => setExpandedKnowledge(expandedKnowledge === entry.id ? null : entry.id)}>{entry.title}</button>
         <span className="muted">{knowledgeCategoryLabels[entry.category]}</span>{expandedKnowledge === entry.id && <p>{entry.description}</p>}
       </li>)}</ul> : <p className="muted">Пока нет открытых записей.</p>}</>}
-      {view === "journal" && <><h1>Журнал</h1>{player.recentActivity.length ? <ul className="player-simple-list">{player.recentActivity.map((event) => <li key={event.id}><time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleDateString("ru-RU")}</time>{playerEvent(event)}</li>)}</ul> : <p className="muted">Пока нет событий.</p>}
-        {latest && <button className="secondary" disabled={busy} onClick={() => void run(() => playerPost(credential, "/api/player/activity/seen", { upToActivityId: latest.id }), "Просмотрено.")}><Check />Просмотрено</button>}
-      </>}
-      {view === "notes" && <><h1>Личные заметки</h1><p className="muted">Видны тебе и ведущему.</p>
+      {view === "journal" && <><h1>Журнал</h1><div className="player-journal-tabs" role="tablist" aria-label="Разделы журнала"><button role="tab" aria-selected={journalTab === "activity"} className={journalTab === "activity" ? "selected" : ""} onClick={() => setJournalTab("activity")}>Хроника</button><button role="tab" aria-selected={journalTab === "notes"} className={journalTab === "notes" ? "selected" : ""} onClick={() => setJournalTab("notes")}>Мои заметки</button></div>
+      {journalTab === "activity" && <>{player.recentActivity.length ? <ul className="player-simple-list">{player.recentActivity.map((event) => <li key={event.id}><time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleDateString("ru-RU")}</time>{playerEvent(event)}</li>)}</ul> : <p className="muted">Пока нет событий.</p>}
+        {latest && <button className="secondary" disabled={busy} onClick={() => void run(() => playerPost(credential, "/api/player/activity/seen", { upToActivityId: latest.id }), "Просмотрено.")}><Check />Просмотрено</button>}</>}
+      {journalTab === "notes" && <><p className="muted">Личные заметки видны тебе и ведущему.</p>
         {player.notes.length > 0 && <ul className="player-simple-list">{player.notes.map((note) => <li key={note.id}><p>{note.body}</p><button className="text-link" onClick={() => { setEditingNoteId(note.id); setNoteBody(note.body); }}>Изменить</button></li>)}</ul>}
         {player.canEdit && <form className="player-form" onSubmit={(event) => { event.preventDefault(); void run(async () => {
           await playerPost(credential, editingNoteId ? `/api/player/notes/${editingNoteId}` : "/api/player/notes", { body: noteBody });
@@ -126,7 +124,7 @@ function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState;
           <textarea id="personal-note" value={noteBody} required maxLength={2000} rows={5} disabled={busy} onChange={(event) => setNoteBody(event.target.value)} />
           <div className="player-actions"><button className="primary" disabled={busy || !noteBody.trim()}>Сохранить</button>{editingNoteId && <button type="button" className="secondary" onClick={() => { setEditingNoteId(null); setNoteBody(""); }}>Отмена</button>}</div>
         </form>}
-      </>}
+      </>}</>}
       {view === "settings" && <><h1>Настройки</h1>{player.canEdit && <form className="player-form" onSubmit={(event) => { event.preventDefault(); void run(() => playerPost(credential, "/api/player/settings", { displayName }), "Имя обновлено."); }}>
         <label htmlFor="display-name">Имя игрока</label><input id="display-name" value={displayName} maxLength={60} required disabled={busy} onChange={(event) => setDisplayName(event.target.value)} />
         <button className="primary" disabled={busy || !displayName.trim()}>Сохранить</button>
