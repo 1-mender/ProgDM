@@ -1,0 +1,62 @@
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Проверки
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Проверить whitespace изменений
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ -n "$BASE_SHA" && "$BASE_SHA" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "$BASE_SHA^{commit}"; then
+            if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+              git diff --check "$BASE_SHA...$HEAD_SHA"
+            else
+              git diff --check "$BASE_SHA" "$HEAD_SHA"
+            fi
+          else
+            git show --format= --check "$HEAD_SHA"
+          fi
+
+      - name: Установить pnpm из packageManager
+        uses: pnpm/action-setup@v6
+
+      - name: Установить Node.js и настроить кеш pnpm
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          check-latest: true
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Установить зависимости по lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Проверить TypeScript и запустить все тесты
+        run: pnpm test
+
+      - name: Собрать production-версию
+        run: pnpm build
