@@ -1,7 +1,8 @@
-import { useState, type CSSProperties } from "react";
-import { ArrowUpRight, Backpack, BookOpen, BriefcaseMedical, Check, ChevronRight, CircleDot, Compass, Crosshair, Diamond, FileText, Flashlight, FlaskConical, House, KeyRound, LayoutGrid, Link2, Mail, Monitor, NotebookPen, Plus, PocketKnife, Shield, Shirt, Smartphone, Sparkles, UserRound, Wrench, X } from "lucide-react";
-import { bagCapacity, canFitInBag, character, codexInventory, equipmentSlots, inventory, knowledge, navigation, notes, profile, updates, variants, refinedArchive, type LabEquipmentSlot, type LabInventoryItem, type LabView, type Variant } from "./model";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { ArrowUpRight, Backpack, BookOpen, BriefcaseMedical, CalendarDays, Check, ChevronLeft, ChevronRight, CircleDot, Compass, Crosshair, Diamond, FileText, Flashlight, FlaskConical, House, KeyRound, LayoutGrid, Lightbulb, Link2, Mail, MapPin, Monitor, NotebookPen, Package, PawPrint, Plus, PocketKnife, Search, Shield, Shirt, Smartphone, Sparkles, UserRound, Wrench, X } from "lucide-react";
+import { bagCapacity, canFitInBag, character, codexInventory, equipmentSlots, inventory, navigation, notes, profile, updates, variants, refinedArchive, type LabEquipmentSlot, type LabInventoryItem, type LabView, type Variant } from "./model";
 import portrait from "./assets/mira.png";
+import apothecaryPortrait from "./assets/apothecary.png";
 import "./visual-lab.css";
 import "./field-archive.css";
 
@@ -10,6 +11,18 @@ const itemIcons = [KeyRound, NotebookPen, Compass];
 const codexItemIcons = { key: KeyRound, book: BookOpen, amulet: Diamond, flask: FlaskConical, letter: Mail, medical: BriefcaseMedical, compass: Compass, flashlight: Flashlight, rope: Link2, knife: PocketKnife, jacket: Shirt, lockpicks: Wrench };
 const equipmentIcons = { primary: Crosshair, secondary: CircleDot, protection: Shield, accessory: Diamond, tool: Wrench, special: Sparkles };
 type ItemSelection = { item: LabInventoryItem; source: "bag" | "equipment"; slotId?: string };
+type KnowledgeKind = "Персонажи" | "Места" | "Существа" | "Предметы" | "События" | "Факты";
+type KnowledgeEntry = { id: string; name: string; kind: KnowledgeKind; type: string; summary: string; detail: string; session: string; isNew?: boolean; hasImage?: boolean };
+const knowledgeCategories = ["Все", "Персонажи", "Места", "Существа", "Предметы", "События", "Факты"] as const;
+const knowledgeIcons = { Персонажи: UserRound, Места: MapPin, Существа: PawPrint, Предметы: Package, События: CalendarDays, Факты: Lightbulb };
+const b2Knowledge: readonly KnowledgeEntry[] = [
+  { id: "apothecary", name: "Аптекарь", kind: "Персонажи", type: "Персонаж мира", summary: "Владелец аптеки в северной части города.", detail: "Персонаж видел его возле закрытого склада. По словам местных, он работает по ночам и редко оставляет лавку без присмотра.", session: "Сессия 3", hasImage: true },
+  { id: "tunnels", name: "Северные туннели", kind: "Места", type: "Место", summary: "Старый подземный путь под северным трактом.", detail: "Входы отмечены каменными столбами. Внутри прохладно и тихо; часть проходов завалена.", session: "Сессия 2" },
+  { id: "black-dog", name: "Чёрный пёс", kind: "Существа", type: "Существо", summary: "Крупный зверь, замеченный у заброшенной переправы.", detail: "Местные описывают его как бесшумного и осторожного. Следы обрываются у кромки леса.", session: "Сессия 3" },
+  { id: "medallion", name: "Сломанный медальон", kind: "Предметы", type: "Предмет", summary: "Медный медальон с повреждённым креплением.", detail: "На обратной стороне сохранился фрагмент гравировки. Символ совпадает с отметкой на старой карте.", session: "Сессия 2" },
+  { id: "caravan", name: "Исчезновение каравана", kind: "События", type: "Событие", summary: "Торговый караван не прибыл в город в назначенный день.", detail: "Последний раз караван видели на северном тракте. Причина исчезновения пока неизвестна.", session: "Сессия 3", isNew: true },
+  { id: "symbol", name: "Странный символ", kind: "Факты", type: "Факт", summary: "Знак повторяется на каменных дверях и медальоне.", detail: "Персонаж видел этот знак в двух разных местах. Его значение пока не установлено.", session: "Сессия 1", isNew: true },
+];
 
 function VisualTokens({ variant }: { variant: Variant }) {
   return <details className="vl-tokens" open>
@@ -83,13 +96,13 @@ function PlayerPreview({ variant, view, onView, refined = false }: { variant: Va
       </section>
     </>}
     {view === "Инвентарь" && <CodexInventory bagItems={bagItems} equippedItems={equippedItems} bagSlotsUsed={bagSlotsUsed} onSelect={(item, source, slotId) => { setSelectedItem({ item, source, slotId }); setItemNotice(""); }} />}
-    {view === "Знания" && <section><div className="vl-heading"><h2>Знания</h2><span className="vl-counter">{knowledge.length}</span></div>{knowledge.map(entry => <details className="vl-item vl-codex-entry" key={entry.id}><summary><strong>{entry.name}<small>{entry.category}</small></strong><ChevronRight size={18} /></summary><p>{entry.detail}</p></details>)}</section>}
+    {view === "Знания" && <CodexKnowledge />}
     {view === "Журнал" && <section className="vl-journal"><div className="vl-heading"><h2>Журнал</h2></div><div className="vl-journal-tabs" role="tablist" aria-label="Журнал"><button role="tab" aria-selected={journalTab === "chronicle"} onClick={() => { setJournalTab("chronicle"); setShowNoteForm(false); }}>Хроника</button><button role="tab" aria-selected={journalTab === "notes"} onClick={() => setJournalTab("notes")}>Мои заметки</button></div>
       {journalTab === "chronicle" ? <section className="vl-chronicle"><h3>18 сентября</h3>{updates.map(update => <details key={update.id} className="vl-item vl-codex-entry"><summary><strong>{update.text}<small>{update.detail}</small></strong><ChevronRight size={18} /></summary><p>{update.detail}</p></details>)}</section> : <section className="vl-personal-notes">{personalNotes.map(note => <details className="vl-item vl-codex-entry" key={note.id}><summary><strong>{note.title}<small>{note.detail}</small></strong><ChevronRight size={18} /></summary><p>{note.detail}</p></details>)}
         {showNoteForm ? <form onSubmit={event => { event.preventDefault(); if (noteDraft.trim()) { setPersonalNotes(current => [...current, { id: `note-${current.length}`, title: noteDraft.trim(), detail: noteDraft.trim() }]); setNoteDraft(""); setShowNoteForm(false); } }}><label htmlFor="vl-note-draft">Новая заметка</label><textarea id="vl-note-draft" value={noteDraft} onChange={event => setNoteDraft(event.target.value)} placeholder="Текст заметки" /><button type="submit">Сохранить заметку</button></form> : <button className="vl-new-note" onClick={() => setShowNoteForm(true)}><Plus size={18} />Новая заметка</button>}
       </section>}</section>}
     {view === "Профиль" && <section className="vl-codex-profile">{hero}{editingProfile ? <form onSubmit={event => { event.preventDefault(); setEditingProfile(false); }}><label>Архетип<input value={character.archetype} readOnly /></label><label>Происхождение<input value={character.origin} readOnly /></label><label>Описание<textarea value={profileDraft.description} onChange={event => setProfileDraft(current => ({ ...current, description: event.target.value }))} /></label><label>Личная цель<textarea value={profileDraft.goal} onChange={event => setProfileDraft(current => ({ ...current, goal: event.target.value }))} /></label><button type="submit">Готово</button></form> : <><dl className="vl-profile-fields"><div><dt>Архетип</dt><dd>{character.archetype}</dd></div><div><dt>Происхождение</dt><dd>{character.origin}</dd></div><div><dt>Описание</dt><dd>{profileDraft.description}</dd></div><div><dt>Личная цель</dt><dd>{profileDraft.goal}</dd></div></dl><button className="vl-profile-edit" onClick={() => setEditingProfile(true)}>Редактировать</button></>}</section>}
-    <footer className="vl-record-footer"><span className="vl-meta">Кампания: Северный путь</span></footer>
+    {view !== "Знания" && <footer className="vl-record-footer"><span className="vl-meta">Кампания: Северный путь</span></footer>}
   </>;
   const legacy = <>
     <div className="vl-page-caption"><span className="vl-meta">ЛИЧНОЕ ДЕЛО / 014</span><span className="vl-stamp">СЕВЕР</span></div>
@@ -111,16 +124,10 @@ function PlayerPreview({ variant, view, onView, refined = false }: { variant: Va
 }
 
 function CodexInventory({ bagItems, equippedItems, bagSlotsUsed, onSelect }: { bagItems: LabInventoryItem[]; equippedItems: LabEquipmentSlot[]; bagSlotsUsed: number; onSelect: (item: LabInventoryItem, source: ItemSelection["source"], slotId?: string) => void }) {
-  const raritySamples = [
-    { key: "common", label: "Обычный" },
-    { key: "uncommon", label: "Необычный" },
-    { key: "rare", label: "Редкий" },
-    { key: "unique", label: "Уникальный" },
-  ] as const;
   return <div className="vl-codex-inventory">
     <div className="vl-heading vl-inventory-title"><h2>Инвентарь</h2></div>
     <section className="vl-equipped"><div className="vl-heading"><h3>Экипировано</h3></div><div className="vl-equipped-grid">{equippedItems.map(slot => { const SlotIcon = equipmentIcons[slot.icon]; const ItemIcon = slot.item && codexItemIcons[slot.item.icon]; return slot.item ? <button className={`vl-equipment-slot is-equipped vl-rarity-${slot.item.rarityKey}`} key={slot.id} onClick={() => onSelect(slot.item!, "equipment", slot.id)} aria-label={`${slot.name}: ${slot.item.name}`}>
-      <span className="vl-equipment-icon">{ItemIcon && <ItemIcon size={22} />}</span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>{slot.item.name}</strong></span><ChevronRight size={16} />
+      <span className={`vl-equipment-icon vl-rarity-${slot.item.rarityKey}`}>{ItemIcon && <ItemIcon size={22} />}</span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>{slot.item.name}</strong></span><ChevronRight size={16} />
     </button> : <div className="vl-equipment-slot is-empty" key={slot.id} aria-label={`${slot.name}: пусто`}>
       <span className="vl-equipment-icon"><SlotIcon size={19} /></span><span className="vl-equipment-copy"><small>{slot.name}</small><strong>Пусто</strong></span>
     </div>; })}</div></section>
@@ -130,14 +137,57 @@ function CodexInventory({ bagItems, equippedItems, bagSlotsUsed, onSelect }: { b
       </button>; })}
       {Array.from({ length: Math.max(0, bagCapacity - bagSlotsUsed) }, (_, index) => <div className="vl-bag-cell is-empty" key={`empty-${index}`} aria-label="Пустой слот"><span aria-hidden="true">Пусто</span></div>)}
     </div></section>
-    <section className="vl-rarity-comparison" aria-label="Сравнение оформления редкости">
-      <h3>Сравнение рамок</h3>
-      <div className="vl-rarity-comparison-grid">{raritySamples.map(sample => <div className="vl-rarity-comparison-entry" key={sample.key}>
-        <div className={`vl-bag-cell is-filled vl-rarity-${sample.key}`} aria-label={`Амулет, редкость: ${sample.label}`}>
-          <span className="vl-item-card-art"><Diamond size={22} /></span><strong>Амулет</strong><span className="vl-item-category">Артефакт</span>
-        </div><span className="vl-rarity-demo-label">{sample.label}</span>
-      </div>)}</div>
-      <div className="vl-status-comparison"><span>Статус предмета</span><div><span className="vl-item-status"><i aria-hidden="true" />Ключевой</span><span className="vl-item-status"><i aria-hidden="true" />Сюжетный</span></div></div>
+  </div>;
+}
+
+function CodexKnowledge() {
+  const [category, setCategory] = useState<(typeof knowledgeCategories)[number]>("Все");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [readIds, setReadIds] = useState<string[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selectedEntry = b2Knowledge.find(entry => entry.id === selectedId);
+  const filteredEntries = b2Knowledge.filter(entry => {
+    const matchesCategory = category === "Все" || entry.kind === category;
+    const search = query.trim().toLocaleLowerCase("ru");
+    const matchesQuery = !search || `${entry.name} ${entry.kind} ${entry.type}`.toLocaleLowerCase("ru").includes(search);
+    return matchesCategory && matchesQuery;
+  });
+
+  useEffect(() => {
+    rootRef.current?.closest(".vl-player-scroll")?.scrollTo({ top: 0 });
+  }, [category, query, selectedId]);
+
+  if (selectedEntry) {
+    const Icon = knowledgeIcons[selectedEntry.kind];
+    return <div className="vl-knowledge-screen" ref={rootRef}>
+      <section className="vl-knowledge-detail">
+        <button className="vl-knowledge-back" onClick={() => setSelectedId(null)}><ChevronLeft size={19} />Знания</button>
+        <header className="vl-knowledge-detail-title"><h2>{selectedEntry.name}</h2><span>{selectedEntry.type}</span></header>
+        {selectedEntry.hasImage && <div className="vl-knowledge-art vl-knowledge-art--portrait"><img src={apothecaryPortrait} alt="Аптекарь в своей лавке" /></div>}
+        <section><h3>Кратко</h3><p>{selectedEntry.summary}</p></section>
+        <section><h3>Что известно</h3><p>{selectedEntry.detail}</p></section>
+        <div className="vl-knowledge-opened"><span>Открыто</span><strong>{selectedEntry.session}</strong></div>
+      </section>
+    </div>;
+  }
+
+  return <div className="vl-knowledge-screen" ref={rootRef}>
+    <section className="vl-knowledge-list-screen" aria-label="Справочник персонажа">
+      <div className="vl-heading vl-knowledge-heading"><h2>Знания</h2><span className="vl-knowledge-count">{b2Knowledge.length} записей</span><button className="vl-knowledge-search-toggle" aria-label={searchOpen ? "Закрыть поиск" : "Поиск по знаниям"} title={searchOpen ? "Закрыть поиск" : "Поиск по знаниям"} onClick={() => { setSearchOpen(open => !open); setQuery(""); }}>{searchOpen ? <X size={18} /> : <Search size={18} />}</button></div>
+      {searchOpen && <label className="vl-knowledge-search"><Search size={17} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Найти запись" aria-label="Найти запись" /></label>}
+      <div className="vl-knowledge-categories" role="group" aria-label="Категории знаний" onWheel={event => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.currentTarget.scrollLeft += event.deltaY; event.preventDefault(); } }}>{knowledgeCategories.map(item => <button key={item} aria-pressed={category === item} onClick={() => setCategory(item)}>{item}</button>)}</div>
+      <div className="vl-knowledge-entries" aria-label="Записи справочника">
+        {filteredEntries.map(entry => {
+          const Icon = knowledgeIcons[entry.kind];
+          const isNew = Boolean(entry.isNew && !readIds.includes(entry.id));
+          return <button className="vl-knowledge-row" key={entry.id} onClick={() => { setReadIds(current => current.includes(entry.id) ? current : [...current, entry.id]); setSelectedId(entry.id); }} aria-label={`${entry.name}, ${entry.type}${isNew ? ", новое" : ""}`}>
+            <span className="vl-knowledge-row-icon" aria-hidden="true"><Icon size={19} strokeWidth={1.6} /></span><span className="vl-knowledge-row-copy"><strong>{entry.name}</strong><small>{entry.type}</small></span>{isNew && <span className="vl-knowledge-new">Новое</span>}<ChevronRight className="vl-knowledge-row-chevron" size={18} aria-hidden="true" />
+          </button>;
+        })}
+        {filteredEntries.length === 0 && <p className="vl-knowledge-empty">Записей не найдено.</p>}
+      </div>
     </section>
   </div>;
 }

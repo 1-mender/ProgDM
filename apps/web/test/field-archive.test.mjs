@@ -67,26 +67,81 @@ test("B2 inventory refuses to return equipped items when the bag has no free slo
   assert.equal(canFitInBag(11, 2), false);
 });
 
-test("B2 item cards encode rarity in their frames and keep rarity text in the detail sheet", () => {
+test("B2 applies the Relic surface and keeps rarity tint inside the item art", () => {
   const cardMarkup = visualSource.match(/bagItems\.map\(item => \{[\s\S]*?<\/button>; \}\)/)?.[0];
   assert.ok(cardMarkup);
   assert.match(cardMarkup, /vl-item-card-art/);
   assert.match(cardMarkup, /vl-item-category/);
   assert.match(cardMarkup, /vl-item-status/);
   assert.doesNotMatch(cardMarkup, /vl-rarity-label/);
+  assert.match(cardMarkup, /item\.quantity > 1/);
+  assert.match(visualCss, /button\.vl-bag-cell\.is-filled[\s\S]*?box-shadow: inset 0 0 0 2px #f4f0e5,inset 0 0 0 3px #e3ddce/);
+  assert.match(visualCss, /\.vl-item-card-art::after[\s\S]*?background: var\(--vl-rarity-film,transparent\); mix-blend-mode: multiply/);
+  assert.match(visualCss, /\.vl-rarity-common \{ --vl-rarity-film: linear-gradient\(145deg,rgba\(128,125,112,\.045\)/);
+  assert.match(visualCss, /\.vl-rarity-uncommon \{ --vl-rarity-film: linear-gradient\(145deg,rgba\(110,132,91,\.17\)/);
+  assert.match(visualCss, /\.vl-rarity-rare \{ --vl-rarity-film: linear-gradient\(145deg,rgba\(96,124,151,\.18\)/);
+  assert.match(visualCss, /\.vl-rarity-unique \{ --vl-rarity-film: linear-gradient\(145deg,rgba\(132,108,145,\.18\)/);
+  assert.doesNotMatch(visualCss, /\.vl-bag-cell\.vl-rarity-(?:uncommon|rare|unique)::(?:before|after)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-item-status[\s\S]*?clip-path:/);
   assert.match(visualSource, /Редкость: \{item\.rarity\}/);
-  assert.match(visualCss, /vl-rarity-uncommon::after/);
-  assert.match(visualCss, /vl-rarity-rare::before/);
-  assert.match(visualCss, /vl-rarity-unique::before/);
+  assert.match(visualSource, /vl-rarity-\$\{slot\.item\.rarityKey\}/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-equipment-slot \{[\s\S]*?box-shadow: inset 0 0 0 2px #f4f0e5,inset 0 0 0 3px #e3ddce/);
+  assert.match(visualCss, /\.vl-detail-icon[\s\S]*?background: var\(--vl-rarity-film,linear-gradient\(transparent,transparent\)\),#e5dfd1/);
 });
 
-test("B2 inventory includes a four-step frame comparison and separate ticket-style status samples", () => {
-  const inventoryMarkup = visualSource.match(/function CodexInventory[\s\S]*?\n}\n\nfunction ItemDetailPanel/)?.[0];
-  assert.ok(inventoryMarkup);
-  for (const rarity of ["common", "uncommon", "rare", "unique"]) assert.match(inventoryMarkup, new RegExp(`key: "${rarity}"`));
-  assert.match(inventoryMarkup, /Сравнение рамок/);
-  assert.match(inventoryMarkup, /vl-item-status[\s\S]*?Ключевой/);
-  assert.match(inventoryMarkup, /vl-item-status[\s\S]*?Сюжетный/);
-  assert.match(visualSource, /Статус: \{item\.status\}/);
-  assert.match(visualCss, /clip-path: polygon\(0 0,100% 0,100% 32%/);
+test("B2 uses one integrated card style without comparison lab blocks", () => {
+  assert.doesNotMatch(visualSource, /ItemCardLab|LabItemCard|item-card-lab\.css|CODEX CARD|SPECIMEN \/ TAG/);
+  assert.doesNotMatch(visualCss, /icl-card--(?:codex|relic|specimen)|icl-rarity-comparison/);
+  assert.match(visualSource, /function CodexInventory/);
+  assert.deepEqual(equipmentSlots.map(slot => slot.name), ["Основное", "Вторичное", "Защита", "Аксессуар", "Инструмент", "Особое"]);
+  assert.match(visualCss, /grid-template-columns: repeat\(3,minmax\(0,1fr\)\); grid-auto-rows: 146px/);
+  assert.match(visualSource, /Редкость: \{item\.rarity\}/);
+  assert.match(source, /status: "Ключевой"/);
+  assert.match(source, /status: "Сюжетный"/);
+  assert.match(visualSource, /Занимает/);
+  assert.match(visualSource, /Снять/);
+});
+
+test("B2 knowledge uses local universal filters, new markers and a separate detail view", () => {
+  const knowledgeMarkup = visualSource.match(/function CodexKnowledge\(\)[\s\S]*?\n}\n\nfunction ItemDetailPanel/)?.[0];
+  assert.ok(knowledgeMarkup);
+  for (const title of ["Аптекарь", "Северные туннели", "Странный символ", "Чёрный пёс", "Сломанный медальон", "Исчезновение каравана"]) {
+    assert.match(visualSource, new RegExp(title));
+  }
+  for (const category of ["Все", "Персонажи", "Места", "Существа", "Предметы", "События", "Факты"]) {
+    assert.match(visualSource, new RegExp(`"${category}"`));
+  }
+  assert.match(knowledgeMarkup, /role="group" aria-label="Категории знаний"/);
+  assert.match(knowledgeMarkup, /aria-pressed=\{category === item\}/);
+  assert.match(knowledgeMarkup, /entry\.isNew && !readIds\.includes\(entry\.id\)/);
+  assert.match(knowledgeMarkup, /setReadIds\(current => current\.includes\(entry\.id\) \? current : \[\.\.\.current, entry\.id\]\)/);
+  assert.match(knowledgeMarkup, /<h3>Кратко<\/h3>/);
+  assert.match(knowledgeMarkup, /<h3>Что известно<\/h3>/);
+  assert.match(knowledgeMarkup, /<span>Открыто<\/span>/);
+  assert.match(visualSource, /hasImage\?: boolean/);
+  assert.match(visualSource, /import apothecaryPortrait from "\.\/assets\/apothecary\.png"/);
+  assert.match(visualSource, /session: "Сессия 3", hasImage: true/);
+  assert.match(knowledgeMarkup, /selectedEntry\.hasImage && <div className="vl-knowledge-art vl-knowledge-art--portrait"><img src=\{apothecaryPortrait\} alt="Аптекарь в своей лавке" \/><\/div>/);
+  assert.match(visualSource, /id: "caravan", name: "Исчезновение каравана"[\s\S]*?isNew: true/);
+  assert.doesNotMatch(knowledgeMarkup, /Портрет персонажа|Условный портрет/);
+  assert.doesNotMatch(knowledgeMarkup, /Изображение не добавлено/);
+  assert.match(knowledgeMarkup, /\$\{entry\.name\} \$\{entry\.kind\} \$\{entry\.type\}/);
+  assert.doesNotMatch(knowledgeMarkup, /entry\.summary \}\} \$\{entry\.detail/);
+  assert.match(knowledgeMarkup, /autoFocus value=\{query\}/);
+  assert.match(knowledgeMarkup, /setSearchOpen\(open => !open\); setQuery\(""\)/);
+  assert.match(knowledgeMarkup, /\{b2Knowledge\.length\} записей/);
+  assert.match(visualCss, /\.vl-knowledge-count \{ flex: 0 0 auto; color: var\(--vl-muted\); font: 13px\/1\.3 Arial,sans-serif; white-space: nowrap; \}/);
+  assert.match(visualSource, /view !== "Знания" && <footer className="vl-record-footer"/);
+  assert.match(visualCss, /\.vl-knowledge-categories \{ display: flex; gap: 8px; overflow-x: auto/);
+  assert.match(visualCss, /scrollbar-width: none; -ms-overflow-style: none/);
+  assert.match(visualCss, /\.vl-knowledge-categories::\-webkit-scrollbar \{ display: none/);
+  assert.match(visualCss, /\.vl-knowledge-categories button \{ flex: 0 0 auto; min-height: 44px/);
+  assert.match(visualCss, /button\[aria-pressed=true\] \{ border-bottom-color: var\(--vl-accent\)/);
+  assert.match(visualCss, /\.vl-knowledge-row \{ display: flex;[\s\S]*?min-height: 72px/);
+  assert.match(visualCss, /\.vl-knowledge-art--portrait \{ position: relative; min-height: 140px; max-height: 176px; aspect-ratio: 2 \/ 1/);
+  assert.match(visualCss, /\.vl-knowledge-art--portrait img \{ position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover/);
+  assert.match(visualCss, /\.vl-knowledge-back \{[\s\S]*?margin: -6px 0 8px -6px/);
+  assert.match(visualCss, /\.vl-knowledge-opened \{[\s\S]*?font: 12px\/1\.4 Arial,sans-serif/);
+  assert.match(visualCss, /\.vl-knowledge-detail > section p \{[\s\S]*?font: 15px\/1\.6 Arial/);
+  assert.doesNotMatch(knowledgeMarkup, /vl-identity|vl-bag-cell/);
 });
