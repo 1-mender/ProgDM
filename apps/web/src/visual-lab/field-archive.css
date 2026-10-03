@@ -71,13 +71,62 @@
 .vl-b-refined .vl-knowledge-detail > section p { margin: 0; color: var(--vl-text); font: 15px/1.6 Arial,sans-serif; }
 .vl-b-refined .vl-knowledge-opened { display: flex; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--vl-border); color: var(--vl-muted); font: 12px/1.4 Arial,sans-serif; }
 .vl-b-refined .vl-knowledge-opened strong { color: var(--vl-text); font-weight: 500; }
-.vl-b-refined .vl-journal-tabs { display: flex; gap: 20px; margin: 0 0 14px; border-bottom: 1px solid var(--vl-border); }
+.vl-b-refined .vl-journal > .vl-heading { margin-bottom: 5px; }
+.vl-b-refined .vl-journal-tabs { display: flex; gap: 20px; margin: 0 0 12px; border-bottom: 1px solid var(--vl-border); }
 .vl-b-refined .vl-journal-tabs button { position: relative; min-height: 44px; padding: 8px 2px; font: 15px Arial,sans-serif; color: var(--vl-muted); }
 .vl-b-refined .vl-journal-tabs button[aria-selected=true] { color: var(--vl-text); box-shadow: inset 0 -2px var(--vl-accent); }
-.vl-b-refined .vl-chronicle h3 { margin: 2px 0 5px; font: 16px Georgia,serif; }
+.vl-b-refined .vl-chronicle-group + .vl-chronicle-group { margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--vl-border); }
+.vl-b-refined .vl-chronicle-group > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 7px; padding-bottom: 6px; border-bottom: 1px solid var(--vl-border); }
+.vl-b-refined .vl-chronicle-group h3, .vl-b-refined .vl-note-group h3 { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--vl-text); font: 16px/1.35 Georgia,serif; }
+.vl-b-refined .vl-chronicle-group > header > span { color: var(--vl-muted); font: 12px/1.4 Arial,sans-serif; white-space: nowrap; }
+.vl-b-refined .vl-chronicle-events { position: relative; }
+.vl-b-refined .vl-chronicle-events::before { position: absolute; top: 8px; bottom: 8px; left: 53px; border-left: 1px solid var(--vl-border); content: ""; }
+.vl-b-refined .vl-chronicle-event { position: relative; display: grid; grid-template-columns: 38px 18px minmax(0,1fr) 17px; align-items: center; gap: 7px; width: 100%; min-height: 60px; padding: 8px 0; border: 0; border-bottom: 1px solid var(--vl-border); color: var(--vl-text); background: transparent; text-align: left; }
+.vl-b-refined .vl-chronicle-event time { align-self: start; padding-top: 4px; color: var(--vl-muted); font: 11px/1.3 Arial,sans-serif; font-variant-numeric: tabular-nums; }
+.vl-b-refined .vl-chronicle-axis { z-index: 1; display: grid; width: 18px; height: 24px; place-items: center; color: var(--vl-muted); background: var(--vl-surface); }
+.vl-b-refined .vl-chronicle-axis > span { display: grid; place-items: center; }
+.vl-b-refined .vl-chronicle-axis svg { width: 14px; height: 14px; stroke-width: 1.7; }
+.vl-b-refined .vl-event-icon { flex: 0 0 32px; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--vl-border); color: var(--vl-muted); background: var(--vl-bg); }
+.vl-b-refined .vl-event-copy { display: grid; grid-column: 3; gap: 3px; min-width: 0; }
+.vl-b-refined .vl-event-copy strong { color: var(--vl-text); font: 500 14px/1.3 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-event-copy small { color: var(--vl-muted); font: 13px/1.3 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-chronicle-chevron { grid-column: 4; color: var(--vl-muted); }
+.vl-b-refined .vl-journal-back { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; margin: -6px 0 7px -6px; padding: 5px 6px; border: 0; color: var(--vl-accent); background: transparent; font: 14px Arial,sans-serif; }
+.vl-b-refined .vl-event-detail-heading { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+.vl-b-refined .vl-event-detail-heading h3 { margin: 0 0 4px; font: 21px/1.25 Georgia,serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-event-detail-heading strong { color: var(--vl-muted); font: 14px/1.4 Arial,sans-serif; }
+.vl-b-refined .vl-event-metadata { margin: 0 0 14px; color: var(--vl-muted); font: 12px/1.4 Arial,sans-serif; }
+.vl-b-refined .vl-event-description { margin: 0; padding: 12px 0; border-top: 1px solid var(--vl-border); color: var(--vl-text); font: 15px/1.55 Arial,sans-serif; }
+.vl-b-refined .vl-event-open { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; margin-top: 8px; padding: 7px 10px; border: 1px solid var(--vl-border); color: var(--vl-accent); background: transparent; font: 14px Arial,sans-serif; }
+.vl-b-refined .vl-note-group + .vl-note-group { margin-top: 17px; }
+.vl-b-refined .vl-note-group h3 { min-height: 28px; margin-bottom: 2px; color: var(--vl-muted); font: 14px/1.35 Arial,sans-serif; }
+.vl-b-refined .vl-note-group h3 svg { color: var(--vl-accent); }
+.vl-b-refined .vl-note-row { display: grid; grid-template-columns: minmax(0,1fr) 16px 18px; align-items: center; gap: 8px; width: 100%; min-height: 68px; padding: 9px 0; border: 0; border-bottom: 1px solid var(--vl-border); color: var(--vl-text); background: transparent; text-align: left; }
+.vl-b-refined .vl-note-marker { display: inline-flex; align-items: center; gap: 4px; width: max-content; max-width: 100%; color: var(--vl-muted); font: 11px/1.25 Arial,sans-serif; white-space: nowrap; }
+.vl-b-refined .vl-note-marker--важно { color: var(--vl-accent); }
+.vl-b-refined .vl-note-copy { display: grid; justify-items: start; gap: 3px; min-width: 0; }
+.vl-b-refined .vl-note-copy strong { color: var(--vl-text); font: 500 14px/1.3 Arial,sans-serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-note-copy small { display: -webkit-box; overflow: hidden; color: var(--vl-muted); font: 13px/1.35 Arial,sans-serif; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.vl-b-refined .vl-note-pin { align-self: start; margin-top: 2px; color: var(--vl-muted); }
+.vl-b-refined .vl-note-chevron { color: var(--vl-muted); }
 .vl-b-refined .vl-personal-notes form, .vl-b-refined .vl-codex-profile form { display: grid; gap: 10px; margin-top: 14px; }
 .vl-b-refined .vl-personal-notes label, .vl-b-refined .vl-codex-profile label { margin: 0; color: var(--vl-muted); font: 14px Arial,sans-serif; }
 .vl-b-refined .vl-personal-notes textarea, .vl-b-refined .vl-codex-profile textarea, .vl-b-refined .vl-codex-profile input { margin-top: 6px; font: 15px/1.5 Arial,sans-serif; }
+.vl-b-refined .vl-note-editor { gap: 11px; padding-top: 4px; }
+.vl-b-refined .vl-note-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.vl-b-refined .vl-note-editor-heading h3 { min-width: 0; margin: 0; font: 20px/1.3 Georgia,serif; overflow-wrap: anywhere; }
+.vl-b-refined .vl-note-editor-heading button { flex: 0 0 42px; width: 42px; height: 42px; min-height: 42px; border: 1px solid var(--vl-border); color: var(--vl-muted); background: transparent; }
+.vl-b-refined .vl-note-editor label input:not([type=checkbox]), .vl-b-refined .vl-note-editor label select, .vl-b-refined .vl-note-editor label textarea { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 9px 10px; border: 1px solid var(--vl-border); color: var(--vl-text); background: #f4f0e5; font: 15px/1.45 Arial,sans-serif; }
+.vl-b-refined .vl-note-editor label input:not([type=checkbox]), .vl-b-refined .vl-note-editor label select { min-height: 44px; }
+.vl-b-refined .vl-note-editor label textarea { min-height: 100px; resize: vertical; }
+.vl-b-refined .vl-note-editor .vl-note-pin-toggle { display: flex; align-items: center; gap: 7px; min-height: 44px; color: var(--vl-text); }
+.vl-b-refined .vl-note-pin-toggle input { flex: 0 0 18px; width: 18px; height: 18px; min-height: 18px; margin: 0; padding: 0; accent-color: var(--vl-accent); }
+.vl-b-refined .vl-note-pin-toggle svg { color: var(--vl-muted); }
+.vl-b-refined .vl-note-limit { margin: -4px 0 0 26px; color: var(--vl-muted); font: 12px/1.4 Arial,sans-serif; }
+.vl-b-refined .vl-note-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.vl-b-refined .vl-note-editor-actions button { min-height: 44px; margin: 0; }
+.vl-b-refined .vl-note-editor-actions button[type=submit] { border-color: var(--vl-accent); color: var(--vl-accent); }
+.vl-b-refined .vl-note-editor-actions button:disabled { opacity: .45; }
 .vl-b-refined .vl-new-note, .vl-b-refined .vl-profile-edit, .vl-b-refined form > button { min-height: 44px; margin-top: 12px; border: 1px solid var(--vl-border); padding: 9px 13px; background: transparent; font: 14px Arial,sans-serif; }
 .vl-b-refined .vl-new-note { display: inline-flex; gap: 8px; }
 .vl-b-refined .vl-profile-fields { margin: 0; border-top: 1px solid var(--vl-border); }

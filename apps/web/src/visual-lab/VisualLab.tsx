@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { ArrowUpRight, Backpack, BookOpen, BriefcaseMedical, CalendarDays, Check, ChevronLeft, ChevronRight, CircleDot, Compass, Crosshair, Diamond, FileText, Flashlight, FlaskConical, House, KeyRound, LayoutGrid, Lightbulb, Link2, Mail, MapPin, Monitor, NotebookPen, Package, PawPrint, Plus, PocketKnife, Search, Shield, Shirt, Smartphone, Sparkles, UserRound, Wrench, X } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { ArrowUpRight, Backpack, BookOpen, BriefcaseMedical, CalendarDays, Check, ChevronLeft, ChevronRight, CircleDot, CircleHelp, Compass, Crosshair, Diamond, FileText, Flag, Flashlight, FlaskConical, House, KeyRound, LayoutGrid, Lightbulb, Link2, Mail, MapPin, Monitor, NotebookPen, Package, PawPrint, Pin, Plus, PocketKnife, Search, Shield, Shirt, Smartphone, Sparkles, UserRound, Wrench, X } from "lucide-react";
 import { bagCapacity, canFitInBag, character, codexInventory, equipmentSlots, inventory, navigation, notes, profile, updates, variants, refinedArchive, type LabEquipmentSlot, type LabInventoryItem, type LabView, type Variant } from "./model";
 import portrait from "./assets/mira.png";
 import apothecaryPortrait from "./assets/apothecary.png";
@@ -23,6 +23,25 @@ const b2Knowledge: readonly KnowledgeEntry[] = [
   { id: "caravan", name: "Исчезновение каравана", kind: "События", type: "Событие", summary: "Торговый караван не прибыл в город в назначенный день.", detail: "Последний раз караван видели на северном тракте. Причина исчезновения пока неизвестна.", session: "Сессия 3", isNew: true },
   { id: "symbol", name: "Странный символ", kind: "Факты", type: "Факт", summary: "Знак повторяется на каменных дверях и медальоне.", detail: "Персонаж видел этот знак в двух разных местах. Его значение пока не установлено.", session: "Сессия 1", isNew: true },
 ];
+type NoteMarker = "Обычная" | "Важно" | "Проверить" | "Вопрос";
+type JournalNote = { id: string; title: string; detail: string; marker: NoteMarker; pinned: boolean };
+type ChronicleEvent = { id: string; kind: "item" | "knowledge" | "message" | "important" | "interactive"; title: string; linkedTitle: string; description: string; time: string; destination?: "Инвентарь" | "Знания" };
+const chronicleGroups: { date: string; session: string; events: ChronicleEvent[] }[] = [
+  { date: "18 сентября", session: "Сессия 3", events: [
+    { id: "key", kind: "item", title: "Получен предмет", linkedTitle: "Старинный ключ", description: "Добавлен в инвентарь персонажа.", time: "19:40", destination: "Инвентарь" },
+    { id: "apothecary", kind: "knowledge", title: "Открыто знание", linkedTitle: "Аптекарь", description: "Запись стала доступна в знаниях персонажа.", time: "18:15", destination: "Знания" },
+    { id: "letter", kind: "message", title: "Получено письмо", linkedTitle: "Неизвестный отправитель", description: "Письмо сохранено среди вещей персонажа.", time: "17:50" },
+    { id: "caravan", kind: "important", title: "Караван не прибыл", linkedTitle: "Северный тракт", description: "Торговцы не появились к назначенному часу.", time: "17:20" },
+    { id: "safe", kind: "interactive", title: "Интерактив завершён", linkedTitle: "Сейф открыт", description: "Группа открыла сейф после решения кодовой загадки.", time: "16:45" },
+  ] },
+  { date: "17 сентября", session: "Сессия 2", events: [
+    { id: "tunnels", kind: "knowledge", title: "Открыто знание", linkedTitle: "Северные туннели", description: "В журнале знаний появилась запись о подземном пути.", time: "20:10", destination: "Знания" },
+    { id: "compass", kind: "item", title: "Получен предмет", linkedTitle: "Компас", description: "Компас передан персонажу после перехода через тракт.", time: "18:30", destination: "Инвентарь" },
+  ] },
+];
+const journalEventIcons = { item: KeyRound, knowledge: BookOpen, message: Mail, important: Flag, interactive: Sparkles };
+const noteMarkerIcons = { Обычная: CircleDot, Важно: Flag, Проверить: Check, Вопрос: CircleHelp };
+const noteMarkers: NoteMarker[] = ["Обычная", "Важно", "Проверить", "Вопрос"];
 
 function VisualTokens({ variant }: { variant: Variant }) {
   return <details className="vl-tokens" open>
@@ -38,11 +57,7 @@ function VisualTokens({ variant }: { variant: Variant }) {
 
 function PlayerPreview({ variant, view, onView, refined = false }: { variant: Variant; view: LabView; onView: (view: LabView) => void; refined?: boolean }) {
   const archive = variant.id === "b" && refined;
-  const [journalTab, setJournalTab] = useState<"chronicle" | "notes">("chronicle");
   const [editingProfile, setEditingProfile] = useState(false);
-  const [noteDraft, setNoteDraft] = useState("");
-  const [showNoteForm, setShowNoteForm] = useState(false);
-  const [personalNotes, setPersonalNotes] = useState([...notes]);
   const [profileDraft, setProfileDraft] = useState<{ description: string; goal: string }>({ ...profile });
   const [bagItems, setBagItems] = useState<LabInventoryItem[]>([...codexInventory]);
   const [equippedItems, setEquippedItems] = useState<LabEquipmentSlot[]>(equipmentSlots.map(slot => ({ ...slot })));
@@ -97,12 +112,9 @@ function PlayerPreview({ variant, view, onView, refined = false }: { variant: Va
     </>}
     {view === "Инвентарь" && <CodexInventory bagItems={bagItems} equippedItems={equippedItems} bagSlotsUsed={bagSlotsUsed} onSelect={(item, source, slotId) => { setSelectedItem({ item, source, slotId }); setItemNotice(""); }} />}
     {view === "Знания" && <CodexKnowledge />}
-    {view === "Журнал" && <section className="vl-journal"><div className="vl-heading"><h2>Журнал</h2></div><div className="vl-journal-tabs" role="tablist" aria-label="Журнал"><button role="tab" aria-selected={journalTab === "chronicle"} onClick={() => { setJournalTab("chronicle"); setShowNoteForm(false); }}>Хроника</button><button role="tab" aria-selected={journalTab === "notes"} onClick={() => setJournalTab("notes")}>Мои заметки</button></div>
-      {journalTab === "chronicle" ? <section className="vl-chronicle"><h3>18 сентября</h3>{updates.map(update => <details key={update.id} className="vl-item vl-codex-entry"><summary><strong>{update.text}<small>{update.detail}</small></strong><ChevronRight size={18} /></summary><p>{update.detail}</p></details>)}</section> : <section className="vl-personal-notes">{personalNotes.map(note => <details className="vl-item vl-codex-entry" key={note.id}><summary><strong>{note.title}<small>{note.detail}</small></strong><ChevronRight size={18} /></summary><p>{note.detail}</p></details>)}
-        {showNoteForm ? <form onSubmit={event => { event.preventDefault(); if (noteDraft.trim()) { setPersonalNotes(current => [...current, { id: `note-${current.length}`, title: noteDraft.trim(), detail: noteDraft.trim() }]); setNoteDraft(""); setShowNoteForm(false); } }}><label htmlFor="vl-note-draft">Новая заметка</label><textarea id="vl-note-draft" value={noteDraft} onChange={event => setNoteDraft(event.target.value)} placeholder="Текст заметки" /><button type="submit">Сохранить заметку</button></form> : <button className="vl-new-note" onClick={() => setShowNoteForm(true)}><Plus size={18} />Новая заметка</button>}
-      </section>}</section>}
+    {view === "Журнал" && <CodexJournal onView={onView} />}
     {view === "Профиль" && <section className="vl-codex-profile">{hero}{editingProfile ? <form onSubmit={event => { event.preventDefault(); setEditingProfile(false); }}><label>Архетип<input value={character.archetype} readOnly /></label><label>Происхождение<input value={character.origin} readOnly /></label><label>Описание<textarea value={profileDraft.description} onChange={event => setProfileDraft(current => ({ ...current, description: event.target.value }))} /></label><label>Личная цель<textarea value={profileDraft.goal} onChange={event => setProfileDraft(current => ({ ...current, goal: event.target.value }))} /></label><button type="submit">Готово</button></form> : <><dl className="vl-profile-fields"><div><dt>Архетип</dt><dd>{character.archetype}</dd></div><div><dt>Происхождение</dt><dd>{character.origin}</dd></div><div><dt>Описание</dt><dd>{profileDraft.description}</dd></div><div><dt>Личная цель</dt><dd>{profileDraft.goal}</dd></div></dl><button className="vl-profile-edit" onClick={() => setEditingProfile(true)}>Редактировать</button></>}</section>}
-    {view !== "Знания" && <footer className="vl-record-footer"><span className="vl-meta">Кампания: Северный путь</span></footer>}
+    {view !== "Знания" && view !== "Журнал" && <footer className="vl-record-footer"><span className="vl-meta">Кампания: Северный путь</span></footer>}
   </>;
   const legacy = <>
     <div className="vl-page-caption"><span className="vl-meta">ЛИЧНОЕ ДЕЛО / 014</span><span className="vl-stamp">СЕВЕР</span></div>
@@ -138,6 +150,107 @@ function CodexInventory({ bagItems, equippedItems, bagSlotsUsed, onSelect }: { b
       {Array.from({ length: Math.max(0, bagCapacity - bagSlotsUsed) }, (_, index) => <div className="vl-bag-cell is-empty" key={`empty-${index}`} aria-label="Пустой слот"><span aria-hidden="true">Пусто</span></div>)}
     </div></section>
   </div>;
+}
+
+function CodexJournal({ onView }: { onView: (view: LabView) => void }) {
+  const [journalTab, setJournalTab] = useState<"chronicle" | "notes">("chronicle");
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [personalNotes, setPersonalNotes] = useState<JournalNote[]>([
+    { ...notes[0]!, marker: "Проверить", pinned: true },
+    { ...notes[1]!, marker: "Вопрос", pinned: true },
+    { id: "north-route", title: "Путь на север", detail: "Перед выходом проверить старую дорогу у каменных столбов.", marker: "Важно", pinned: false },
+    { id: "dust", title: "Пыль на рукаве", detail: "У входа в северные туннели была свежая пыль.", marker: "Обычная", pinned: false },
+  ]);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [noteDraft, setNoteDraft] = useState({ title: "", marker: "Обычная" as NoteMarker, detail: "", pinned: false });
+  const selectedEvent = chronicleGroups.flatMap(group => group.events).find(event => event.id === selectedEventId);
+  const pinnedNotes = personalNotes.filter(note => note.pinned);
+  const unpinnedNotes = personalNotes.filter(note => !note.pinned);
+  const currentNoteIsPinned = Boolean(personalNotes.find(note => note.id === editingNoteId)?.pinned);
+  const pinnedLimitReached = noteDraft.pinned && pinnedNotes.length >= 3 && !currentNoteIsPinned;
+  const pinToggleDisabled = !noteDraft.pinned && pinnedNotes.length >= 3 && !currentNoteIsPinned;
+
+  const beginNewNote = () => {
+    setEditingNoteId(null);
+    setNoteDraft({ title: "", marker: "Обычная", detail: "", pinned: false });
+    setEditorOpen(true);
+  };
+  const editNote = (note: JournalNote) => {
+    setEditingNoteId(note.id);
+    setNoteDraft({ title: note.title, marker: note.marker, detail: note.detail, pinned: note.pinned });
+    setEditorOpen(true);
+  };
+  const closeNoteEditor = () => {
+    setEditingNoteId(null);
+    setEditorOpen(false);
+  };
+  const saveNote = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const title = noteDraft.title.trim();
+    const detail = noteDraft.detail.trim();
+    if (!title || !detail || (noteDraft.pinned && !personalNotes.find(note => note.id === editingNoteId)?.pinned && pinnedNotes.length >= 3)) return;
+    if (editingNoteId) {
+      setPersonalNotes(current => current.map(note => note.id === editingNoteId ? { ...note, ...noteDraft, title, detail } : note));
+    } else {
+      setPersonalNotes(current => [...current, { ...noteDraft, id: `note-${current.length + 1}`, title, detail }]);
+    }
+    closeNoteEditor();
+  };
+
+  const noteRows = (entries: JournalNote[]) => entries.map(note => {
+    const MarkerIcon = noteMarkerIcons[note.marker];
+    return <button className="vl-note-row" key={note.id} onClick={() => editNote(note)}>
+      <span className="vl-note-copy"><strong>{note.title}</strong><small>{note.detail}</small>{note.marker !== "Обычная" && <span className={`vl-note-marker vl-note-marker--${note.marker.toLocaleLowerCase("ru")}`}><MarkerIcon size={14} />{note.marker}</span>}</span>
+      {note.pinned && <span className="vl-note-pin" aria-label="Закреплено" title="Закреплено"><Pin size={16} aria-hidden="true" /></span>}
+      <ChevronRight className="vl-note-chevron" size={18} aria-hidden="true" />
+    </button>;
+  });
+
+  return <section className="vl-journal">
+    <div className="vl-heading"><h2>Журнал</h2></div>
+    <div className="vl-journal-tabs" role="tablist" aria-label="Журнал">
+      <button role="tab" aria-selected={journalTab === "chronicle"} onClick={() => { setJournalTab("chronicle"); setEditorOpen(false); setEditingNoteId(null); }}>Хроника</button>
+      <button role="tab" aria-selected={journalTab === "notes"} onClick={() => { setJournalTab("notes"); setSelectedEventId(null); }}>Мои заметки</button>
+    </div>
+    {journalTab === "chronicle" && <section className="vl-chronicle" aria-label="Хроника персонажа">
+      {selectedEvent ? <article className="vl-event-detail">
+        <button className="vl-journal-back" onClick={() => setSelectedEventId(null)}><ChevronLeft size={18} />Хроника</button>
+        <div className="vl-event-detail-heading"><span className="vl-event-icon"><IconForJournalEvent kind={selectedEvent.kind} /></span><div><h3>{selectedEvent.title}</h3><strong>{selectedEvent.linkedTitle}</strong></div></div>
+        <p className="vl-event-metadata">{chronicleGroups.find(group => group.events.some(event => event.id === selectedEvent.id))?.date} · {chronicleGroups.find(group => group.events.some(event => event.id === selectedEvent.id))?.session} · {selectedEvent.time}</p>
+        <p className="vl-event-description">{selectedEvent.description}</p>
+        {selectedEvent.destination && <button className="vl-event-open" onClick={() => onView(selectedEvent.destination!)}><ArrowUpRight size={17} />Открыть {selectedEvent.destination === "Знания" ? "запись знания" : "предмет"}</button>}
+      </article> : chronicleGroups.map(group => <section className="vl-chronicle-group" key={group.session}>
+        <header><h3>{group.date}</h3><span>{group.session}</span></header>
+        <div className="vl-chronicle-events">{group.events.map(event => <button className="vl-chronicle-event" key={event.id} onClick={() => setSelectedEventId(event.id)}>
+          <time>{event.time}</time>
+          <span className="vl-chronicle-axis"><span><IconForJournalEvent kind={event.kind} /></span></span>
+          <span className="vl-event-copy"><strong>{event.title}</strong><small>{event.linkedTitle}</small></span>
+          {event.destination && <ChevronRight className="vl-chronicle-chevron" size={17} aria-hidden="true" />}
+        </button>)}</div>
+      </section>)}
+    </section>}
+    {journalTab === "notes" && <section className="vl-personal-notes" aria-label="Личные заметки">
+      {editorOpen ? <form className="vl-note-editor" onSubmit={saveNote}>
+        <div className="vl-note-editor-heading"><h3>{editingNoteId ? noteDraft.title || "Заметка" : "Новая заметка"}</h3><button type="button" onClick={closeNoteEditor} aria-label="Закрыть редактор"><X size={18} /></button></div>
+        <label>Название<input autoFocus value={noteDraft.title} onChange={event => setNoteDraft(current => ({ ...current, title: event.target.value }))} placeholder="Короткое название" /></label>
+        <label>Тип заметки<select value={noteDraft.marker} onChange={event => setNoteDraft(current => ({ ...current, marker: event.target.value as NoteMarker }))}>{noteMarkers.map(marker => <option key={marker}>{marker}</option>)}</select></label>
+        <label>Текст<textarea value={noteDraft.detail} onChange={event => setNoteDraft(current => ({ ...current, detail: event.target.value }))} placeholder="Личная запись" /></label>
+        <label className="vl-note-pin-toggle"><input type="checkbox" checked={noteDraft.pinned} disabled={pinToggleDisabled} onChange={event => setNoteDraft(current => ({ ...current, pinned: event.target.checked }))} /><Pin size={16} />Закрепить</label>
+        {pinnedLimitReached && <p className="vl-note-limit">Можно закрепить не более трёх заметок.</p>}
+        <div className="vl-note-editor-actions"><button type="button" onClick={closeNoteEditor}>Отмена</button><button type="submit" disabled={!noteDraft.title.trim() || !noteDraft.detail.trim() || pinnedLimitReached}>Сохранить</button></div>
+      </form> : <>
+        {pinnedNotes.length > 0 && <section className="vl-note-group"><h3><Pin size={15} />Закреплено</h3>{noteRows(pinnedNotes)}</section>}
+        <section className="vl-note-group"><h3>Все заметки</h3>{noteRows(unpinnedNotes)}</section>
+        <button className="vl-new-note" onClick={beginNewNote}><Plus size={18} />Новая заметка</button>
+      </>}
+    </section>}
+  </section>;
+}
+
+function IconForJournalEvent({ kind }: { kind: ChronicleEvent["kind"] }) {
+  const Icon = journalEventIcons[kind];
+  return <Icon size={18} strokeWidth={1.65} />;
 }
 
 function CodexKnowledge() {
