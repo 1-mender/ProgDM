@@ -67,6 +67,39 @@ test("B2 inventory refuses to return equipped items when the bag has no free slo
   assert.equal(canFitInBag(11, 2), false);
 });
 
+test("B2 item detail supports mock transfer, stack merging and drop confirmation", () => {
+  const itemFlow = visualSource.match(/function QuantityStepper[\s\S]*?\n}\n\nfunction InventoryList/)?.[0];
+  assert.ok(itemFlow);
+  assert.match(visualSource, /type ItemPanelMode = "detail" \| "transfer" \| "drop"/);
+  assert.match(visualSource, /name: "Rowan", initials: "R", slotsUsed: 5, capacity: 12, stacks: \{ medkit: 1 \}/);
+  assert.match(visualSource, /name: "Victor", initials: "V", slotsUsed: 12, capacity: 12, stacks: \{\}/);
+  assert.match(visualSource, /name: "Elena", initials: "E", slotsUsed: 7, capacity: 12, stacks: \{\}/);
+  assert.match(visualSource, /const merges = Boolean\(recipient\.stacks\[item\.id\]\)/);
+  assert.match(visualSource, /canFitInBag\(recipient\.slotsUsed, item\.slots, recipient\.capacity\)/);
+  assert.match(visualSource, /slotsUsed: entry\.slotsUsed \+ \(merges \? 0 : item\.slots\)/);
+  assert.match(visualSource, /const updateBagQuantity = \(item: LabInventoryItem, quantityToRemove: number\)/);
+  assert.match(visualSource, /const mockDropRestrictions: Record<string, string> = \{ key: "Этот предмет нельзя выбросить\." \}/);
+  assert.match(visualSource, /setSelectedItem\(null\)/);
+  assert.match(visualSource, /vl-inventory-toast" role="status"/);
+  assert.match(itemFlow, /Передать предмет/);
+  assert.match(itemFlow, /Сумка \{recipient\.slotsUsed\} \/ \{recipient\.capacity\}/);
+  assert.match(itemFlow, /disabled=\{full\}/);
+  assert.match(itemFlow, /Уже есть/);
+  assert.match(itemFlow, /Предмет добавится к имеющейся стопке; новый слот не нужен\./);
+  assert.match(itemFlow, /В будущем передача появится в хронике обеих сторон\./);
+  assert.match(itemFlow, /Выбросить предмет\?/);
+  assert.match(itemFlow, /Предмет исчезнет из инвентаря персонажа\./);
+  assert.match(itemFlow, /item\.quantity > 1 && <QuantityStepper label="Сколько выбросить\?"/);
+  assert.match(itemFlow, /disabled=\{source === "equipment" \|\| Boolean\(dropRestriction\)\}/);
+  assert.match(itemFlow, /disabled=\{source === "equipment"\}/);
+  assert.match(itemFlow, /Сначала снимите предмет\./);
+  assert.match(itemFlow, /className="vl-item-detail-overlay"/);
+  assert.match(visualCss, /\.vl-quantity-stepper button \{ width:44px; height:44px; min-height:44px/);
+  assert.match(visualCss, /\.vl-detail-action--danger, \.vl-action-danger \{ border-color:#c6aaa4; color:#783e3c/);
+  assert.match(visualCss, /\.vl-recipient-row\.is-disabled \{ cursor:not-allowed; opacity:\.58/);
+  assert.doesNotMatch(itemFlow, /вес|килограмм|кг|\blb\b|encumbrance/i);
+});
+
 test("B2 applies the Relic surface and keeps rarity tint inside the item art", () => {
   const cardMarkup = visualSource.match(/bagItems\.map\(item => \{[\s\S]*?<\/button>; \}\)/)?.[0];
   assert.ok(cardMarkup);
@@ -102,8 +135,49 @@ test("B2 uses one integrated card style without comparison lab blocks", () => {
   assert.match(visualSource, /Снять/);
 });
 
+test("B2 home is a compact actionable digest with shared pinned notes", () => {
+  const homeMarkup = visualSource.match(/const codexSection = <>[\s\S]*?\n  <\/>;\n  const legacy/)?.[0];
+  assert.ok(homeMarkup);
+  assert.match(visualSource, /className="vl-identity vl-home-hero"[\s\S]*?navigateToView\("Профиль"\)/);
+  assert.match(visualSource, /className="vl-home-archetype"/);
+  assert.match(visualSource, /className="vl-home-origin">\{character\.origin\}/);
+  assert.doesNotMatch(homeMarkup, /Происхождение|profile\.description|profile\.goal|InventoryList/);
+  assert.match(visualSource, /updates\.filter\(update => !readHomeUpdateIds\.includes\(update\.id\)\)\.slice\(0, 3\)/);
+  assert.match(homeMarkup, /Пока ничего нового\./);
+  assert.match(homeMarkup, /className="vl-home-update"[\s\S]*?openHomeUpdate\(update\)/);
+  assert.match(homeMarkup, /Открыть журнал/);
+  assert.match(visualSource, /personalNotes\.filter\(note => note\.pinned\)\.slice\(0, 2\)/);
+  assert.match(visualSource, /className="vl-home-section vl-home-pinned"/);
+  assert.match(visualSource, /setJournalHomeRequest\(\{ tab: "notes", eventId: null \}\)/);
+  assert.match(visualSource, /setKnowledgeHomeEntryId\(update\.id\)/);
+  assert.match(visualSource, /setJournalHomeRequest\(\{ tab: "chronicle", eventId: update\.id \}\)/);
+  assert.match(visualSource, /const \[personalNotes, setPersonalNotes\] = useState<JournalNote\[]>/);
+  assert.match(visualSource, /initialTab=\{journalHomeRequest\?\.tab\} initialEventId=\{journalHomeRequest\?\.eventId\} personalNotes=\{personalNotes\}/);
+  assert.match(visualSource, /function CodexJournal\(\{ onView, initialTab = "chronicle", initialEventId = null, personalNotes, onPersonalNotesChange: setPersonalNotes \}/);
+  assert.match(visualSource, /function CodexKnowledge\(\{ initialEntryId = null \}/);
+  assert.doesNotMatch(homeMarkup, /vl-record-footer|Кампания:/);
+  assert.match(visualSource, /aria-current=\{view===label\?"page":undefined\} onClick=\{\(\)=>navigateToView\(label\)\}/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-home-hero \{ width: 100%; grid-template-columns: 74px minmax\(0,1fr\) 18px/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-home-update \{ display: grid; grid-template-columns: 34px minmax\(0,1fr\) 18px/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-home-note \{ min-height: 68px/);
+  assert.match(visualCss, /@media\(max-width:620px\)[\s\S]*?\.vl-b-refined \.vl-home-hero \{ grid-template-columns: 68px/);
+  assert.match(visualCss, /--vl-page-background: var\(--vl-bg\);[\s\S]*?--vl-focus-ring:/);
+  assert.match(visualCss, /--vl-accent-destructive: #783e3c;[\s\S]*?--vl-disabled-text: #6b665b/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-player-header \{ flex: 0 0 52px; min-height: 52px/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-player-nav \{ flex-basis: 66px; min-height: 66px/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-player-scroll \{ flex: 1 1 auto/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-sheet-actions button[\s\S]*?min-height: var\(--vl-touch-target\)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-note-editor label input[^\{]*\{[\s\S]*?background-color: var\(--vl-control-surface\)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-player-nav button\[aria-current="page"\][\s\S]*?inset 0 2px var\(--vl-accent\)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-player-scroll button:focus-visible[\s\S]*?outline: 2px solid var\(--vl-focus-ring\)/);
+  assert.match(visualSource, /function VisualTokens[\s\S]*?<details className="vl-tokens">/);
+  assert.match(visualSource, /const \[selection, setSelection\] = useState\("b"\)/);
+  assert.match(visualSource, /<details className="vl-codex-atmosphere">/);
+  assert.doesNotMatch(visualSource.match(/<details className="vl-codex-atmosphere">[\s\S]*?<\/details>/)?.[0], /<details className="vl-codex-atmosphere" open/);
+});
+
 test("B2 knowledge uses local universal filters, new markers and a separate detail view", () => {
-  const knowledgeMarkup = visualSource.match(/function CodexKnowledge\(\)[\s\S]*?\n}\n\nfunction ItemDetailPanel/)?.[0];
+  const knowledgeMarkup = visualSource.match(/function CodexKnowledge\([\s\S]*?\n}\n\nfunction QuantityStepper/)?.[0];
   assert.ok(knowledgeMarkup);
   for (const title of ["Аптекарь", "Северные туннели", "Странный символ", "Чёрный пёс", "Сломанный медальон", "Исчезновение каравана"]) {
     assert.match(visualSource, new RegExp(title));
@@ -131,7 +205,7 @@ test("B2 knowledge uses local universal filters, new markers and a separate deta
   assert.match(knowledgeMarkup, /setSearchOpen\(open => !open\); setQuery\(""\)/);
   assert.match(knowledgeMarkup, /\{b2Knowledge\.length\} записей/);
   assert.match(visualCss, /\.vl-knowledge-count \{ flex: 0 0 auto; color: var\(--vl-muted\); font: 13px\/1\.3 Arial,sans-serif; white-space: nowrap; \}/);
-  assert.match(visualSource, /view !== "Знания" && view !== "Журнал" && <footer className="vl-record-footer"/);
+  assert.doesNotMatch(knowledgeMarkup, /Кампания: Северный путь|vl-record-footer/);
   assert.match(visualCss, /\.vl-knowledge-categories \{ display: flex; gap: 8px; overflow-x: auto/);
   assert.match(visualCss, /scrollbar-width: none; -ms-overflow-style: none/);
   assert.match(visualCss, /\.vl-knowledge-categories::\-webkit-scrollbar \{ display: none/);
@@ -156,6 +230,7 @@ test("B2 journal separates session history from editable personal notes", () => 
   for (const kind of ["item", "knowledge", "message", "important", "interactive"]) assert.match(visualSource, new RegExp(`kind: "${kind}"`));
   for (const event of ["Получен предмет", "Открыто знание", "Получено письмо", "Интерактив завершён", "Сейф открыт"]) assert.match(visualSource, new RegExp(event));
   assert.match(journalMarkup, /setSelectedEventId\(event\.id\)/);
+  assert.match(visualSource, /noteMarkerIcons = \{ Обычная: CircleDot, Важно: Flag, Проверить: Crosshair, Вопрос: CircleHelp \}/);
   assert.match(journalMarkup, /<time>\{event\.time\}<\/time>[\s\S]*?vl-chronicle-axis[\s\S]*?vl-event-copy/);
   assert.match(journalMarkup, /event\.destination && <ChevronRight className="vl-chronicle-chevron"/);
   assert.match(journalMarkup, /note\.marker !== "Обычная" && <span className=\{`vl-note-marker/);
@@ -170,15 +245,43 @@ test("B2 journal separates session history from editable personal notes", () => 
   assert.match(journalMarkup, /Тип заметки<select/);
   assert.match(journalMarkup, /Текст<textarea/);
   assert.match(journalMarkup, /Сохранить/);
-  assert.match(visualSource, /view !== "Знания" && view !== "Журнал" && <footer className="vl-record-footer"/);
+  assert.doesNotMatch(journalMarkup, /vl-record-footer/);
   assert.doesNotMatch(journalMarkup, /Кампания: Северный путь/);
   assert.match(visualCss, /\.vl-b-refined \.vl-chronicle-events::before \{[\s\S]*?border-left: 1px solid var\(--vl-border\)/);
   assert.match(visualCss, /\.vl-b-refined \.vl-chronicle-event \{ position: relative; display: grid; grid-template-columns: 38px 18px minmax\(0,1fr\) 17px;[\s\S]*?min-height: 60px/);
   assert.match(visualCss, /\.vl-b-refined \.vl-chronicle-event time \{[\s\S]*?font-variant-numeric: tabular-nums/);
   assert.match(visualCss, /\.vl-b-refined \.vl-chronicle-axis svg \{ width: 14px; height: 14px/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-event-icon \{[\s\S]*?background: var\(--vl-surface\)/);
   assert.match(visualCss, /\.vl-b-refined \.vl-note-row \{ display: grid;[\s\S]*?min-height: 68px/);
   assert.match(visualCss, /\.vl-b-refined \.vl-note-row \{ display: grid; grid-template-columns: minmax\(0,1fr\) 16px 18px/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-note-pin \{[\s\S]*?opacity: \.58/);
   assert.match(visualCss, /\.vl-b-refined \.vl-note-editor-actions button \{ min-height: 44px/);
   assert.match(visualCss, /\.vl-note-editor label input:not\(\[type=checkbox\]\)/);
   assert.match(visualCss, /\.vl-note-pin-toggle input \{ flex: 0 0 18px; width: 18px; height: 18px; min-height: 18px/);
+});
+
+test("B3 profile uses the shared B2 visual system with a distinct character composition", () => {
+  const profileMarkup = visualSource.match(/function CodexUnifiedProfile\([\s\S]*?\n}\n\nfunction IconForJournalEvent/)?.[0];
+  assert.ok(profileMarkup);
+  assert.doesNotMatch(profileMarkup, /B3 UNIFIED PROFILE|Тёмный кодекс|Гибридный кодекс|profile-skin-switch|Редактировать|<form|Только чтение|Ведущий|Кампания:/);
+  for (const content of ["Mira Voss", "Следопыт", "Северный округ"]) assert.match(source, new RegExp(content));
+  for (const content of ["О персонаже", "Наблюдательная", "Осторожная", "Упрямая", "Личная цель", "Орден Серого Пламени", "Позывной", "Север", "Родной город", "Вейр", "Внешность", "Высокая, короткие тёмные волосы, шрам над левой бровью.", "Цитата", "Я не ищу неприятности. Просто обычно знаю, где они находятся."]) assert.match(profileMarkup, new RegExp(content));
+  assert.match(profileMarkup, /profile\.description/);
+  assert.match(profileMarkup, /profile\.goal/);
+  assert.match(profileMarkup, /className="vl-unified-profile" aria-label="Профиль персонажа"/);
+  assert.match(visualSource, /unifiedProfileActive \? ` vl-b-profile-unified\$\{desktopPreview/);
+  assert.doesNotMatch(visualSource.match(/const codexSection = <>[\s\S]*?\n  <\/>;\n  const legacy/)?.[0], /Кампания: Северный путь|vl-record-footer/);
+  assert.match(visualSource, /view !== "Профиль" && <details className="vl-codex-atmosphere"/);
+  assert.match(visualSource, /!\(variant\.id === "b" && refined && view === "Профиль"\) && <VisualTokens/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-profile-page \{ color:var\(--vl-text\); \}/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-unified-identity h1 \{[\s\S]*?color:var\(--vl-text\)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-unified-sections h2 \{[\s\S]*?color:var\(--vl-muted\)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-unified-goal \{[\s\S]*?border-left:2px solid var\(--vl-accent\)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-unified-facts dl > div \{[\s\S]*?border-bottom:1px solid var\(--vl-border\)/);
+  assert.doesNotMatch(visualCss, /vl-profile-skin|vl-profile-theme|profile-bg:#/);
+  assert.match(visualCss, /\.vl-preview-desktop\.vl-single \.vl-b-refined\.vl-b-profile-unified-desktop \{ width:min\(100%,900px\)/);
+  assert.match(visualCss, /\.vl-b-refined\.vl-b-profile-unified-desktop \.vl-unified-sections \{ grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-unified-traits > div \{ display:flex; flex-wrap:wrap/);
+  assert.match(visualCss, /\.vl-b-refined \.vl-unified-facts dd \{[\s\S]*?overflow-wrap:anywhere/);
+  assert.match(visualCss, /@media\(max-width:620px\)[\s\S]*?\.vl-b-refined \.vl-unified-identity \{ grid-template-columns:92px/);
 });
