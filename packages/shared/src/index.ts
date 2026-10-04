@@ -68,10 +68,15 @@ export interface Character {
 export interface PersonalNote {
   id: EntityId;
   characterId: EntityId;
+  title: string;
   body: string;
+  marker: PersonalNoteMarker;
+  pinned: boolean;
   createdAt: string;
   updatedAt: string;
 }
+
+export type PersonalNoteMarker = "normal" | "important" | "check" | "question";
 
 export interface CampaignItem {
   id: EntityId;

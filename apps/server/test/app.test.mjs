@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,7 +54,8 @@ test("pending, rejected and historical tokens cannot write private character dat
   const writes = [
     ["/api/player/profile", { shortDescription: "Invalid", personalGoal: "Invalid" }],
     ["/api/player/settings", { displayName: "Invalid" }],
-    ["/api/player/notes", { body: "Invalid" }],
+    ["/api/player/notes", { title: "Invalid", body: "Invalid", marker: "check", pinned: true }],
+    ["/api/player/notes/00000000-0000-4000-8000-000000000000", { title: "Invalid", marker: "important", pinned: true }],
     ["/api/player/activity/seen", { upToActivityId: campaign.id }]
   ];
   const assertDenied = async () => {
@@ -66,8 +68,11 @@ test("pending, rejected and historical tokens cannot write private character dat
   await assertDenied();
   await post(app, `/api/join/${session.joinToken}/request`, { displayName: "A", playerToken: token });
   database.approvePlayer(player.id, { characterName: "Mira" });
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const note = database.createPersonalNote(tokenHash, "Historical note");
   database.endSession(session.id);
   await assertDenied();
+  assert.equal((await app.inject({ method: "POST", url: `/api/player/notes/${note.id}`, headers: { authorization: "Bearer " + token }, payload: { pinned: true } })).statusCode, 403);
   const state = (await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: "Bearer " + token } })).json();
   assert.equal(state.status, "approved");
   assert.equal(state.canEdit, false);
@@ -147,17 +152,43 @@ test("player profile and notes enforce active assignment and field permissions",
   assert.equal((await playerGet(aToken)).json().profile.dmNotes, undefined);
   assert.equal((await playerGet(aToken)).json().profile.archetype, "Scout");
   assert.equal(database.listCharactersByCampaign(campaign.id).find((row) => row.id === mira.id).dmNotes, "Hidden from players");
-  const note = (await playerPost(aToken, "/api/player/notes", { body: "My theory" })).json().note;
-  assert.equal((await playerGet(aToken)).json().notes[0].id, note.id);
+  const note = (await playerPost(aToken, "/api/player/notes", {
+    title: "Сомнительная дверь", body: "My theory", marker: "check", pinned: true
+  })).json().note;
+  assert.deepEqual({ title: note.title, body: note.body, marker: note.marker, pinned: note.pinned }, {
+    title: "Сомнительная дверь", body: "My theory", marker: "check", pinned: true
+  });
+  const projectedNote = (await playerGet(aToken)).json().notes.find((entry) => entry.id === note.id);
+  assert.deepEqual({ title: projectedNote.title, body: projectedNote.body, marker: projectedNote.marker, pinned: projectedNote.pinned,
+    createdAt: projectedNote.createdAt, updatedAt: projectedNote.updatedAt }, {
+    title: "Сомнительная дверь", body: "My theory", marker: "check", pinned: true,
+    createdAt: note.createdAt, updatedAt: note.updatedAt
+  });
   assert.deepEqual((await playerGet(bToken)).json().notes, []);
-  assert.equal((await playerPost(bToken, `/api/player/notes/${note.id}`, { body: "Stolen" })).statusCode, 404);
-  assert.equal((await get(app, `/api/dm/characters/${mira.id}/overview`)).json().notes[0].body, "My theory");
+  assert.equal((await playerPost(aToken, `/api/player/notes/${note.id}`, { title: "Обновлено", marker: "question", pinned: false })).statusCode, 200);
+  const updatedNote = (await playerGet(aToken)).json().notes.find((entry) => entry.id === note.id);
+  assert.deepEqual({ title: updatedNote.title, body: updatedNote.body, marker: updatedNote.marker, pinned: updatedNote.pinned }, {
+    title: "Обновлено", body: "My theory", marker: "question", pinned: false
+  });
+  assert.equal((await playerPost(bToken, `/api/player/notes/${note.id}`, { title: "Stolen", pinned: true })).statusCode, 404);
+  const legacyNote = (await playerPost(aToken, "/api/player/notes", { body: "Old client text" })).json().note;
+  assert.deepEqual({ title: legacyNote.title, marker: legacyNote.marker, pinned: legacyNote.pinned }, {
+    title: "", marker: "normal", pinned: false
+  });
+  assert.equal((await playerPost(aToken, "/api/player/notes", { title: "x".repeat(121), body: "Invalid" })).statusCode, 400);
+  assert.equal((await playerPost(aToken, `/api/player/notes/${note.id}`, { marker: "other" })).statusCode, 400);
+  const dmNote = (await get(app, `/api/dm/characters/${mira.id}/overview`)).json().notes.find((entry) => entry.id === note.id);
+  assert.deepEqual({ title: dmNote.title, body: dmNote.body, marker: dmNote.marker, pinned: dmNote.pinned }, {
+    title: "Обновлено", body: "My theory", marker: "question", pinned: false
+  });
+  assert.equal((await playerGet(aToken)).json().recentActivity.some((event) => event.type.startsWith("personal_note_")), false);
   const updatedSettings = await playerPost(aToken, "/api/player/settings", { displayName: "New A" });
   assert.equal(updatedSettings.statusCode, 200);
   assert.equal(updatedSettings.json().player.tokenHash, undefined);
   assert.equal((await playerGet(aToken)).json().displayName, "New A");
   database.endSession(session.id);
   assert.equal((await playerPost(aToken, "/api/player/notes", { body: "Too late" })).statusCode, 403);
+  assert.equal((await playerPost(aToken, `/api/player/notes/${note.id}`, { pinned: true })).statusCode, 403);
   assert.equal((await playerGet(aToken)).json().notes.length, 0);
 });
 

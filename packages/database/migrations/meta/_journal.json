@@ -64,6 +64,13 @@
       "when": 1790809829181,
       "tag": "0008_colorful_franklin_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791071232207,
+      "tag": "0009_past_shinko_yamashiro",
+      "breakpoints": true
     }
   ]
 }

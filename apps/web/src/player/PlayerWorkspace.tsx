@@ -4,6 +4,7 @@ import type { PlayerState } from "@progdm/shared";
 import { playerPost } from "./api";
 import { HomePage } from "./HomePage";
 import { KnowledgePage } from "./KnowledgePage";
+import { PersonalNotesPage } from "./PersonalNotesPage";
 import { PlayerShell } from "./PlayerShell";
 import { ProfilePage } from "./ProfilePage";
 import type { PlayerView } from "./model";
@@ -24,8 +25,6 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
   const [view, setView] = useState<PlayerView>("home");
   const [journalTab, setJournalTab] = useState<"activity" | "notes">("activity");
   const [displayName, setDisplayName] = useState(player.displayName);
-  const [noteBody, setNoteBody] = useState("");
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [expandedKnowledge, setExpandedKnowledge] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -59,7 +58,10 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
   );
 
   let content;
-  if (view === "home") content = <HomePage player={player} busy={busy} onProfile={() => navigate("profile")} onJournal={() => navigate("journal")} onMarkSeen={markSeen} />;
+  if (view === "home") content = <HomePage player={player} busy={busy} onProfile={() => navigate("profile")} onJournal={() => navigate("journal")} onPinnedNotes={() => {
+    setJournalTab("notes");
+    navigate("journal");
+  }} onMarkSeen={markSeen} />;
   else if (view === "profile") content = <ProfilePage player={player} busy={busy} onSave={(fields) => run(
     () => playerPost(credential, "/api/player/profile", fields), "Профиль сохранён."
   )} />;
@@ -76,19 +78,9 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
       {player.recentActivity.length ? <ul className="player-simple-list">{player.recentActivity.map((event) => <li key={event.id}><time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleDateString("ru-RU")}</time>{journalEvent(event)}</li>)}</ul> : <p className="prod-empty">Пока нет событий.</p>}
       {player.recentActivity[0] && <button className="prod-secondary" type="button" disabled={busy || !player.canEdit} onClick={() => markSeen(player.recentActivity[0]!.id)}><Check aria-hidden="true" />Отметить просмотренным</button>}
     </>}
-    {journalTab === "notes" && <>
-      <p className="prod-muted">Личные заметки видны тебе и ведущему.</p>
-      {player.notes.length > 0 && <ul className="player-simple-list">{player.notes.map((note) => <li key={note.id}><p>{note.body}</p><button className="text-link" type="button" onClick={() => { setEditingNoteId(note.id); setNoteBody(note.body); }}>Изменить</button></li>)}</ul>}
-      {player.canEdit && <form className="player-form" onSubmit={(event) => { event.preventDefault(); void run(async () => {
-        await playerPost(credential, editingNoteId ? `/api/player/notes/${editingNoteId}` : "/api/player/notes", { body: noteBody });
-        setNoteBody("");
-        setEditingNoteId(null);
-      }, "Заметка сохранена."); }}>
-        <label htmlFor="personal-note">{editingNoteId ? "Изменить заметку" : "Новая заметка"}</label>
-        <textarea id="personal-note" value={noteBody} required maxLength={2000} rows={5} disabled={busy} onChange={(event) => setNoteBody(event.target.value)} />
-        <div className="player-actions"><button className="prod-primary" type="submit" disabled={busy || !noteBody.trim()}>Сохранить</button>{editingNoteId && <button type="button" className="prod-secondary" onClick={() => { setEditingNoteId(null); setNoteBody(""); }}>Отмена</button>}</div>
-      </form>}
-    </>}
+    {journalTab === "notes" && <PersonalNotesPage notes={player.notes} busy={busy} canEdit={player.canEdit} onSave={(noteId, fields) => run(
+        () => playerPost(credential, noteId ? `/api/player/notes/${noteId}` : "/api/player/notes", fields), "Заметка сохранена."
+      )} />}
   </section>;
   else content = <section className="prod-page prod-legacy-page"><div className="prod-settings-heading"><h1>Настройки</h1><Settings aria-hidden="true" /></div>
     {player.canEdit && <form className="player-form" onSubmit={(event) => { event.preventDefault(); void run(

@@ -7,7 +7,7 @@ import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -87,6 +87,22 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     const trimmed = value.trim();
     if (trimmed.length > max) throw new Error("Profile text is too long.");
     return trimmed;
+  }
+
+  function personalNoteTitle(value: string): string {
+    const title = value.trim();
+    if (title.length > 120) throw new Error("Personal note title is too long.");
+    return title;
+  }
+
+  function personalNoteMarker(value: string): PersonalNoteMarker {
+    if (!["normal", "important", "check", "question"].includes(value)) throw new Error("Personal note marker is invalid.");
+    return value as PersonalNoteMarker;
+  }
+
+  function personalNotePinned(value: unknown): boolean {
+    if (typeof value !== "boolean") throw new Error("Campaign file is invalid.");
+    return value;
   }
 
   function activePlayerCharacter(tokenHash: string) {
@@ -391,7 +407,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
         ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
         ["Отметки просмотра", "SELECT count(*) AS count FROM character_read_state r JOIN characters c ON c.id=r.character_id LEFT JOIN campaign_activity a ON a.id=r.last_seen_id WHERE a.id IS NULL OR a.campaign_id!=c.campaign_id OR a.created_at!=r.last_seen_at"],
-        ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id)" ]
+        ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id)"],
+        ["Личные заметки", "SELECT count(*) AS count FROM character_personal_notes n LEFT JOIN characters c ON c.id=n.character_id WHERE c.id IS NULL OR length(n.title)>120 OR length(trim(n.body)) NOT BETWEEN 1 AND 2000 OR n.marker NOT IN ('normal', 'important', 'check', 'question') OR typeof(n.pinned)!='integer' OR n.pinned NOT IN (0, 1)"]
       ] as const;
       for (const [name, query] of domainQueries) check(name, () => {
         const count = (client.prepare(query).get() as { count: number }).count;
@@ -460,7 +477,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
         .map((entry) => ({ ...entry }));
       return {
-        format: "progdm-campaign", version: 3, exportedAt: new Date().toISOString(), campaign,
+        format: "progdm-campaign", version: 4, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, personalNotes, catalogItems, inventoryItems, knowledge,
         activity: activityRows(db.select().from(schema.campaignActivity)
           .where(eq(schema.campaignActivity.campaignId, id))
@@ -469,7 +486,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
       const createdAt = (record: Record<string, unknown>) => {
@@ -481,11 +499,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const players = transferArray(archive, "players");
       const assignments = transferArray(archive, "assignments");
       const characters = transferArray(archive, "characters");
-      const personalNotes = archive.version === 3 ? transferArray(archive, "personalNotes") : [];
+      const personalNotes = archiveVersion >= 3 ? transferArray(archive, "personalNotes") : [];
       const catalogItems = transferArray(archive, "catalogItems");
       const inventoryItems = transferArray(archive, "inventoryItems");
       const knowledge = transferArray(archive, "knowledge");
-      const activity = archive.version === 1 ? [] : transferArray(archive, "activity");
+      const activity = archiveVersion === 1 ? [] : transferArray(archive, "activity");
       const campaignId = randomUUID();
       const sessionsWithPlayers = new Set(players.map((row) => transferString(row, "sessionId")));
       const sessionIds = new Map(sessions.map((row) => [transferString(row, "id"), randomUUID()]));
@@ -532,22 +550,29 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         }
         for (const row of characters) {
           const archivedAt = row.archivedAt;
-          if (archive.version !== 1 && archivedAt !== null && (typeof archivedAt !== "string" || Number.isNaN(Date.parse(archivedAt)))) throw new Error("Campaign file is invalid.");
+          if (archiveVersion !== 1 && archivedAt !== null && (typeof archivedAt !== "string" || Number.isNaN(Date.parse(archivedAt)))) throw new Error("Campaign file is invalid.");
           db.insert(schema.characters).values({
             id: requireMapped(characterIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
-            createdAt: createdAt(row), archivedAt: archive.version !== 1 ? archivedAt as string | null : null,
-            shortDescription: archive.version === 3 ? profileText(transferString(row, "shortDescription", 500), 500) : "",
-            archetype: archive.version === 3 ? profileText(transferString(row, "archetype", 120), 120) : "",
-            origin: archive.version === 3 ? profileText(transferString(row, "origin", 500), 500) : "",
-            personalGoal: archive.version === 3 ? profileText(transferString(row, "personalGoal", 500), 500) : "",
-            dmNotes: archive.version === 3 ? profileText(transferString(row, "dmNotes", 2000), 2000) : ""
+            createdAt: createdAt(row), archivedAt: archiveVersion !== 1 ? archivedAt as string | null : null,
+            shortDescription: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "shortDescription", 500), 500) : "",
+            archetype: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "archetype", 120), 120) : "",
+            origin: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "origin", 500), 500) : "",
+            personalGoal: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "personalGoal", 500), 500) : "",
+            dmNotes: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "dmNotes", 2000), 2000) : ""
           }).run();
         }
-        for (const row of personalNotes) db.insert(schema.characterPersonalNotes).values({
-          id: newId(), characterId: requireMapped(characterIds, row.characterId),
-          body: validatedDescription(transferString(row, "body", 2000)),
-          createdAt: createdAt(row), updatedAt: createdAt({ createdAt: row.updatedAt })
-        }).run();
+        for (const row of personalNotes) {
+          const metadata = archiveVersion >= 4 ? {
+            title: personalNoteTitle(transferString(row, "title", 120)),
+            marker: personalNoteMarker(transferString(row, "marker", 16)),
+            pinned: personalNotePinned(row.pinned)
+          } : { title: "", marker: "normal" as const, pinned: false };
+          db.insert(schema.characterPersonalNotes).values({
+            id: newId(), characterId: requireMapped(characterIds, row.characterId), ...metadata,
+            body: validatedDescription(transferString(row, "body", 2000)),
+            createdAt: createdAt(row), updatedAt: createdAt({ createdAt: row.updatedAt })
+          }).run();
+        }
         for (const row of catalogItems) db.insert(schema.catalogItems).values({
           id: requireMapped(catalogIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)), createdAt: createdAt(row)
         }).run();
@@ -738,24 +763,35 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       return db.update(schema.players).set({ displayName: name })
         .where(eq(schema.players.id, active.playerId)).returning().get();
     },
-    createPersonalNote(tokenHash: string, body: string) {
+    createPersonalNote(tokenHash: string, body: string, metadata: { title?: string; marker?: PersonalNoteMarker; pinned?: boolean } = {}) {
       return db.transaction(() => {
         const active = requireActivePlayerCharacter(tokenHash);
         const now = new Date().toISOString();
         const note = db.insert(schema.characterPersonalNotes).values({
-          id: randomUUID(), characterId: active.characterId, body: validatedDescription(body), createdAt: now, updatedAt: now
+          id: randomUUID(), characterId: active.characterId, title: personalNoteTitle(metadata.title ?? ""),
+          body: validatedDescription(body), marker: personalNoteMarker(metadata.marker ?? "normal"), pinned: metadata.pinned ?? false,
+          createdAt: now, updatedAt: now
         }).returning().get();
         appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, characterId: active.characterId, type: "personal_note_created" });
         return note;
       });
     },
-    updatePersonalNote(tokenHash: string, noteId: string, body: string) {
+    updatePersonalNote(tokenHash: string, noteId: string,
+      bodyOrFields: string | { body?: string; title?: string; marker?: PersonalNoteMarker; pinned?: boolean },
+      metadata: { title?: string; marker?: PersonalNoteMarker; pinned?: boolean } = {}) {
+      const fields = typeof bodyOrFields === "string" ? { body: bodyOrFields, ...metadata } : bodyOrFields;
       return db.transaction(() => {
         const active = requireActivePlayerCharacter(tokenHash);
         const note = db.select().from(schema.characterPersonalNotes)
           .where(and(eq(schema.characterPersonalNotes.id, noteId), eq(schema.characterPersonalNotes.characterId, active.characterId))).get();
         if (!note) throw new Error("Personal note not found.");
-        const updated = db.update(schema.characterPersonalNotes).set({ body: validatedDescription(body), updatedAt: new Date().toISOString() })
+        const updated = db.update(schema.characterPersonalNotes).set({
+          body: fields.body === undefined ? note.body : validatedDescription(fields.body),
+          title: fields.title === undefined ? note.title : personalNoteTitle(fields.title),
+          marker: fields.marker === undefined ? note.marker as PersonalNoteMarker : personalNoteMarker(fields.marker),
+          pinned: fields.pinned === undefined ? note.pinned : fields.pinned,
+          updatedAt: new Date().toISOString()
+        })
           .where(eq(schema.characterPersonalNotes.id, noteId)).returning().get()!;
         appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, characterId: active.characterId, type: "personal_note_updated" });
         return updated;

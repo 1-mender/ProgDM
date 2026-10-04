@@ -5,7 +5,7 @@ import { isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
 import { openDatabase, type GameDatabase } from "@progdm/database";
 import { isDmAuthorized, loadDmToken } from "./dm-auth.js";
-import type { KnowledgeCategory, KnowledgeVisibility, NetworkAddress } from "@progdm/shared";
+import type { KnowledgeCategory, KnowledgeVisibility, NetworkAddress, PersonalNoteMarker } from "@progdm/shared";
 
 export function requestLogFields(request: { method: string; url: string }) {
   return { method: request.method, url: request.url.replace(/(\/(?:api\/)?join\/)[^/?]+/g, "$1[redacted]") };
@@ -118,14 +118,26 @@ export function createApp(options: {
       const player = database.updatePlayerDisplayName(hash, request.body.displayName)!;
       return { player: { id: player.id, sessionId: player.sessionId, displayName: player.displayName, status: player.status } };
     }));
-    const noteBody = { type: "object", additionalProperties: false, required: ["body"], properties: {
-      body: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S" }
-    } };
-    player.post<{ Body: { body: string } }>("/api/player/notes", { schema: { body: noteBody } },
-      async (request, reply) => activeAction(request, reply, (hash) => ({ note: database.createPersonalNote(hash, request.body.body) })));
-    player.post<{ Params: { id: string }; Body: { body: string } }>("/api/player/notes/:id", {
-      schema: { params: { type: "object", required: ["id"], properties: { id: { type: "string", format: "uuid" } } }, body: noteBody }
-    }, async (request, reply) => activeAction(request, reply, (hash) => ({ note: database.updatePersonalNote(hash, request.params.id, request.body.body) })));
+    const noteProperties = {
+      title: { type: "string", maxLength: 120 },
+      body: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S" },
+      marker: { type: "string", enum: ["normal", "important", "check", "question"] },
+      pinned: { type: "boolean" }
+    };
+    player.post<{ Body: { title?: string; body: string; marker?: PersonalNoteMarker; pinned?: boolean } }>("/api/player/notes", {
+      schema: { body: { type: "object", additionalProperties: false, required: ["body"], properties: noteProperties } }
+    }, async (request, reply) => activeAction(request, reply, (hash) => {
+      const { body, ...metadata } = request.body;
+      return { note: database.createPersonalNote(hash, body, metadata) };
+    }));
+    player.post<{ Params: { id: string }; Body: { title?: string; body?: string; marker?: PersonalNoteMarker; pinned?: boolean } }>("/api/player/notes/:id", {
+      schema: {
+        params: { type: "object", required: ["id"], properties: { id: { type: "string", format: "uuid" } } },
+        body: { type: "object", additionalProperties: false, minProperties: 1, properties: noteProperties }
+      }
+    }, async (request, reply) => activeAction(request, reply, (hash) => ({
+      note: database.updatePersonalNote(hash, request.params.id, request.body)
+    })));
     player.post<{ Body: { upToActivityId: string } }>("/api/player/activity/seen", {
       schema: { body: { type: "object", additionalProperties: false, required: ["upToActivityId"], properties: {
         upToActivityId: { type: "string", format: "uuid" }
@@ -249,7 +261,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4] }
       } } }
     }, async (request, reply) => {
       try {
@@ -257,7 +269,7 @@ export function createApp(options: {
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         if (message === "Campaign file format is not supported.") return reply.code(400).send({ message: "Формат файла кампании не поддерживается." });
-        if (/Campaign file|Campaign name|Name must|Player name|Description|constraint/i.test(message)) {
+        if (/Campaign file|Campaign name|Name must|Player name|Personal note|Description|constraint/i.test(message)) {
           return reply.code(400).send({ message: "Файл кампании повреждён или содержит недопустимые данные." });
         }
         throw error;

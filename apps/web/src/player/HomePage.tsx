@@ -1,20 +1,22 @@
-import { ArrowRight, BookOpen, Check, Package, Sparkles } from "lucide-react";
+import { ArrowRight, BookOpen, Check, Package, Pin, Sparkles } from "lucide-react";
 import type { CampaignActivity, PlayerState } from "@progdm/shared";
-import { characterInitials, homeActivityDigest } from "./model";
+import { characterInitials, homeActivityDigest, personalNoteDisplayTitle, pinnedHomeNotes } from "./model";
 
 function activityLabel(event: CampaignActivity) {
   if (event.type === "item_granted") return `Получен предмет «${event.details.itemName ?? "Предмет"}»`;
   return `Открыто знание «${event.details.knowledgeTitle ?? "Новая запись"}»`;
 }
 
-export function HomePage({ player, busy, onProfile, onJournal, onMarkSeen }: {
+export function HomePage({ player, busy, onProfile, onJournal, onPinnedNotes, onMarkSeen }: {
   player: PlayerState;
   busy: boolean;
   onProfile: () => void;
   onJournal: () => void;
+  onPinnedNotes: () => void;
   onMarkSeen: (eventId: string) => void;
 }) {
   const activity = homeActivityDigest(player.newActivity);
+  const pinnedNotes = pinnedHomeNotes(player.notes);
   const latest = activity[0];
   const name = player.characterName ?? "Персонаж ещё не назначен";
 
@@ -42,5 +44,13 @@ export function HomePage({ player, busy, onProfile, onJournal, onMarkSeen }: {
         </div>
       </> : <p className="prod-empty">Пока ничего нового.</p>}
     </section>
+    {pinnedNotes.length > 0 && <section className="prod-section prod-home-pinned" aria-labelledby="prod-home-pinned">
+      <div className="prod-section-heading"><h2 id="prod-home-pinned"><Pin aria-hidden="true" />Закреплено</h2></div>
+      <ul className="prod-pinned-note-list">{pinnedNotes.map((note) => <li key={note.id}>
+        <button type="button" onClick={onPinnedNotes} aria-label={`Открыть заметки: ${personalNoteDisplayTitle(note)}`}>
+          <Pin aria-hidden="true" /><span>{personalNoteDisplayTitle(note)}</span><ArrowRight aria-hidden="true" />
+        </button>
+      </li>)}</ul>
+    </section>}
   </div>;
 }

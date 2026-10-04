@@ -59,12 +59,18 @@ export const characters = sqliteTable("characters", {
 export const characterPersonalNotes = sqliteTable("character_personal_notes", {
   id: text("id").primaryKey(),
   characterId: text("character_id").notNull().references(() => characters.id, { onDelete: "restrict" }),
+  title: text("title").notNull().default(""),
   body: text("body").notNull(),
+  marker: text("marker").notNull().default("normal"),
+  pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 }, (table) => [
   index("character_personal_notes_character_idx").on(table.characterId, table.createdAt, table.id),
-  check("character_personal_note_body_valid", sql`length(trim(${table.body})) between 1 and 2000`)
+  check("character_personal_note_title_valid", sql`length(${table.title}) <= 120`),
+  check("character_personal_note_body_valid", sql`length(trim(${table.body})) between 1 and 2000`),
+  check("character_personal_note_marker_valid", sql`${table.marker} in ('normal', 'important', 'check', 'question')`),
+  check("character_personal_note_pinned_valid", sql`${table.pinned} in (0, 1)`)
 ]);
 
 export const characterReadState = sqliteTable("character_read_state", {

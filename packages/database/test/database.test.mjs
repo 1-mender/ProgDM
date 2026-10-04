@@ -255,7 +255,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 3);
+  assert.equal(archive.version, 4);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -298,7 +298,13 @@ test("profile, personal notes and read marker belong to the character, not an ol
   db.approvePlayer(a.id, { characterId: mira.id });
   db.updateCharacterProfile(mira.id, { name: "Mira", shortDescription: "Explorer", archetype: "Scout", origin: "North", personalGoal: "Find home", dmNotes: "Secret" });
   db.updatePlayerProfile("token-a-hash", { shortDescription: "Explorer of ruins", personalGoal: "Find the map" });
-  const note = db.createPersonalNote("token-a-hash", "The old door is suspicious.");
+  const note = db.createPersonalNote("token-a-hash", "The old door is suspicious.\nCheck the cellar entrance.", {
+    title: "Старая дверь", marker: "check", pinned: true
+  });
+  const noteEvent = db.listCampaignActivity(campaign.id).find((event) => event.type === "personal_note_created");
+  assert.deepEqual(noteEvent.details, {});
+  assert.equal(JSON.stringify(noteEvent).includes(note.body), false);
+  assert.equal(JSON.stringify(noteEvent).includes(note.title), false);
   db.grantInventoryItem(mira.id, item.id, 1);
   const clue = db.createKnowledge(campaign.id, "note", "Door", "Behind the library");
   db.setKnowledgeVisibility(clue.id, "character", mira.id);
@@ -306,6 +312,9 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(firstView.profile.personalGoal, "Find the map");
   assert.equal(firstView.profile.dmNotes, undefined);
   assert.equal(firstView.notes[0].id, note.id);
+  assert.deepEqual({ title: firstView.notes[0].title, body: firstView.notes[0].body, marker: firstView.notes[0].marker, pinned: firstView.notes[0].pinned }, {
+    title: "Старая дверь", body: note.body, marker: "check", pinned: true
+  });
   assert.deepEqual(firstView.newActivity.map((event) => event.type), ["knowledge_visibility_changed", "item_granted"]);
   db.markPlayerActivitySeen("token-a-hash", firstView.newActivity[0].id);
   assert.equal(db.getPlayerState("token-a-hash").newActivity.length, 0);
@@ -335,6 +344,8 @@ test("profile, personal notes and read marker belong to the character, not an ol
   db.approvePlayer(c.id, { characterId: other.id });
   assert.equal(db.getPlayerState("token-b-hash").profile.shortDescription, "Explorer of ruins");
   assert.equal(db.getPlayerState("token-b-hash").notes[0].id, note.id);
+  assert.equal(db.getPlayerState("token-b-hash").notes[0].title, "Старая дверь");
+  assert.equal(db.getPlayerState("token-b-hash").notes[0].pinned, true);
   assert.deepEqual(db.getPlayerState("token-c-hash").notes, []);
   assert.equal(db.getPlayerState("token-c-hash").knowledge.some((entry) => entry.id === clue.id), false);
   assert.throws(() => db.updatePersonalNote("token-c-hash", note.id, "Changed"), /not found/);
@@ -343,8 +354,11 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.type), ["item_granted"]);
 
   const exported = db.exportCampaign(campaign.id);
-  assert.equal(exported.version, 3);
+  assert.equal(exported.version, 4);
   assert.equal(exported.personalNotes.length, 1);
+  assert.deepEqual({ title: exported.personalNotes[0].title, marker: exported.personalNotes[0].marker, pinned: exported.personalNotes[0].pinned }, {
+    title: "Старая дверь", marker: "check", pinned: true
+  });
   assert.equal("readState" in exported, false);
   assert.equal(JSON.stringify(exported).includes("token-a-hash"), false);
   const imported = db.importCampaign(exported);
@@ -352,6 +366,17 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(importedMira.dmNotes, "Secret");
   assert.equal(importedMira.personalGoal, "Find the map");
   assert.equal(db.listPersonalNotesByCharacter(importedMira.id)[0].body, note.body);
+  assert.deepEqual({ title: db.listPersonalNotesByCharacter(importedMira.id)[0].title, marker: db.listPersonalNotesByCharacter(importedMira.id)[0].marker, pinned: db.listPersonalNotesByCharacter(importedMira.id)[0].pinned }, {
+    title: "Старая дверь", marker: "check", pinned: true
+  });
+  const legacyV3 = structuredClone(exported);
+  legacyV3.version = 3;
+  for (const row of legacyV3.personalNotes) for (const key of ["title", "marker", "pinned"]) delete row[key];
+  const v3Import = db.importCampaign(legacyV3);
+  const v3Mira = db.listCharactersByCampaign(v3Import.id).find((row) => row.name === "Mira");
+  assert.deepEqual({ title: db.listPersonalNotesByCharacter(v3Mira.id)[0].title, marker: db.listPersonalNotesByCharacter(v3Mira.id)[0].marker, pinned: db.listPersonalNotesByCharacter(v3Mira.id)[0].pinned }, {
+    title: "", marker: "normal", pinned: false
+  });
   const legacyExport = structuredClone(exported);
   legacyExport.version = 2;
   delete legacyExport.personalNotes;
@@ -378,7 +403,7 @@ test("backup restores profile, notes and character read marker", async (t) => {
     const player = db.submitPlayerRequest(session.id, "A", "backup-player-hash");
     db.approvePlayer(player.id, { characterId: mira.id });
     db.updatePlayerProfile("backup-player-hash", { shortDescription: "Before backup", personalGoal: "Remember" });
-    db.createPersonalNote("backup-player-hash", "Private thought");
+    db.createPersonalNote("backup-player-hash", "Private thought", { title: "Идея", marker: "question", pinned: true });
     db.grantInventoryItem(mira.id, item.id, 1);
     db.markPlayerActivitySeen("backup-player-hash", db.getPlayerState("backup-player-hash").newActivity[0].id);
     const backup = await db.createBackup();
@@ -388,6 +413,10 @@ test("backup restores profile, notes and character read marker", async (t) => {
     await db.restoreBackup(backup.id);
     assert.equal(db.getPlayerState("backup-player-hash").profile.shortDescription, "Before backup");
     assert.deepEqual(db.getPlayerState("backup-player-hash").notes.map((note) => note.body), ["Private thought"]);
+    const restoredNote = db.getPlayerState("backup-player-hash").notes[0];
+    assert.deepEqual({ title: restoredNote.title, marker: restoredNote.marker, pinned: restoredNote.pinned }, {
+      title: "Идея", marker: "question", pinned: true
+    });
     assert.equal(db.getPlayerState("backup-player-hash").newActivity.length, 0);
     assert.equal(db.checkDataHealth().ok, true);
   } finally { db.close(); }
@@ -420,6 +449,39 @@ test("health check reports cross-campaign knowledge and backup restores activity
   assert.equal(db.listKnowledgeByCampaign(campaign.id)[0].visibleToCharacterId, mira.id);
   assert.deepEqual(db.listCampaignActivity(campaign.id).map((event) => event.type).slice(-2), ["character_archived", "backup_restored"]);
   assert.equal(db.listCampaigns().length, 1);
+  } finally { db.close(); }
+});
+
+test("data health reports invalid personal note title, body, marker and pinned values", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Note health");
+    const character = db.createCharacter(campaign.id, "Mira");
+    const session = db.createSession(campaign.id, "Check");
+    db.activateSession(session.id);
+    const player = db.submitPlayerRequest(session.id, "A", "note-health-token");
+    db.approvePlayer(player.id, { characterId: character.id });
+    const note = db.createPersonalNote("note-health-token", "Valid body");
+    const raw = new SQLite(file);
+    try {
+      raw.pragma("ignore_check_constraints = ON");
+      const assertNoteIssue = () => {
+        const health = db.checkDataHealth();
+        const noteCheck = health.checks.find((check) => check.name === "Личные заметки");
+        assert.equal(health.ok, false);
+        assert.equal(noteCheck.status, "error");
+      };
+      raw.prepare("UPDATE character_personal_notes SET title = ? WHERE id = ?").run("x".repeat(121), note.id);
+      assertNoteIssue();
+      raw.prepare("UPDATE character_personal_notes SET title = '', marker = ? WHERE id = ?").run("invalid", note.id);
+      assertNoteIssue();
+      raw.prepare("UPDATE character_personal_notes SET marker = 'normal', body = '' WHERE id = ?").run(note.id);
+      assertNoteIssue();
+      raw.prepare("UPDATE character_personal_notes SET body = 'Valid body', pinned = 2 WHERE id = ?").run(note.id);
+      assertNoteIssue();
+    } finally { raw.close(); }
   } finally { db.close(); }
 });
 
@@ -768,5 +830,60 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     assert.equal(originalBackup.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, versionFiveEntries.length);
     assert.equal(originalBackup.prepare("SELECT visibility FROM knowledge_entries").get().visibility, "player");
     originalBackup.close();
+  } finally { database.close(); }
+});
+
+test("restoring a schema 0008 backup migrates personal note metadata defaults and leaves source untouched", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const backups = join(root, "backups");
+  const uploads = join(root, "uploads");
+  const oldMigrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-v8-"));
+  const backupName = "progdm-backup-00000000-0000-4000-8000-000000000222.db";
+  mkdirSync(backups, { recursive: true });
+  for (const category of ["monsters", "characters", "items"]) {
+    mkdirSync(join(backups, "progdm-backup-00000000-0000-4000-8000-000000000222-uploads", category), { recursive: true });
+  }
+  mkdirSync(dirname(file), { recursive: true });
+  t.after(() => {
+    assert.equal(dirname(oldMigrationFolder), resolve(tmpdir()));
+    rmSync(oldMigrationFolder, { recursive: true, force: true });
+  });
+
+  const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
+  const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
+  const versionEightEntries = journal.entries.filter((entry) => entry.idx <= 8);
+  mkdirSync(join(oldMigrationFolder, "meta"));
+  writeFileSync(join(oldMigrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: versionEightEntries }));
+  for (const entry of versionEightEntries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(oldMigrationFolder, entry.tag + ".sql"));
+
+  const legacy = new SQLite(join(root, "legacy-v8.db"));
+  try {
+    migrate(drizzle(legacy), { migrationsFolder: oldMigrationFolder });
+    legacy.prepare("INSERT INTO campaigns (id, name, created_at) VALUES (?, ?, ?)")
+      .run("00000000-0000-4000-8000-000000000201", "Old notes", "2026-04-01T00:00:00.000Z");
+    legacy.prepare("INSERT INTO characters (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)")
+      .run("00000000-0000-4000-8000-000000000202", "00000000-0000-4000-8000-000000000201", "Mira", "2026-04-01T00:00:00.000Z");
+    legacy.prepare("INSERT INTO character_personal_notes (id, character_id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("00000000-0000-4000-8000-000000000203", "00000000-0000-4000-8000-000000000202", "The old bridge is unsafe.", "2026-04-01T00:00:00.000Z", "2026-04-01T00:00:00.000Z");
+    await legacy.backup(join(backups, backupName));
+  } finally { legacy.close(); }
+  const originalBackupHash = createHash("sha256").update(readFileSync(join(backups, backupName))).digest("hex");
+
+  const database = openDatabase({ file, backupsDirectory: backups, uploadsDirectory: uploads });
+  try {
+    await database.restoreBackup(backupName);
+    const notes = database.listPersonalNotesByCharacter("00000000-0000-4000-8000-000000000202");
+    assert.equal(notes.length, 1);
+    assert.deepEqual({ title: notes[0].title, body: notes[0].body, marker: notes[0].marker, pinned: notes[0].pinned }, {
+      title: "", body: "The old bridge is unsafe.", marker: "normal", pinned: false
+    });
+    assert.equal(database.checkDataHealth().ok, true, JSON.stringify(database.checkDataHealth()));
+    assert.equal(createHash("sha256").update(readFileSync(join(backups, backupName))).digest("hex"), originalBackupHash);
+    const original = new SQLite(join(backups, backupName), { readonly: true });
+    try {
+      assert.equal(original.prepare("PRAGMA table_info(character_personal_notes)").all().some((column) => column.name === "title"), false);
+      assert.equal(original.prepare("SELECT body FROM character_personal_notes WHERE id = ?").get("00000000-0000-4000-8000-000000000203").body, "The old bridge is unsafe.");
+    } finally { original.close(); }
   } finally { database.close(); }
 });
