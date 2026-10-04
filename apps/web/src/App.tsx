@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Archive, ArrowDown, ArrowUp, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Pencil, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, ScrollText, Trash2, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
+import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeFact, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
 import { approvalTarget, LatestRequest, mergeProfileDraft } from "./sync";
 
@@ -129,6 +129,7 @@ function DmWorkspace() {
   const openedCharacter = useRef("");
   const overviewRequests = useRef(new LatestRequest());
   const historyRequests = useRef(new LatestRequest());
+  const knowledgeFactRequests = useRef(new LatestRequest());
   const profileBase = useRef<Character | null>(null);
   const [backupId, setBackupId] = useState("");
   const [health, setHealth] = useState<DataHealth | null>(null);
@@ -161,6 +162,13 @@ function DmWorkspace() {
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
   const [knowledgeTargetId, setKnowledgeTargetId] = useState("");
+  const [knowledgeFacts, setKnowledgeFacts] = useState<KnowledgeFact[]>([]);
+  const [knowledgeFactsLoading, setKnowledgeFactsLoading] = useState(false);
+  const [knowledgeFactsError, setKnowledgeFactsError] = useState("");
+  const [knowledgeFactsReload, setKnowledgeFactsReload] = useState(0);
+  const [newKnowledgeFact, setNewKnowledgeFact] = useState("");
+  const [editingKnowledgeFact, setEditingKnowledgeFact] = useState<{ id: string; body: string } | null>(null);
+  const [deletingKnowledgeFact, setDeletingKnowledgeFact] = useState<KnowledgeFact | null>(null);
   const [joinAddress, setJoinAddress] = useState("");
   const [manualJoinAddress, setManualJoinAddress] = useState("");
   const [copied, setCopied] = useState(false);
@@ -298,6 +306,27 @@ function DmWorkspace() {
       "/join/" + current.session.joinToken
     : "";
   const addressKey = addresses.map((entry) => entry.address).join("|");
+  useEffect(() => {
+    const entryId = selectedKnowledge?.id;
+    if (section !== "knowledge" || !selectedId || !entryId || !token) {
+      knowledgeFactRequests.current.invalidate();
+      setKnowledgeFacts([]); setKnowledgeFactsLoading(false); setKnowledgeFactsError("");
+      return;
+    }
+    const campaignId = selectedId;
+    const ticket = knowledgeFactRequests.current.begin();
+    setKnowledgeFacts([]); setKnowledgeFactsLoading(true); setKnowledgeFactsError("");
+    setEditingKnowledgeFact(null); setDeletingKnowledgeFact(null); setNewKnowledgeFact("");
+    void request<{ facts: KnowledgeFact[] }>(token,
+      `/api/dm/campaigns/${campaignId}/knowledge/${entryId}/facts`).then((result) => {
+      if (knowledgeFactRequests.current.isCurrent(ticket)) setKnowledgeFacts(result.facts);
+    }).catch((failure: Error) => {
+      if (knowledgeFactRequests.current.isCurrent(ticket)) setKnowledgeFactsError(failure.message);
+    }).finally(() => {
+      if (knowledgeFactRequests.current.isCurrent(ticket)) setKnowledgeFactsLoading(false);
+    });
+    return () => { knowledgeFactRequests.current.invalidate(); };
+  }, [section, selectedId, selectedKnowledge?.id, token, knowledgeFactsReload]);
   useEffect(() => {
     if (addresses.length && !addresses.some((entry) => entry.address === joinAddress)) {
       setJoinAddress(addresses.some((entry) => entry.address === window.location.hostname)
@@ -466,6 +495,48 @@ function DmWorkspace() {
       });
       setKnowledgeTitle(""); setKnowledgeDescription("");
       setNotice("Запись добавлена и пока скрыта от игроков.");
+    });
+  }
+  function createKnowledgeFact(event: FormEvent) {
+    event.preventDefault();
+    const entry = selectedKnowledge;
+    if (!selected || !entry) return;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts`, { body: newKnowledgeFact.trim() });
+      setNewKnowledgeFact(""); setKnowledgeFactsReload((value) => value + 1); setNotice("Факт добавлен.");
+    });
+  }
+  function saveKnowledgeFact(event: FormEvent) {
+    event.preventDefault();
+    const entry = selectedKnowledge;
+    const draft = editingKnowledgeFact;
+    if (!selected || !entry || !draft) return;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts/${draft.id}`, { body: draft.body.trim() }, 10000, "PATCH");
+      setEditingKnowledgeFact(null); setKnowledgeFactsReload((value) => value + 1); setNotice("Факт сохранён.");
+    });
+  }
+  function moveKnowledgeFact(fact: KnowledgeFact, offset: -1 | 1) {
+    const entry = selectedKnowledge;
+    if (!selected || !entry) return;
+    const index = knowledgeFacts.findIndex((item) => item.id === fact.id);
+    const target = index + offset;
+    if (index < 0 || target < 0 || target >= knowledgeFacts.length) return;
+    const factIds = knowledgeFacts.map((item) => item.id);
+    [factIds[index], factIds[target]] = [factIds[target]!, factIds[index]!];
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts/reorder`, { factIds });
+      setKnowledgeFactsReload((value) => value + 1); setNotice("Порядок фактов изменён.");
+    });
+  }
+  function deleteKnowledgeFact() {
+    const entry = selectedKnowledge;
+    const fact = deletingKnowledgeFact;
+    if (!selected || !entry || !fact) return;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts/${fact.id}`, undefined, 10000, "DELETE");
+      setDeletingKnowledgeFact(null); setEditingKnowledgeFact(null);
+      setKnowledgeFactsReload((value) => value + 1); setNotice("Факт удалён. История раскрытий сохранена.");
     });
   }
   function createBackup() {
@@ -900,6 +971,35 @@ function DmWorkspace() {
                     </select>
                     <button className="secondary" disabled={locked || targetMissing || (entry.visibility === "character" && entry.visibleToCharacterId === knowledgeTargetId)}><Eye />Открыть персонажу</button>
                   </form>
+                  <section className="knowledge-facts" aria-labelledby="knowledge-facts-title">
+                    <div className="section-heading"><h3 id="knowledge-facts-title">Факты</h3><span className="count">{knowledgeFacts.length}</span></div>
+                    <p className="muted knowledge-facts-hint">Факты подготавливаются здесь; доступ к ним открывается отдельно.</p>
+                    {knowledgeFactsLoading ? <p className="muted">Загружаем факты…</p> : knowledgeFactsError ? <p className="message error" role="alert">{knowledgeFactsError}</p> : knowledgeFacts.length ? <ol className="knowledge-fact-list">
+                      {knowledgeFacts.map((fact, index) => <li className="knowledge-fact-row" key={fact.id}>
+                        {workspaceMode === "prepare" && editingKnowledgeFact?.id === fact.id ? <form className="knowledge-fact-editor" onSubmit={saveKnowledgeFact}>
+                          <label htmlFor={`knowledge-fact-edit-${fact.id}`}>Текст факта</label>
+                          <textarea id={`knowledge-fact-edit-${fact.id}`} value={editingKnowledgeFact.body} maxLength={2000} required disabled={locked}
+                            onChange={(event) => setEditingKnowledgeFact({ id: fact.id, body: event.target.value })} rows={3} />
+                          <div className="knowledge-fact-actions"><button className="secondary" type="button" disabled={locked} onClick={() => setEditingKnowledgeFact(null)}>Отмена</button>
+                            <button className="primary" disabled={locked || !editingKnowledgeFact.body.trim()}>Сохранить</button></div>
+                        </form> : <>
+                          <p>{fact.body}</p>
+                          {workspaceMode === "prepare" && <div className="knowledge-fact-actions" aria-label="Действия с фактом">
+                            <button className="icon-button" type="button" title="Переместить выше" aria-label="Переместить факт выше" disabled={locked || index === 0} onClick={() => moveKnowledgeFact(fact, -1)}><ArrowUp /></button>
+                            <button className="icon-button" type="button" title="Переместить ниже" aria-label="Переместить факт ниже" disabled={locked || index === knowledgeFacts.length - 1} onClick={() => moveKnowledgeFact(fact, 1)}><ArrowDown /></button>
+                            <button className="icon-button" type="button" title="Изменить факт" aria-label="Изменить факт" disabled={locked} onClick={() => setEditingKnowledgeFact({ id: fact.id, body: fact.body })}><Pencil /></button>
+                            <button className="icon-button" type="button" title="Удалить факт" aria-label="Удалить факт" disabled={locked} onClick={() => setDeletingKnowledgeFact(fact)}><Trash2 /></button>
+                          </div>}
+                        </>}
+                      </li>)}
+                    </ol> : !knowledgeFactsLoading && <p className="muted">Для этой записи фактов пока нет.</p>}
+                    {workspaceMode === "prepare" && <form className="knowledge-fact-create" onSubmit={createKnowledgeFact}>
+                      <label htmlFor="knowledge-fact-new">Добавить факт</label>
+                      <textarea id="knowledge-fact-new" value={newKnowledgeFact} maxLength={2000} required disabled={locked || knowledgeFactsLoading}
+                        onChange={(event) => setNewKnowledgeFact(event.target.value)} rows={3} placeholder="Отдельное сведение, которое можно будет открыть позже" />
+                      <button className="secondary" disabled={locked || knowledgeFactsLoading || !newKnowledgeFact.trim()}><Plus />Добавить факт</button>
+                    </form>}
+                  </section>
                 </div>;
               })()}
             </div>}
@@ -928,6 +1028,11 @@ function DmWorkspace() {
       {alerts}
       <p className="confirmation-copy">{confirmation.kind === "start" ? <>«{confirmation.previousName}» завершится. Начнётся «{confirmation.session.name}».</> : <>«{confirmation.session.name}» останется в истории. Возобновить её будет нельзя.</>}</p>
       <div className="dialog-actions"><button className="secondary" autoFocus disabled={busy} onClick={() => setConfirmation(null)}>Отмена</button><button className="primary" disabled={locked} onClick={() => execute(confirmation)}>{busy ? "Сохранение..." : confirmation.kind === "start" ? "Сменить сессию" : "Завершить сессию"}</button></div>
+    </Modal>}
+    {deletingKnowledgeFact && <Modal title="Удалить факт?" busy={busy} close={() => setDeletingKnowledgeFact(null)}>
+      <p className="confirmation-copy">Факт исчезнет из текущих знаний. История уже совершённых раскрытий сохранится.</p>
+      <div className="dialog-actions"><button className="secondary" autoFocus disabled={busy} onClick={() => setDeletingKnowledgeFact(null)}>Отмена</button>
+        <button className="destructive" disabled={locked} onClick={deleteKnowledgeFact}>{busy ? "Удаление…" : "Удалить"}</button></div>
     </Modal>}
   </div>;
 }

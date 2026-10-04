@@ -531,6 +531,61 @@ test("DM accepts only universal knowledge categories and players cannot create o
   assert.equal(database.listKnowledgeByCampaign(campaign.id).length, 6);
 });
 
+test("DM prepares Knowledge Facts through campaign-scoped APIs without changing reveal history", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Facts campaign");
+  const otherCampaign = database.createCampaign("Other campaign");
+  const entry = database.createKnowledge(campaign.id, "character", "Apothecary", "An entry summary stays independent.");
+  const otherEntry = database.createKnowledge(otherCampaign.id, "fact", "Other", "Other campaign entry.");
+  const foreignFact = database.createKnowledgeFact(otherCampaign.id, otherEntry.id, "A fact owned by another entry.");
+  const base = `/api/dm/campaigns/${campaign.id}/knowledge/${entry.id}/facts`;
+  const noAuth = await app.inject({ method: "GET", url: base });
+  assert.equal(noAuth.statusCode, 401);
+  assert.deepEqual((await get(app, base)).json().facts, []);
+
+  for (const payload of [{ body: "   " }, { body: "x".repeat(2001) }, { body: "Valid", extra: true }]) {
+    assert.equal((await post(app, base, payload)).statusCode, 400);
+  }
+  assert.equal((await get(app, `/api/dm/campaigns/${campaign.id}/knowledge/${otherEntry.id}/facts`)).statusCode, 404);
+  assert.equal((await get(app, `/api/dm/campaigns/${otherCampaign.id}/knowledge/${entry.id}/facts`)).statusCode, 404);
+
+  const firstResponse = await post(app, base, { body: "  Mira слышит звон из подвала.  " });
+  const secondResponse = await post(app, base, { body: "Запах трав выдаёт недавний ритуал." });
+  assert.equal(firstResponse.statusCode, 201);
+  assert.equal(secondResponse.statusCode, 201);
+  const first = firstResponse.json().fact;
+  const second = secondResponse.json().fact;
+  assert.equal(first.body, "Mira слышит звон из подвала.");
+
+  const invalidUpdate = await app.inject({ method: "PATCH", url: `${base}/${first.id}`, headers, payload: { body: "\t " } });
+  assert.equal(invalidUpdate.statusCode, 400);
+  const changed = await app.inject({ method: "PATCH", url: `${base}/${first.id}`, headers, payload: { body: "Над дверью виден свежий след." } });
+  assert.equal(changed.statusCode, 200);
+  assert.equal(changed.json().fact.body, "Над дверью виден свежий след.");
+  assert.equal((await app.inject({ method: "PATCH", url: `${base}/${foreignFact.id}`, headers, payload: { body: "Cross-entry edit" } })).statusCode, 404);
+
+  const reveal = database.revealKnowledgeFactToParty(campaign.id, entry.id, first.id);
+  assert.equal(reveal.created, true);
+  const reordered = await post(app, `${base}/reorder`, { factIds: [second.id, first.id] });
+  assert.equal(reordered.statusCode, 200);
+  assert.deepEqual(reordered.json().facts.map((fact) => fact.id), [second.id, first.id]);
+  assert.equal((await post(app, `${base}/reorder`, { factIds: [first.id] })).statusCode, 409);
+  assert.equal((await post(app, `${base}/reorder`, { factIds: [first.id, first.id] })).statusCode, 409);
+
+  const beforeDelete = database.exportCampaign(campaign.id);
+  assert.equal(beforeDelete.knowledgeFactReveals.length, 1);
+  assert.equal(beforeDelete.knowledgeFactReveals[0].knowledgeFactId, first.id);
+  const deleted = await app.inject({ method: "DELETE", url: `${base}/${first.id}`, headers });
+  assert.equal(deleted.statusCode, 200);
+  assert.deepEqual((await get(app, base)).json().facts.map((fact) => fact.id), [second.id]);
+  const afterDelete = database.exportCampaign(campaign.id);
+  assert.equal(afterDelete.knowledgeFactReveals.length, 0);
+  assert.equal(afterDelete.activity.filter((event) => event.type === "knowledge_fact_revealed").length, 1);
+  assert.equal(afterDelete.knowledge[0].description, "An entry summary stays independent.");
+  assert.equal((await app.inject({ method: "DELETE", url: `${base}/${first.id}`, headers })).statusCode, 404);
+  assert.equal((await post(app, `${base}/reveal`, { factId: second.id })).statusCode, 404);
+});
+
 test("invalid names, malformed JSON, unknown records and transitions are rejected", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Campaign");

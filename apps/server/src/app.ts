@@ -470,6 +470,71 @@ export function createApp(options: {
         }
       }
     );
+    const knowledgeFactParams = {
+      type: "object", required: ["campaignId", "entryId"], properties: {
+        campaignId: { type: "string", format: "uuid" }, entryId: { type: "string", format: "uuid" }
+      }
+    };
+    const knowledgeFactBody = { type: "object", additionalProperties: false, required: ["body"], properties: {
+      body: { type: "string", maxLength: 2000, pattern: "\\S" }
+    } };
+    dm.get<{ Params: { campaignId: string; entryId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts", {
+      schema: { params: knowledgeFactParams }
+    }, async (request, reply) => {
+      try { return { facts: database.listKnowledgeFacts(request.params.campaignId, request.params.entryId) }; }
+      catch (error) {
+        if (error instanceof Error && error.message === "Knowledge entry is not in this campaign.") return reply.code(404).send({ message: "Запись не найдена в этой кампании." });
+        throw error;
+      }
+    });
+    dm.post<{ Params: { campaignId: string; entryId: string }; Body: { body: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts", {
+      schema: { params: knowledgeFactParams, body: knowledgeFactBody }
+    }, async (request, reply) => {
+      try { return reply.code(201).send({ fact: database.createKnowledgeFact(request.params.campaignId, request.params.entryId, request.body.body) }); }
+      catch (error) {
+        if (error instanceof Error && error.message === "Knowledge entry is not in this campaign.") return reply.code(404).send({ message: "Запись не найдена в этой кампании." });
+        if (error instanceof Error && error.message === "Knowledge fact must contain between 1 and 2000 characters.") return reply.code(400).send({ message: "Факт должен содержать от 1 до 2000 символов." });
+        throw error;
+      }
+    });
+    dm.post<{ Params: { campaignId: string; entryId: string }; Body: { factIds: string[] } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/reorder", {
+      schema: { params: knowledgeFactParams, body: { type: "object", additionalProperties: false, required: ["factIds"], properties: {
+        factIds: { type: "array", items: { type: "string", format: "uuid" } }
+      } } }
+    }, async (request, reply) => {
+      try { return { facts: database.reorderKnowledgeFacts(request.params.campaignId, request.params.entryId, request.body.factIds) }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Knowledge entry is not in this campaign.") return reply.code(404).send({ message: "Запись не найдена в этой кампании." });
+        if (message === "Knowledge fact order is invalid.") return reply.code(409).send({ message: "Список фактов устарел. Обновите запись и повторите действие." });
+        throw error;
+      }
+    });
+    dm.patch<{ Params: { campaignId: string; entryId: string; factId: string }; Body: { body: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/:factId", {
+      schema: { params: { type: "object", required: ["campaignId", "entryId", "factId"], properties: {
+        campaignId: { type: "string", format: "uuid" }, entryId: { type: "string", format: "uuid" }, factId: { type: "string", format: "uuid" }
+      } }, body: knowledgeFactBody }
+    }, async (request, reply) => {
+      try { return { fact: database.updateKnowledgeFact(request.params.campaignId, request.params.entryId, request.params.factId, request.body.body) }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Knowledge entry is not in this campaign." || message === "Knowledge fact not found in this entry.") return reply.code(404).send({ message: "Факт не найден в этой записи кампании." });
+        if (message === "Knowledge fact must contain between 1 and 2000 characters.") return reply.code(400).send({ message: "Факт должен содержать от 1 до 2000 символов." });
+        throw error;
+      }
+    });
+    dm.delete<{ Params: { campaignId: string; entryId: string; factId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/:factId", {
+      schema: { params: { type: "object", required: ["campaignId", "entryId", "factId"], properties: {
+        campaignId: { type: "string", format: "uuid" }, entryId: { type: "string", format: "uuid" }, factId: { type: "string", format: "uuid" }
+      } } }
+    }, async (request, reply) => {
+      try { return { deleted: database.deleteKnowledgeFact(request.params.campaignId, request.params.entryId, request.params.factId) }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Knowledge entry is not in this campaign." || message === "Knowledge fact not found in this entry.") return reply.code(404).send({ message: "Факт не найден в этой записи кампании." });
+        throw error;
+      }
+    });
     type VisibilityBody =
       | { visibility: "hidden" | "party" }
       | { visibility: "character"; characterId: string };
