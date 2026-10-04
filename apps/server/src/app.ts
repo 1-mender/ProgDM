@@ -265,7 +265,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8] }
       } } }
     }, async (request, reply) => {
       try {

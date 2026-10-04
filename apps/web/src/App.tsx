@@ -18,6 +18,7 @@ const activityLabels: Record<ActivityType, string> = {
   character_created: "Персонаж создан", character_assigned: "Персонаж назначен", character_archived: "Персонаж архивирован", character_restored: "Персонаж восстановлен",
   catalog_item_created: "Предмет добавлен в справочник", item_granted: "Предмет выдан",
   knowledge_created: "Знание создано", knowledge_visibility_changed: "Видимость знания изменена",
+  knowledge_fact_revealed: "Факт знания открыт", knowledge_fact_access_revoked: "Доступ к факту знания отозван",
   character_profile_updated: "Профиль обновлён", personal_note_created: "Личная заметка добавлена", personal_note_updated: "Личная заметка обновлена"
 };
 function activitySummary(event: CampaignActivity): string {

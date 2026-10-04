@@ -563,6 +563,8 @@ test("campaign export and import are authenticated and omit player and invitatio
   database.grantInventoryItem(character.id, catalogItem.id, 1);
   const personalKnowledge = database.createKnowledge(campaign.id, "fact", "Personal clue", "Known to Mira.");
   database.setKnowledgeVisibility(personalKnowledge.id, "character", character.id);
+  const fact = database.createKnowledgeFact(campaign.id, personalKnowledge.id, "A second, separately revealed detail.");
+  database.revealKnowledgeFactToCharacter(campaign.id, personalKnowledge.id, fact.id, character.id);
 
   const exported = await get(app, "/api/dm/campaigns/" + campaign.id + "/export");
   assert.equal(exported.statusCode, 200);
@@ -570,7 +572,7 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(exported.body.includes(session.joinToken), false);
   assert.equal(exported.body.includes("b".repeat(64)), false);
   const archive = exported.json();
-  assert.equal(archive.version, 7);
+  assert.equal(archive.version, 8);
   assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
 
   const imported = await post(app, "/api/dm/campaigns/import", archive);
@@ -584,6 +586,9 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(importedData.inventoryItems[0].quantity, 1);
   assert.equal(importedData.knowledge[0].visibility, "character");
   assert.equal(importedData.knowledge[0].visibleToCharacterId, importedData.characters[0].id);
+  assert.equal(importedData.knowledgeFacts.length, 1);
+  assert.equal(importedData.knowledgeFacts[0].knowledgeEntryId, importedData.knowledge[0].id);
+  assert.equal(importedData.knowledgeFactReveals[0].characterId, importedData.characters[0].id);
   const malformedProfileArchive = structuredClone(archive);
   malformedProfileArchive.characters[0].traits = ["x".repeat(41)];
   assert.equal((await post(app, "/api/dm/campaigns/import", malformedProfileArchive)).statusCode, 400);

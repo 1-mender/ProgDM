@@ -143,6 +143,31 @@ export interface KnowledgeEntry {
   createdAt: string;
 }
 
+export type KnowledgeFactRevealAudience = "party" | "character";
+export type KnowledgeFactRevealScope = "selected" | "next" | "all";
+export type KnowledgeFactAccessResult = { fact: KnowledgeFact; reveal: KnowledgeFactReveal; created: boolean };
+export type KnowledgeFactRevealBatchResult = { reveals: KnowledgeFactReveal[]; createdCount: number };
+
+export interface KnowledgeFact {
+  id: EntityId;
+  campaignId: EntityId;
+  knowledgeEntryId: EntityId;
+  body: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeFactReveal {
+  id: EntityId;
+  campaignId: EntityId;
+  knowledgeFactId: EntityId;
+  audience: KnowledgeFactRevealAudience;
+  characterId: EntityId | null;
+  sessionId: EntityId | null;
+  createdAt: string;
+}
+
 export interface Quest {
   id: EntityId;
   campaignId: EntityId;
@@ -165,6 +190,7 @@ export const ACTIVITY_TYPES = [
   "player_requested", "player_approved", "player_rejected",
   "character_created", "character_assigned", "character_archived", "character_restored",
   "catalog_item_created", "item_granted", "knowledge_created", "knowledge_visibility_changed",
+  "knowledge_fact_revealed", "knowledge_fact_access_revoked",
   "character_profile_updated", "personal_note_created", "personal_note_updated"
 ] as const;
 
@@ -181,6 +207,9 @@ export interface ActivityDetails {
   totalQuantity?: number;
   visibility?: KnowledgeVisibility;
   previousVisibility?: KnowledgeVisibility;
+  audience?: KnowledgeFactRevealAudience;
+  factCount?: number;
+  scope?: KnowledgeFactRevealScope;
   backupId?: string;
 }
 

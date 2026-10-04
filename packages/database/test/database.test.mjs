@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
@@ -73,7 +74,7 @@ test("backup migration hashes remain compatible across LF and CRLF checkouts", a
   } finally { db.close(); }
 });
 
-test("legacy campaign formats v1 through v6 import with profile defaults and ID remapping", (t) => {
+test("legacy campaign formats v1 through v7 import with profile defaults and ID remapping", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Legacy");
   const mira = db.createCharacter(campaign.id, "Mira");
@@ -85,10 +86,10 @@ test("legacy campaign formats v1 through v6 import with profile defaults and ID 
   const clue = db.createKnowledge(campaign.id, "fact", "Clue", "Personal knowledge");
   db.setKnowledgeVisibility(clue.id, "character", mira.id);
   const current = db.exportCampaign(campaign.id);
-  for (const version of [1, 2, 3, 4, 5, 6]) {
+  for (const version of [1, 2, 3, 4, 5, 6, 7]) {
     const legacy = structuredClone(current);
     legacy.version = version;
-    legacy.knowledge[0].category = "note";
+    if (version < 7) legacy.knowledge[0].category = "note";
     for (const character of legacy.characters) {
       if (version < 5) {
         delete character.traits;
@@ -115,7 +116,9 @@ test("legacy campaign formats v1 through v6 import with profile defaults and ID 
       delete legacy.profileFields;
       delete legacy.profileFieldValues;
     }
-    const imported = db.importCampaign(legacy);
+    let imported;
+    try { imported = db.importCampaign(legacy); }
+    catch (error) { throw new Error(`Legacy archive v${version} failed: ${error.message}`, { cause: error }); }
     const exported = db.exportCampaign(imported.id);
     assert.equal(exported.knowledge[0].category, "fact");
     assert.equal(exported.sessions[0].status, "ended");
@@ -130,7 +133,7 @@ test("legacy campaign formats v1 through v6 import with profile defaults and ID 
       title: "", marker: "normal", pinned: false
     });
     assert.equal(JSON.stringify(exported).includes("secret-hash"), false);
-    assert.equal(db.checkDataHealth().ok, true);
+    assert.equal(db.checkDataHealth().ok, true, `legacy archive v${version}: ${JSON.stringify(db.checkDataHealth())}`);
   }
 });
 
@@ -282,7 +285,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 7);
+  assert.equal(archive.version, 8);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -393,7 +396,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.type), ["item_granted"]);
 
   const exported = db.exportCampaign(campaign.id);
-  assert.equal(exported.version, 7);
+  assert.equal(exported.version, 8);
   assert.deepEqual({ traits: exported.characters[0].traits, appearance: exported.characters[0].appearance, quote: exported.characters[0].quote }, {
     traits: ["Observant", "Careful"], appearance: "A weathered coat", quote: "Not yet."
   });
@@ -437,7 +440,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(db.checkDataHealth().ok, true);
 });
 
-test("campaign archive v7 round-trips six categories and rejects unknown categories atomically", (t) => {
+test("campaign archive v8 round-trips six categories and rejects unknown categories atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Knowledge taxonomy");
   const mira = db.createCharacter(campaign.id, "Mira");
@@ -446,7 +449,7 @@ test("campaign archive v7 round-trips six categories and rejects unknown categor
   db.setKnowledgeVisibility(entries[0].id, "character", mira.id);
   db.setKnowledgeVisibility(entries[1].id, "party");
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 7);
+  assert.equal(archive.version, 8);
   assert.deepEqual(archive.knowledge.map(({ category }) => category), categories);
 
   const imported = db.importCampaign(archive);
@@ -907,7 +910,7 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     const currentRaw = new SQLite(file, { readonly: true });
     const currentTableNames = currentRaw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(({ name }) => name);
     currentRaw.close();
-    assert.deepEqual(legacyTableNames, currentTableNames.filter((name) => !["campaign_activity", "character_personal_notes", "character_read_state", "campaign_profile_field_definitions", "character_profile_field_values"].includes(name)), "migrations after 0005 add the later activity, profile and read-state tables");
+    assert.deepEqual(legacyTableNames, currentTableNames.filter((name) => !["campaign_activity", "character_personal_notes", "character_read_state", "campaign_profile_field_definitions", "character_profile_field_values", "knowledge_facts", "knowledge_fact_reveals"].includes(name)), "migrations after 0005 add the later activity, profile, read-state and fact tables");
 
     await database.restoreBackup(backupName);
 
@@ -1148,7 +1151,7 @@ test("campaign profile fields validate, order, retain character values, export a
   assert.deepEqual(db.getPlayerState("new-profile-field-token").profile.profileFields.map((field) => field.value), ["Вейр", "Орден Серого Пламени"]);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 7);
+  assert.equal(archive.version, 8);
   assert.deepEqual(archive.profileFields.map(({ label, position }) => [label, position]), [["Родина", 0], ["Орден хранителей", 1]]);
   assert.equal(JSON.stringify(archive).includes("profile-field-token"), false);
   const imported = db.importCampaign(archive);
@@ -1305,6 +1308,108 @@ test("restoring an 0011 backup maps knowledge categories and preserves dependent
   } finally { database.close(); }
 });
 
+test("restoring a real schema 0012 backup stages migration 0013 and preserves legacy knowledge references", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "progdm-restore-0012-"));
+  const currentFile = join(root, "current", "game.db");
+  const backups = join(root, "backups");
+  const uploads = join(root, "uploads");
+  const oldMigrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-0012-"));
+  const backupUuid = "00000000-0000-4000-8000-000000000444";
+  const backupName = `progdm-backup-${backupUuid}.db`;
+  const backupPath = join(backups, backupName);
+  mkdirSync(backups, { recursive: true });
+  for (const directory of ["monsters", "characters", "items"]) {
+    mkdirSync(join(backups, `progdm-backup-${backupUuid}-uploads`, directory), { recursive: true });
+  }
+  t.after(() => {
+    assert.equal(dirname(root), resolve(tmpdir()));
+    rmSync(root, { recursive: true, force: true });
+    assert.equal(dirname(oldMigrationFolder), resolve(tmpdir()));
+    rmSync(oldMigrationFolder, { recursive: true, force: true });
+  });
+
+  const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
+  const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
+  const schemaTwelveEntries = journal.entries.filter((entry) => entry.idx <= 12);
+  mkdirSync(join(oldMigrationFolder, "meta"));
+  writeFileSync(join(oldMigrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: schemaTwelveEntries }));
+  for (const entry of schemaTwelveEntries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(oldMigrationFolder, entry.tag + ".sql"));
+
+  const legacyPath = join(root, "schema-0012.db");
+  const legacy = new SQLite(legacyPath);
+  legacy.pragma("foreign_keys = ON");
+  try {
+    migrate(drizzle(legacy), { migrationsFolder: oldMigrationFolder });
+    const campaignId = "00000000-0000-4000-8000-000000000401";
+    const sessionId = "00000000-0000-4000-8000-000000000402";
+    const characterId = "00000000-0000-4000-8000-000000000403";
+    legacy.prepare("INSERT INTO campaigns (id, name, created_at) VALUES (?, ?, ?)")
+      .run(campaignId, "Schema 0012", "2026-08-01T00:00:00.000Z");
+    legacy.prepare(`INSERT INTO sessions (id, campaign_id, name, status, join_token, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(sessionId, campaignId, "Historical", "ended", "S".repeat(43), "2026-08-01T00:00:00.000Z");
+    legacy.prepare("INSERT INTO characters (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)")
+      .run(characterId, campaignId, "Mira", "2026-08-01T00:00:00.000Z");
+    const entries = [
+      ["00000000-0000-4000-8000-000000000411", "character", "Hidden", "Hidden summary.", "hidden", null],
+      ["00000000-0000-4000-8000-000000000412", "place", "Party", "Party summary.", "party", null],
+      ["00000000-0000-4000-8000-000000000413", "creature", "Character", "Character summary.", "character", characterId]
+    ];
+    const insertEntry = legacy.prepare(`INSERT INTO knowledge_entries
+      (id, campaign_id, category, title, description, visibility, visible_to_character_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const [id, category, title, description, visibility, target] of entries) {
+      insertEntry.run(id, campaignId, category, title, description, visibility, target, "2026-08-01T00:00:00.000Z");
+    }
+    legacy.prepare(`INSERT INTO campaign_activity
+      (id, campaign_id, session_id, knowledge_entry_id, type, created_at, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run("00000000-0000-4000-8000-000000000421", campaignId, sessionId, entries[2][0], "knowledge_created", "2026-08-01T00:00:00.000Z", "{}");
+    legacy.prepare(`INSERT INTO knowledge_migration_issues
+      (knowledge_entry_id, legacy_player_id, reason, created_at) VALUES (?, ?, ?, ?)`)
+      .run(entries[0][0], "legacy-player-reference", "missing_assignment", "2026-08-01T00:00:00.000Z");
+    await legacy.backup(backupPath);
+  } finally { legacy.close(); }
+  const originalHash = createHash("sha256").update(readFileSync(backupPath)).digest("hex");
+  const oldBackup = new SQLite(backupPath, { readonly: true });
+  try {
+    assert.equal(oldBackup.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 13);
+    assert.equal(oldBackup.prepare("SELECT name FROM sqlite_master WHERE name='knowledge_facts'").get(), undefined);
+  } finally { oldBackup.close(); }
+
+  const database = openDatabase({ file: currentFile, backupsDirectory: backups, uploadsDirectory: uploads });
+  try {
+    await database.restoreBackup(backupName);
+    const raw = new SQLite(currentFile, { readonly: true });
+    try {
+      assert.deepEqual(raw.prepare(`SELECT id, category, title, description, visibility, visible_to_character_id
+        FROM knowledge_entries ORDER BY id`).all().map(({ id, category, title, description, visibility, visible_to_character_id }) =>
+        [id, category, title, description, visibility, visible_to_character_id]), entriesFixtureForRestore0012());
+      assert.equal(raw.prepare("SELECT knowledge_entry_id FROM campaign_activity WHERE id=?").get("00000000-0000-4000-8000-000000000421").knowledge_entry_id,
+        "00000000-0000-4000-8000-000000000413");
+      assert.equal(raw.prepare("SELECT knowledge_entry_id FROM knowledge_migration_issues").get().knowledge_entry_id,
+        "00000000-0000-4000-8000-000000000411");
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_facts").get().count, 0);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_fact_reveals").get().count, 0);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 14);
+      assert.deepEqual(raw.pragma("foreign_key_check"), []);
+    } finally { raw.close(); }
+    assert.equal(database.checkDataHealth().ok, true, JSON.stringify(database.checkDataHealth()));
+    assert.equal(createHash("sha256").update(readFileSync(backupPath)).digest("hex"), originalHash);
+    const unchangedBackup = new SQLite(backupPath, { readonly: true });
+    try { assert.equal(unchangedBackup.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 13); }
+    finally { unchangedBackup.close(); }
+  } finally { database.close(); }
+});
+
+function entriesFixtureForRestore0012() {
+  return [
+    ["00000000-0000-4000-8000-000000000411", "character", "Hidden", "Hidden summary.", "hidden", null],
+    ["00000000-0000-4000-8000-000000000412", "place", "Party", "Party summary.", "party", null],
+    ["00000000-0000-4000-8000-000000000413", "creature", "Character", "Character summary.", "character", "00000000-0000-4000-8000-000000000403"]
+  ];
+}
+
 test("Data Health reports a legacy knowledge category without repairing it", (t) => {
   const file = temporaryFile(t);
   const root = dirname(dirname(file));
@@ -1321,6 +1426,241 @@ test("Data Health reports a legacy knowledge category without repairing it", (t)
       assert.equal(health.ok, false);
       assert.match(health.checks.find(({ name }) => name === "Категории знаний").message, /несогласованных записей/);
       assert.equal(raw.prepare("SELECT category FROM knowledge_entries WHERE id=?").get(entry.id).category, "note");
+    } finally { raw.close(); }
+  } finally { db.close(); }
+});
+
+test("knowledge Facts have independent party and Character grants, stable next reveal, and correction semantics", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Facts campaign");
+  const otherCampaign = db.createCampaign("Other campaign");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const rowan = db.createCharacter(campaign.id, "Rowan");
+  const foreignCharacter = db.createCharacter(otherCampaign.id, "Nora");
+  const archived = db.createCharacter(campaign.id, "Archived");
+  db.archiveCharacter(archived.id);
+  const session = db.createSession(campaign.id, "First session");
+  db.activateSession(session.id);
+  const entry = db.createKnowledge(campaign.id, "character", "Apothecary", "Summary remains hidden.");
+  const first = db.createKnowledgeFact(campaign.id, entry.id, "  The apothecary wears a silver ring.  ");
+  const second = db.createKnowledgeFact(campaign.id, entry.id, "The ring bears a northern seal.");
+  assert.equal(first.body, "The apothecary wears a silver ring.");
+  assert.throws(() => db.createKnowledgeFact(campaign.id, entry.id, " \n "), /between 1 and 2000/);
+  assert.throws(() => db.createKnowledgeFact(campaign.id, entry.id, "x".repeat(2001)), /between 1 and 2000/);
+  assert.throws(() => db.createKnowledgeFact(campaign.id, db.createKnowledge(otherCampaign.id, "fact", "Foreign", "Summary").id, "Cross campaign"), /not in this campaign/);
+  assert.deepEqual(db.listKnowledgeFacts(campaign.id, entry.id).map(({ position, body }) => [position, body]), [
+    [0, first.body], [1, second.body]
+  ]);
+  assert.deepEqual(db.reorderKnowledgeFacts(campaign.id, entry.id, [second.id, first.id]).map(({ id, position }) => [id, position]), [
+    [second.id, 0], [first.id, 1]
+  ]);
+  assert.throws(() => db.reorderKnowledgeFacts(campaign.id, entry.id, [first.id, first.id]), /order is invalid/);
+  assert.throws(() => db.revealKnowledgeFactToCharacter(campaign.id, entry.id, first.id, foreignCharacter.id), /not in this campaign/);
+  assert.throws(() => db.revealKnowledgeFactToCharacter(campaign.id, entry.id, first.id, archived.id), /Archived characters/);
+
+  const party = db.revealKnowledgeFactToParty(campaign.id, entry.id, second.id);
+  assert.equal(party.created, true);
+  assert.equal(party.reveal.sessionId, session.id);
+  assert.equal(db.revealKnowledgeFactToParty(campaign.id, entry.id, second.id).created, false);
+  assert.equal(db.revealKnowledgeFactToCharacter(campaign.id, entry.id, second.id, mira.id).created, true);
+  assert.equal(db.revealKnowledgeFactToCharacter(campaign.id, entry.id, second.id, rowan.id).created, true);
+  const beforeNext = db.listCampaignActivity(campaign.id).length;
+  const nextParty = db.revealNextKnowledgeFact(campaign.id, entry.id, "party", undefined, "next-party-once");
+  assert.equal(nextParty.fact.id, first.id);
+  assert.equal(nextParty.reveal.sessionId, session.id);
+  assert.equal(db.revealNextKnowledgeFact(campaign.id, entry.id, "party", undefined, "next-party-once").fact.id, first.id);
+  assert.equal(db.listCampaignActivity(campaign.id).length, beforeNext + 1);
+  const beforeMiraNext = db.listCampaignActivity(campaign.id).length;
+  const nextMira = db.revealNextKnowledgeFact(campaign.id, entry.id, "character", mira.id, "next-mira-once");
+  assert.equal(nextMira.fact.id, first.id);
+  assert.equal(nextMira.reveal.characterId, mira.id);
+  assert.equal(db.revealNextKnowledgeFact(campaign.id, entry.id, "character", mira.id, "next-mira-once").fact.id, first.id);
+  assert.equal(db.listCampaignActivity(campaign.id).length, beforeMiraNext + 1);
+  assert.equal(db.revealNextKnowledgeFact(campaign.id, entry.id, "party", undefined, "next-party-empty"), null);
+
+  const third = db.createKnowledgeFact(campaign.id, entry.id, "A third fact arrives before reveal-all.");
+  const activityBeforeAll = db.listCampaignActivity(campaign.id).length;
+  const allParty = db.revealAllKnowledgeFacts(campaign.id, entry.id, "party");
+  assert.equal(allParty.createdCount, 1);
+  assert.equal(allParty.reveals.some((reveal) => reveal.knowledgeFactId === third.id), true);
+  assert.equal(db.revealAllKnowledgeFacts(campaign.id, entry.id, "party").createdCount, 0);
+  const allMira = db.revealAllKnowledgeFacts(campaign.id, entry.id, "character", mira.id);
+  assert.equal(allMira.createdCount, 1);
+  assert.equal(db.revealAllKnowledgeFacts(campaign.id, entry.id, "character", mira.id).createdCount, 0);
+  assert.equal(db.listCampaignActivity(campaign.id).length, activityBeforeAll + 2);
+  const later = db.createKnowledgeFact(campaign.id, entry.id, "A later fact stays unrevealed.");
+  assert.equal(db.exportCampaign(campaign.id).knowledgeFactReveals.some((reveal) => reveal.knowledgeFactId === later.id), false);
+  const summary = db.listKnowledgeByCampaign(campaign.id).find(({ id }) => id === entry.id);
+  assert.equal(summary.visibility, "hidden");
+  assert.equal(summary.visibleToCharacterId, null);
+
+  const eventRows = db.listCampaignActivity(campaign.id).filter(({ type }) =>
+    type === "knowledge_fact_revealed" || type === "knowledge_fact_access_revoked");
+  assert.equal(eventRows.every(({ details }) => !("body" in details) && !("factIds" in details)), true);
+  assert.equal(JSON.stringify(eventRows).includes(first.body), false);
+  const historyBeforeRevoke = eventRows.map((event) => event.id);
+  assert.equal(db.revokeKnowledgeFactReveal(campaign.id, entry.id, second.id, "party"), true);
+  const afterRevoke = db.listCampaignActivity(campaign.id).filter(({ type }) =>
+    type === "knowledge_fact_revealed" || type === "knowledge_fact_access_revoked");
+  assert.equal(db.revokeKnowledgeFactReveal(campaign.id, entry.id, second.id, "party"), false);
+  assert.deepEqual(db.listCampaignActivity(campaign.id).filter(({ id }) => historyBeforeRevoke.includes(id)).map(({ id }) => id), historyBeforeRevoke);
+  assert.equal(afterRevoke.filter(({ type }) => type === "knowledge_fact_access_revoked").length, 1);
+
+  db.endSession(session.id);
+  const withoutSession = db.createKnowledgeFact(campaign.id, entry.id, "Found between sessions.");
+  const noSession = db.revealKnowledgeFactToCharacter(campaign.id, entry.id, withoutSession.id, mira.id);
+  assert.equal(noSession.reveal.sessionId, null);
+});
+
+test("Knowledge Fact export v8 remaps references, omits secrets, and imports invalid references atomically", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Export Facts");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "History");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "Player", "facts-secret-token-hash");
+  db.approvePlayer(player.id, { characterId: character.id });
+  const entry = db.createKnowledge(campaign.id, "fact", "Clue", "The summary stays hidden.");
+  const fact = db.createKnowledgeFact(campaign.id, entry.id, "A sealed letter mentions Mira.");
+  db.revealKnowledgeFactToCharacter(campaign.id, entry.id, fact.id, character.id);
+  db.revealKnowledgeFactToParty(campaign.id, entry.id, fact.id);
+  const archive = db.exportCampaign(campaign.id);
+  assert.equal(archive.version, 8);
+  assert.equal(JSON.stringify(archive).includes("facts-secret-token-hash"), false);
+  assert.equal(archive.knowledgeFacts.length, 1);
+  assert.equal(archive.knowledgeFactReveals.length, 2);
+  const imported = db.importCampaign(archive);
+  const roundTrip = db.exportCampaign(imported.id);
+  const importedCharacter = roundTrip.characters[0];
+  const importedEntry = roundTrip.knowledge[0];
+  const importedFact = roundTrip.knowledgeFacts[0];
+  assert.notEqual(importedFact.id, fact.id);
+  assert.notEqual(importedFact.knowledgeEntryId, entry.id);
+  assert.equal(importedFact.knowledgeEntryId, importedEntry.id);
+  assert.notEqual(importedCharacter.id, character.id);
+  assert.deepEqual(roundTrip.knowledgeFactReveals.map(({ audience, characterId, sessionId }) => [audience, characterId, sessionId]).sort(), [
+    ["character", importedCharacter.id, roundTrip.sessions[0].id], ["party", null, roundTrip.sessions[0].id]
+  ].sort());
+  const before = db.listCampaigns().length;
+  const invalid = structuredClone(archive);
+  invalid.knowledgeFactReveals[0].characterId = "missing-character";
+  assert.throws(() => db.importCampaign(invalid), /invalid reference/);
+  assert.equal(db.listCampaigns().length, before);
+});
+
+test("concurrent reveal-next retries with one operation ID create one grant and one event", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const setup = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  const campaign = setup.createCampaign("Concurrent reveals");
+  const entry = setup.createKnowledge(campaign.id, "fact", "Clue", "Hidden summary.");
+  const first = setup.createKnowledgeFact(campaign.id, entry.id, "First fact.");
+  setup.createKnowledgeFact(campaign.id, entry.id, "Second fact.");
+  setup.close();
+
+  const workerModule = new URL("../dist/index.js", import.meta.url).href;
+  const workerSource = `
+    const { parentPort, workerData } = require("node:worker_threads");
+    let database;
+    import(workerData.moduleUrl).then((api) => {
+      database = api.openDatabase({ file: workerData.file });
+      parentPort.postMessage({ ready: true });
+      parentPort.on("message", (message) => {
+        if (message !== "reveal") return;
+        try {
+          const result = database.revealNextKnowledgeFact(workerData.campaignId, workerData.entryId, "party", undefined, "same-concurrent-operation");
+          parentPort.postMessage({ factId: result?.fact.id ?? null, created: result?.created ?? false });
+        } finally { database.close(); }
+      });
+    }).catch((error) => parentPort.postMessage({ error: error.message }));
+  `;
+  const workerData = { moduleUrl: workerModule, file, campaignId: campaign.id, entryId: entry.id };
+  const workers = [new Worker(workerSource, { eval: true, workerData }), new Worker(workerSource, { eval: true, workerData })];
+  t.after(async () => { await Promise.all(workers.map((worker) => worker.terminate())); });
+  const waitForReady = (worker) => new Promise((resolveReady, reject) => {
+    const onMessage = (message) => {
+      if (message.error) { worker.off("message", onMessage); reject(new Error(message.error)); }
+      if (message.ready) { worker.off("message", onMessage); resolveReady(); }
+    };
+    worker.on("message", onMessage);
+    worker.once("error", reject);
+  });
+  await Promise.all(workers.map(waitForReady));
+  const revealFrom = (worker) => new Promise((resolveReveal, reject) => {
+    const onMessage = (message) => {
+      if (message.error) { worker.off("message", onMessage); reject(new Error(message.error)); }
+      if ("factId" in message) { worker.off("message", onMessage); resolveReveal(message); }
+    };
+    worker.on("message", onMessage);
+    worker.once("error", reject);
+    worker.postMessage("reveal");
+  });
+  const outcomes = await Promise.all(workers.map(revealFrom));
+  assert.deepEqual(outcomes.map(({ factId }) => factId), [first.id, first.id]);
+  assert.equal(outcomes.filter(({ created }) => created).length, 1);
+
+  const check = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const archive = check.exportCampaign(campaign.id);
+    assert.equal(archive.knowledgeFactReveals.length, 1);
+    const revealEvents = archive.activity.filter(({ type }) => type === "knowledge_fact_revealed");
+    assert.equal(revealEvents.length, 1);
+    assert.equal(revealEvents[0].details.scope, "next");
+  } finally { check.close(); }
+});
+
+test("Knowledge Fact tables survive current backup restore and are explicitly backed up", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Backup Facts");
+    const character = db.createCharacter(campaign.id, "Mira");
+    const entry = db.createKnowledge(campaign.id, "event", "Signal", "Hidden summary.");
+    const fact = db.createKnowledgeFact(campaign.id, entry.id, "A green light flashes.");
+    db.revealKnowledgeFactToCharacter(campaign.id, entry.id, fact.id, character.id);
+    db.revealKnowledgeFactToParty(campaign.id, entry.id, fact.id);
+    const backup = await db.createBackup();
+    const bytes = readFileSync(db.backupFile(backup.id));
+    const backupDb = new SQLite(db.backupFile(backup.id), { readonly: true });
+    try {
+      assert.equal(backupDb.prepare("SELECT count(*) AS count FROM knowledge_facts").get().count, 1);
+      assert.equal(backupDb.prepare("SELECT count(*) AS count FROM knowledge_fact_reveals").get().count, 2);
+    } finally { backupDb.close(); }
+    db.deleteKnowledgeFact(campaign.id, entry.id, fact.id);
+    assert.equal(db.listKnowledgeFacts(campaign.id, entry.id).length, 0);
+    assert.equal(db.exportCampaign(campaign.id).knowledgeFactReveals.length, 0);
+    assert.equal(db.listCampaignActivity(campaign.id).some(({ type }) => type === "knowledge_fact_revealed"), true);
+    await db.restoreBackup(backup.id);
+    assert.equal(db.listKnowledgeFacts(campaign.id, entry.id)[0].body, "A green light flashes.");
+    assert.equal(readFileSync(db.backupFile(backup.id)).equals(bytes), true);
+    const raw = new SQLite(file, { readonly: true });
+    try { assert.deepEqual(raw.pragma("foreign_key_check"), []); } finally { raw.close(); }
+    assert.equal(db.checkDataHealth().ok, true);
+  } finally { db.close(); }
+});
+
+test("Data Health reports malformed Knowledge Facts and reveal grants without repairing them", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Facts health");
+    const character = db.createCharacter(campaign.id, "Mira");
+    const entry = db.createKnowledge(campaign.id, "fact", "Test", "Summary.");
+    const fact = db.createKnowledgeFact(campaign.id, entry.id, "One fact.");
+    db.revealKnowledgeFactToCharacter(campaign.id, entry.id, fact.id, character.id);
+    const raw = new SQLite(file);
+    try {
+      raw.pragma("ignore_check_constraints = ON");
+      raw.prepare("UPDATE knowledge_facts SET body='   ', position=-1 WHERE id=?").run(fact.id);
+      raw.prepare("UPDATE knowledge_fact_reveals SET audience='invalid', character_id=NULL WHERE knowledge_fact_id=?").run(fact.id);
+      raw.pragma("ignore_check_constraints = OFF");
+      const health = db.checkDataHealth();
+      assert.equal(health.ok, false);
+      assert.equal(health.checks.find(({ name }) => name === "Факты знаний").status, "error");
+      assert.equal(health.checks.find(({ name }) => name === "Раскрытие фактов").status, "error");
+      assert.equal(raw.prepare("SELECT body, position FROM knowledge_facts WHERE id=?").get(fact.id).body, "   ");
     } finally { raw.close(); }
   } finally { db.close(); }
 });

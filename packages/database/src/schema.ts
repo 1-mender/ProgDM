@@ -18,6 +18,7 @@ export const sessions = sqliteTable("sessions", {
   createdAt: text("created_at").notNull()
 }, (table) => [
   index("sessions_campaign_id_idx").on(table.campaignId),
+  uniqueIndex("sessions_id_campaign_unique").on(table.id, table.campaignId),
   uniqueIndex("sessions_join_token_unique").on(table.joinToken),
   uniqueIndex("sessions_one_active").on(table.status).where(sql`${table.status} = 'active'`),
   check("session_status_valid", sql`${table.status} in ('planned', 'active', 'ended')`),
@@ -157,12 +158,54 @@ export const knowledgeEntries = sqliteTable("knowledge_entries", {
   createdAt: text("created_at").notNull()
 }, (table) => [
   index("knowledge_entries_campaign_id_idx").on(table.campaignId),
+  uniqueIndex("knowledge_entries_id_campaign_unique").on(table.id, table.campaignId),
   index("knowledge_entries_visible_character_idx").on(table.visibleToCharacterId),
   check("knowledge_category_valid", sql`${table.category} in ('character', 'place', 'creature', 'item', 'event', 'fact')`),
   check("knowledge_visibility_valid", sql`${table.visibility} in ('hidden', 'character', 'party')`),
   check("knowledge_visibility_target_valid", sql`(${table.visibility} = 'character' and ${table.visibleToCharacterId} is not null) or (${table.visibility} != 'character' and ${table.visibleToCharacterId} is null)`),
   check("knowledge_title_valid", sql`length(trim(${table.title})) between 1 and 120`),
   check("knowledge_description_valid", sql`length(${table.description}) <= 2000`)
+]);
+
+export const knowledgeFacts = sqliteTable("knowledge_facts", {
+  id: text("id").primaryKey(),
+  campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
+  knowledgeEntryId: text("knowledge_entry_id").notNull(),
+  body: text("body").notNull(),
+  position: integer("position").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => [
+  foreignKey({ columns: [table.knowledgeEntryId, table.campaignId], foreignColumns: [knowledgeEntries.id, knowledgeEntries.campaignId], name: "knowledge_facts_entry_campaign_fk" }).onDelete("cascade"),
+  uniqueIndex("knowledge_facts_id_campaign_unique").on(table.id, table.campaignId),
+  uniqueIndex("knowledge_facts_entry_position_unique").on(table.knowledgeEntryId, table.position),
+  index("knowledge_facts_entry_order_idx").on(table.knowledgeEntryId, table.position, table.id),
+  check("knowledge_fact_body_valid", sql`length(trim(${table.body})) between 1 and 2000`),
+  check("knowledge_fact_position_valid", sql`${table.position} >= 0`)
+]);
+
+export const knowledgeFactReveals = sqliteTable("knowledge_fact_reveals", {
+  id: text("id").primaryKey(),
+  campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
+  knowledgeFactId: text("knowledge_fact_id").notNull(),
+  audience: text("audience", { enum: ["party", "character"] }).notNull(),
+  characterId: text("character_id"),
+  sessionId: text("session_id"),
+  operationId: text("operation_id"),
+  createdAt: text("created_at").notNull()
+}, (table) => [
+  foreignKey({ columns: [table.knowledgeFactId, table.campaignId], foreignColumns: [knowledgeFacts.id, knowledgeFacts.campaignId], name: "knowledge_fact_reveals_fact_campaign_fk" }).onDelete("cascade"),
+  foreignKey({ columns: [table.characterId, table.campaignId], foreignColumns: [characters.id, characters.campaignId], name: "knowledge_fact_reveals_character_campaign_fk" }).onDelete("cascade"),
+  foreignKey({ columns: [table.sessionId, table.campaignId], foreignColumns: [sessions.id, sessions.campaignId], name: "knowledge_fact_reveals_session_campaign_fk" }).onDelete("restrict"),
+  uniqueIndex("knowledge_fact_reveals_id_campaign_unique").on(table.id, table.campaignId),
+  uniqueIndex("knowledge_fact_reveals_party_unique").on(table.knowledgeFactId).where(sql`${table.audience} = 'party'`),
+  uniqueIndex("knowledge_fact_reveals_character_unique").on(table.knowledgeFactId, table.characterId).where(sql`${table.audience} = 'character'`),
+  uniqueIndex("knowledge_fact_reveals_operation_unique").on(table.operationId).where(sql`${table.operationId} is not null`),
+  index("knowledge_fact_reveals_campaign_fact_idx").on(table.campaignId, table.knowledgeFactId),
+  index("knowledge_fact_reveals_character_campaign_idx").on(table.characterId, table.campaignId),
+  index("knowledge_fact_reveals_session_campaign_idx").on(table.sessionId, table.campaignId),
+  check("knowledge_fact_reveal_audience_valid", sql`${table.audience} in ('party', 'character')`),
+  check("knowledge_fact_reveal_target_valid", sql`(${table.audience} = 'party' and ${table.characterId} is null) or (${table.audience} = 'character' and ${table.characterId} is not null)`)
 ]);
 
 export const knowledgeMigrationIssues = sqliteTable("knowledge_migration_issues", {
@@ -182,11 +225,13 @@ export const campaignActivity = sqliteTable("campaign_activity", {
   characterId: text("character_id").references(() => characters.id, { onDelete: "restrict" }),
   catalogItemId: text("catalog_item_id").references(() => catalogItems.id, { onDelete: "restrict" }),
   knowledgeEntryId: text("knowledge_entry_id").references(() => knowledgeEntries.id, { onDelete: "restrict" }),
+  operationId: text("operation_id"),
   type: text("type").notNull(),
   createdAt: text("created_at").notNull(),
   payload: text("payload").notNull()
 }, (table) => [
   index("campaign_activity_campaign_order_idx").on(table.campaignId, table.createdAt, table.id),
   index("campaign_activity_session_order_idx").on(table.sessionId, table.createdAt, table.id),
+  uniqueIndex("campaign_activity_operation_unique").on(table.operationId).where(sql`${table.operationId} is not null`),
   check("campaign_activity_payload_valid", sql`json_valid(${table.payload})`)
 ]);

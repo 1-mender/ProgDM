@@ -7,7 +7,7 @@ import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -53,6 +53,25 @@ function validatedDescription(description: string): string {
   return value;
 }
 
+function validatedKnowledgeFactBody(body: string): string {
+  const value = body.trim();
+  if (value.length === 0 || value.length > 2000) {
+    throw new Error("Knowledge fact must contain between 1 and 2000 characters.");
+  }
+  return value;
+}
+
+function validatedKnowledgeFactPosition(position: number): number {
+  if (!Number.isInteger(position) || position < 0) throw new Error("Knowledge fact position is invalid.");
+  return position;
+}
+
+function validatedOperationId(operationId: string): string {
+  const value = operationId.trim();
+  if (!value || value.length > 120) throw new Error("Knowledge reveal operation ID is invalid.");
+  return value;
+}
+
 function transferRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Campaign file is invalid.");
   return value as Record<string, unknown>;
@@ -81,7 +100,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   const client = new SQLite(file);
   const db = drizzle(client, { schema });
   const backupIdPattern = /^progdm-backup-([0-9a-f-]{36})\.db$/;
-  const backupTables = ["campaigns", "sessions", "players", "characters", "campaign_profile_field_definitions", "character_profile_field_values", "character_personal_notes", "character_read_state", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "campaign_activity", "__drizzle_migrations"];
+  const backupTables = ["campaigns", "sessions", "players", "characters", "campaign_profile_field_definitions", "character_profile_field_values", "character_personal_notes", "character_read_state", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_facts", "knowledge_fact_reveals", "knowledge_migration_issues", "campaign_activity", "__drizzle_migrations"];
 
   function profileText(value: string, max: number): string {
     const trimmed = value.trim();
@@ -192,6 +211,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     characterId?: string | null;
     catalogItemId?: string | null;
     knowledgeEntryId?: string | null;
+    operationId?: string | null;
     details?: ActivityDetails;
   };
 
@@ -203,6 +223,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       id: randomUUID(), campaignId: event.campaignId, sessionId: event.sessionId ?? null,
       playerId: event.playerId ?? null, characterId: event.characterId ?? null,
       catalogItemId: event.catalogItemId ?? null, knowledgeEntryId: event.knowledgeEntryId ?? null,
+      operationId: event.operationId ?? null,
       type: event.type, createdAt: new Date(timestamp).toISOString(), payload: JSON.stringify(event.details ?? {})
     }).run();
   }
@@ -210,6 +231,41 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   function activeSessionId(campaignId: string): string | null {
     return db.select({ id: schema.sessions.id }).from(schema.sessions)
       .where(and(eq(schema.sessions.campaignId, campaignId), eq(schema.sessions.status, "active"))).get()?.id ?? null;
+  }
+
+  function revealKnowledgeFactInTransaction(campaignId: string, entryId: string, factId: string,
+    audience: KnowledgeFactRevealAudience, characterId: string | null, scope: KnowledgeFactRevealScope,
+    operationId: string | null = null): KnowledgeFactAccessResult {
+    const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+      .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+    if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+    const fact = db.select().from(schema.knowledgeFacts).where(and(
+      eq(schema.knowledgeFacts.id, factId), eq(schema.knowledgeFacts.campaignId, campaignId),
+      eq(schema.knowledgeFacts.knowledgeEntryId, entryId)
+    )).get();
+    if (!fact) throw new Error("Knowledge fact not found in this entry.");
+    if (audience === "character") {
+      if (!characterId) throw new Error("A character must be selected.");
+      const character = db.select({ id: schema.characters.id, archivedAt: schema.characters.archivedAt }).from(schema.characters)
+        .where(and(eq(schema.characters.id, characterId), eq(schema.characters.campaignId, campaignId))).get();
+      if (!character) throw new Error("Character is not in this campaign.");
+      if (character.archivedAt) throw new Error("Archived characters cannot receive new knowledge facts.");
+    } else if (audience !== "party" || characterId !== null) throw new Error("Knowledge fact audience is invalid.");
+
+    const sessionId = activeSessionId(campaignId);
+    const inserted = db.insert(schema.knowledgeFactReveals).values({
+      id: randomUUID(), campaignId, knowledgeFactId: factId, audience, characterId, sessionId,
+      operationId, createdAt: new Date().toISOString()
+    }).onConflictDoNothing().returning().get();
+    const reveal = inserted ?? db.select().from(schema.knowledgeFactReveals).where(and(
+      eq(schema.knowledgeFactReveals.knowledgeFactId, factId), eq(schema.knowledgeFactReveals.audience, audience),
+      audience === "character" ? eq(schema.knowledgeFactReveals.characterId, characterId!) : eq(schema.knowledgeFactReveals.audience, "party")
+    )).get();
+    if (!reveal) throw new Error("Knowledge fact reveal could not be created.");
+    if (inserted) appendActivity({ campaignId, sessionId, characterId, knowledgeEntryId: entryId,
+      operationId, type: "knowledge_fact_revealed", details: { audience, factCount: 1, scope } });
+    const { operationId: _operationId, ...publicReveal } = reveal;
+    return { fact, reveal: publicReveal, created: Boolean(inserted) };
   }
 
   function activityRows(rows: (typeof schema.campaignActivity.$inferSelect)[]): CampaignActivity[] {
@@ -225,10 +281,15 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     const details = transferRecord(value);
     const stringKeys = new Set(["campaignName", "sessionName", "playerName", "characterName", "itemName", "knowledgeTitle", "backupId"]);
     const visibilityKeys = new Set(["visibility", "previousVisibility"]);
+    const audienceKeys = new Set(["party", "character"]);
+    const scopeKeys = new Set(["selected", "next", "all"]);
     for (const [key, part] of Object.entries(details)) {
       if (stringKeys.has(key) && typeof part === "string" && part.length <= 160) continue;
       if (visibilityKeys.has(key) && ["hidden", "party", "character"].includes(String(part))) continue;
       if (["quantity", "totalQuantity"].includes(key) && typeof part === "number" && Number.isInteger(part) && part >= 0 && part <= 9999) continue;
+      if (key === "audience" && typeof part === "string" && audienceKeys.has(part)) continue;
+      if (key === "scope" && typeof part === "string" && scopeKeys.has(part)) continue;
+      if (key === "factCount" && typeof part === "number" && Number.isSafeInteger(part) && part >= 0) continue;
       throw new Error("Campaign file contains an invalid activity payload.");
     }
     if (JSON.stringify(details).length > 2000) throw new Error("Campaign file contains an invalid activity payload.");
@@ -467,6 +528,23 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         ["Назначения персонажей", "SELECT count(*) AS count FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id JOIN characters c ON c.id=a.character_id WHERE p.session_id!=a.session_id OR c.campaign_id!=s.campaign_id"],
         ["Категории знаний", "SELECT count(*) AS count FROM knowledge_entries WHERE category NOT IN ('character', 'place', 'creature', 'item', 'event', 'fact')"],
         ["Личные знания", "SELECT count(*) AS count FROM knowledge_entries k JOIN characters c ON c.id=k.visible_to_character_id WHERE c.campaign_id!=k.campaign_id"],
+        ["Факты знаний", `SELECT count(*) AS count FROM knowledge_facts f
+          LEFT JOIN knowledge_entries k ON k.id=f.knowledge_entry_id
+          WHERE k.id IS NULL OR k.campaign_id!=f.campaign_id OR typeof(f.body)!='text' OR length(trim(f.body)) NOT BETWEEN 1 AND 2000 OR
+          typeof(f.position)!='integer' OR f.position<0 OR EXISTS (
+            SELECT 1 FROM knowledge_facts d WHERE d.knowledge_entry_id=f.knowledge_entry_id AND d.position=f.position AND d.id!=f.id
+          )`],
+        ["Раскрытие фактов", `SELECT count(*) AS count FROM knowledge_fact_reveals r
+          LEFT JOIN knowledge_facts f ON f.id=r.knowledge_fact_id
+          LEFT JOIN characters c ON c.id=r.character_id
+          LEFT JOIN sessions s ON s.id=r.session_id
+          WHERE f.id IS NULL OR f.campaign_id!=r.campaign_id OR
+            r.audience NOT IN ('party','character') OR
+            (r.audience='party' AND r.character_id IS NOT NULL) OR
+            (r.audience='character' AND (c.id IS NULL OR c.campaign_id!=r.campaign_id)) OR
+            (r.session_id IS NOT NULL AND (s.id IS NULL OR s.campaign_id!=r.campaign_id)) OR
+            (r.audience='party' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.audience='party' AND d.id!=r.id)) OR
+            (r.audience='character' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.character_id=r.character_id AND d.audience='character' AND d.id!=r.id))`],
         ["Инвентарь", "SELECT count(*) AS count FROM inventory_items i JOIN characters c ON c.id=i.character_id JOIN catalog_items ci ON ci.id=i.catalog_item_id WHERE c.campaign_id!=ci.campaign_id"],
         ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
         ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
@@ -643,9 +721,23 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         visibleToCharacterId: schema.knowledgeEntries.visibleToCharacterId, createdAt: schema.knowledgeEntries.createdAt
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
         .map((entry) => ({ ...entry }));
+      const knowledgeFacts = db.select({
+        id: schema.knowledgeFacts.id, knowledgeEntryId: schema.knowledgeFacts.knowledgeEntryId,
+        body: schema.knowledgeFacts.body, position: schema.knowledgeFacts.position,
+        createdAt: schema.knowledgeFacts.createdAt, updatedAt: schema.knowledgeFacts.updatedAt
+      }).from(schema.knowledgeFacts).where(eq(schema.knowledgeFacts.campaignId, id))
+        .orderBy(asc(schema.knowledgeFacts.knowledgeEntryId), asc(schema.knowledgeFacts.position), asc(schema.knowledgeFacts.id)).all();
+      const knowledgeFactReveals = db.select({
+        id: schema.knowledgeFactReveals.id,
+        knowledgeFactId: schema.knowledgeFactReveals.knowledgeFactId, audience: schema.knowledgeFactReveals.audience,
+        characterId: schema.knowledgeFactReveals.characterId, sessionId: schema.knowledgeFactReveals.sessionId,
+        createdAt: schema.knowledgeFactReveals.createdAt
+      }).from(schema.knowledgeFactReveals).where(eq(schema.knowledgeFactReveals.campaignId, id))
+        .orderBy(asc(schema.knowledgeFactReveals.createdAt), asc(schema.knowledgeFactReveals.id)).all();
       return {
-        format: "progdm-campaign", version: 7, exportedAt: new Date().toISOString(), campaign,
+        format: "progdm-campaign", version: 8, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, profileFields, profileFieldValues, personalNotes, catalogItems, inventoryItems, knowledge,
+        knowledgeFacts, knowledgeFactReveals,
         activity: activityRows(db.select().from(schema.campaignActivity)
           .where(eq(schema.campaignActivity.campaignId, id))
           .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all())
@@ -653,7 +745,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
@@ -672,6 +764,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const catalogItems = transferArray(archive, "catalogItems");
       const inventoryItems = transferArray(archive, "inventoryItems");
       const knowledge = transferArray(archive, "knowledge");
+      const knowledgeFacts = archiveVersion >= 8 ? transferArray(archive, "knowledgeFacts") : [];
+      const knowledgeFactReveals = archiveVersion >= 8 ? transferArray(archive, "knowledgeFactReveals") : [];
       const activity = archiveVersion === 1 ? [] : transferArray(archive, "activity");
       const campaignId = randomUUID();
       const sessionsWithPlayers = new Set(players.map((row) => transferString(row, "sessionId")));
@@ -681,11 +775,15 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const profileFieldIds = new Map(profileFields.map((row) => [transferString(row, "id"), randomUUID()]));
       const catalogIds = new Map(catalogItems.map((row) => [transferString(row, "id"), randomUUID()]));
       const knowledgeIds = new Map(knowledge.map((row) => [transferString(row, "id"), randomUUID()]));
+      const knowledgeFactIds = new Map(knowledgeFacts.map((row) => [transferString(row, "id"), randomUUID()]));
+      const knowledgeFactRevealIds = new Map(knowledgeFactReveals.map((row) => [transferString(row, "id"), randomUUID()]));
       const requireMapped = (map: Map<string, string>, id: unknown) => {
         if (typeof id !== "string" || !map.has(id)) throw new Error("Campaign file contains an invalid reference.");
         return map.get(id)!;
       };
       const playerSessionIds = new Map(players.map((row) => [transferString(row, "id"), transferString(row, "sessionId")]));
+      if (knowledgeIds.size !== knowledge.length || knowledgeFactIds.size !== knowledgeFacts.length ||
+          knowledgeFactRevealIds.size !== knowledgeFactReveals.length) throw new Error("Campaign file contains duplicate knowledge IDs.");
       if (profileFieldIds.size !== profileFields.length || profileFields.length > 20) throw new Error("Campaign file contains invalid profile fields.");
       const positions = profileFields.map((row) => row.position);
       if (positions.some((position) => !Number.isInteger(position) || (position as number) < 0) ||
@@ -821,16 +919,62 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             visibility, visibleToCharacterId, createdAt: createdAt(row)
           }).run();
         }
+        const factPositions = new Set<string>();
+        for (const row of knowledgeFacts) {
+          const entryId = requireMapped(knowledgeIds, row.knowledgeEntryId);
+          let position: number;
+          try { position = validatedKnowledgeFactPosition(row.position as number); }
+          catch { throw new Error("Campaign file contains an invalid knowledge fact position."); }
+          const positionKey = `${String(row.knowledgeEntryId)}:${String(position)}`;
+          if (factPositions.has(positionKey)) throw new Error("Campaign file contains duplicate knowledge fact positions.");
+          factPositions.add(positionKey);
+          db.insert(schema.knowledgeFacts).values({
+            id: requireMapped(knowledgeFactIds, row.id), campaignId, knowledgeEntryId: entryId,
+            body: validatedKnowledgeFactBody(transferString(row, "body", 2000)), position,
+            createdAt: createdAt(row), updatedAt: createdAt({ createdAt: row.updatedAt })
+          }).run();
+        }
+        const revealKeys = new Set<string>();
+        for (const row of knowledgeFactReveals) {
+          const audience = transferString(row, "audience", 16);
+          if (audience !== "party" && audience !== "character") throw new Error("Campaign file contains an invalid knowledge fact audience.");
+          let characterId: string | null = null;
+          if (audience === "party") {
+            if (row.characterId !== null) throw new Error("Campaign file contains an invalid knowledge fact target.");
+          } else {
+            characterId = requireMapped(characterIds, row.characterId);
+          }
+          const factId = requireMapped(knowledgeFactIds, row.knowledgeFactId);
+          const sessionId = row.sessionId === null ? null : requireMapped(sessionIds, row.sessionId);
+          const key = audience === "party" ? `${factId}:party` : `${factId}:character:${characterId}`;
+          if (revealKeys.has(key)) throw new Error("Campaign file contains duplicate knowledge fact reveals.");
+          revealKeys.add(key);
+          db.insert(schema.knowledgeFactReveals).values({
+            id: requireMapped(knowledgeFactRevealIds, row.id), campaignId, knowledgeFactId: factId,
+            audience, characterId, sessionId, operationId: null, createdAt: createdAt(row)
+          }).run();
+        }
         for (const row of activity) {
           if (typeof row.type !== "string" || !ACTIVITY_TYPES.includes(row.type as ActivityType)) throw new Error("Campaign file contains an invalid event type.");
           if (row.playerId !== null && playerSessionIds.get(String(row.playerId)) !== row.sessionId) throw new Error("Campaign file contains an invalid event session.");
           const mapped = (value: unknown, ids: Map<string, string>) => value === null ? null : requireMapped(ids, value);
+          const details = parsedActivityDetails(row.details);
+          if (row.type === "knowledge_fact_revealed" || row.type === "knowledge_fact_access_revoked") {
+            if (row.knowledgeEntryId === null || !["party", "character"].includes(String(details.audience)) ||
+                !Number.isInteger(details.factCount) || (details.factCount ?? -1) < 1 || !["selected", "next", "all"].includes(String(details.scope))) {
+              throw new Error("Campaign file contains an invalid knowledge fact event.");
+            }
+            if ((details.audience === "party" && row.characterId !== null) ||
+                (details.audience === "character" && (typeof row.characterId !== "string" || !characterIds.has(row.characterId)))) {
+              throw new Error("Campaign file contains an invalid knowledge fact event target.");
+            }
+          }
           db.insert(schema.campaignActivity).values({
             id: newId(), campaignId,
             sessionId: mapped(row.sessionId, sessionIds), playerId: mapped(row.playerId, playerIds),
             characterId: mapped(row.characterId, characterIds), catalogItemId: mapped(row.catalogItemId, catalogIds),
             knowledgeEntryId: mapped(row.knowledgeEntryId, knowledgeIds),
-            type: row.type, createdAt: createdAt(row), payload: JSON.stringify(parsedActivityDetails(row.details))
+            type: row.type, createdAt: createdAt(row), payload: JSON.stringify(details)
           }).run();
         }
         appendActivity({ campaignId, type: "campaign_imported", details: { campaignName: campaign.name } });
@@ -1208,6 +1352,193 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           appendActivity({ campaignId: entry.campaignId, sessionId: activeSessionId(entry.campaignId), characterId: visibleToCharacterId, knowledgeEntryId: entry.id, type: "knowledge_visibility_changed", details: { knowledgeTitle: entry.title, visibility, previousVisibility: entry.visibility as KnowledgeVisibility } });
         }
         return updated;
+      });
+    },
+    listKnowledgeFacts(campaignId: string, entryId: string): KnowledgeFact[] {
+      const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+        .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+      if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+      return db.select().from(schema.knowledgeFacts)
+        .where(and(eq(schema.knowledgeFacts.campaignId, campaignId), eq(schema.knowledgeFacts.knowledgeEntryId, entryId)))
+        .orderBy(asc(schema.knowledgeFacts.position), asc(schema.knowledgeFacts.id)).all();
+    },
+    createKnowledgeFact(campaignId: string, entryId: string, body: string): KnowledgeFact {
+      return db.transaction(() => {
+        const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+          .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+        if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+        const position = (client.prepare("SELECT COALESCE(MAX(position), -1) AS position FROM knowledge_facts WHERE campaign_id=? AND knowledge_entry_id=?")
+          .get(campaignId, entryId) as { position: number }).position + 1;
+        const now = new Date().toISOString();
+        return db.insert(schema.knowledgeFacts).values({
+          id: randomUUID(), campaignId, knowledgeEntryId: entryId, body: validatedKnowledgeFactBody(body),
+          position, createdAt: now, updatedAt: now
+        }).returning().get();
+      });
+    },
+    updateKnowledgeFact(campaignId: string, entryId: string, factId: string, body: string): KnowledgeFact {
+      const updated = db.update(schema.knowledgeFacts).set({ body: validatedKnowledgeFactBody(body), updatedAt: new Date().toISOString() })
+        .where(and(eq(schema.knowledgeFacts.id, factId), eq(schema.knowledgeFacts.campaignId, campaignId), eq(schema.knowledgeFacts.knowledgeEntryId, entryId)))
+        .returning().get();
+      if (!updated) throw new Error("Knowledge fact not found in this entry.");
+      return updated;
+    },
+    reorderKnowledgeFacts(campaignId: string, entryId: string, orderedFactIds: string[]): KnowledgeFact[] {
+      return db.transaction(() => {
+        const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+          .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+        if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+        const facts = db.select().from(schema.knowledgeFacts).where(and(
+          eq(schema.knowledgeFacts.campaignId, campaignId), eq(schema.knowledgeFacts.knowledgeEntryId, entryId)
+        )).orderBy(asc(schema.knowledgeFacts.position), asc(schema.knowledgeFacts.id)).all();
+        if (!Array.isArray(orderedFactIds) || orderedFactIds.length !== facts.length ||
+            new Set(orderedFactIds).size !== facts.length || facts.some((fact) => !orderedFactIds.includes(fact.id))) {
+          throw new Error("Knowledge fact order is invalid.");
+        }
+        if (facts.length) {
+          const maxPosition = Math.max(...facts.map((fact) => fact.position));
+          const offset = maxPosition + facts.length + 1;
+          const update = client.prepare("UPDATE knowledge_facts SET position=? WHERE campaign_id=? AND knowledge_entry_id=? AND id=?");
+          orderedFactIds.forEach((factId, index) => update.run(offset + index, campaignId, entryId, factId));
+          orderedFactIds.forEach((factId, position) => update.run(position, campaignId, entryId, factId));
+        }
+        return db.select().from(schema.knowledgeFacts).where(and(
+          eq(schema.knowledgeFacts.campaignId, campaignId), eq(schema.knowledgeFacts.knowledgeEntryId, entryId)
+        )).orderBy(asc(schema.knowledgeFacts.position), asc(schema.knowledgeFacts.id)).all();
+      });
+    },
+    deleteKnowledgeFact(campaignId: string, entryId: string, factId: string): boolean {
+      const deleted = db.delete(schema.knowledgeFacts).where(and(
+        eq(schema.knowledgeFacts.id, factId), eq(schema.knowledgeFacts.campaignId, campaignId),
+        eq(schema.knowledgeFacts.knowledgeEntryId, entryId)
+      )).returning({ id: schema.knowledgeFacts.id }).get();
+      if (!deleted) throw new Error("Knowledge fact not found in this entry.");
+      return true;
+    },
+    revealKnowledgeFactToParty(campaignId: string, entryId: string, factId: string): KnowledgeFactAccessResult {
+      return db.transaction(() => revealKnowledgeFactInTransaction(campaignId, entryId, factId, "party", null, "selected"));
+    },
+    revealKnowledgeFactToCharacter(campaignId: string, entryId: string, factId: string, characterId: string): KnowledgeFactAccessResult {
+      return db.transaction(() => revealKnowledgeFactInTransaction(campaignId, entryId, factId, "character", characterId, "selected"));
+    },
+    revealNextKnowledgeFact(campaignId: string, entryId: string, audience: KnowledgeFactRevealAudience,
+      characterId: string | undefined, operationId: string): KnowledgeFactAccessResult | null {
+      const requestId = validatedOperationId(operationId);
+      const transaction = client.transaction(() => {
+        const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+          .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+        if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+        const targetId = audience === "character" ? characterId : undefined;
+        if (audience === "character") {
+          if (!targetId) throw new Error("A character must be selected.");
+          const target = db.select({ archivedAt: schema.characters.archivedAt }).from(schema.characters)
+            .where(and(eq(schema.characters.id, targetId), eq(schema.characters.campaignId, campaignId))).get();
+          if (!target) throw new Error("Character is not in this campaign.");
+          if (target.archivedAt) throw new Error("Archived characters cannot receive new knowledge facts.");
+        } else if (audience !== "party" || characterId) throw new Error("Knowledge fact audience is invalid.");
+
+        const previous = db.select().from(schema.campaignActivity)
+          .where(eq(schema.campaignActivity.operationId, requestId)).get();
+        if (previous) {
+          const details = JSON.parse(previous.payload) as ActivityDetails;
+          if (previous.type !== "knowledge_fact_revealed" || previous.campaignId !== campaignId || previous.knowledgeEntryId !== entryId ||
+              previous.characterId !== (audience === "character" ? targetId : null) || details.audience !== audience || details.scope !== "next") {
+            throw new Error("Knowledge reveal operation ID was already used.");
+          }
+          const priorReveal = db.select().from(schema.knowledgeFactReveals)
+            .where(eq(schema.knowledgeFactReveals.operationId, requestId)).get();
+          if (!priorReveal) return null;
+          const fact = db.select().from(schema.knowledgeFacts).where(eq(schema.knowledgeFacts.id, priorReveal.knowledgeFactId)).get();
+          if (!fact) return null;
+          const { operationId: _operationId, ...publicReveal } = priorReveal;
+          return { fact, reveal: publicReveal, created: false };
+        }
+
+        const fact = audience === "party"
+          ? client.prepare(`SELECT f.* FROM knowledge_facts f
+              WHERE f.campaign_id=? AND f.knowledge_entry_id=? AND NOT EXISTS (
+                SELECT 1 FROM knowledge_fact_reveals r WHERE r.knowledge_fact_id=f.id AND r.audience='party'
+              ) ORDER BY f.position, f.id LIMIT 1`).get(campaignId, entryId) as typeof schema.knowledgeFacts.$inferSelect | undefined
+          : client.prepare(`SELECT f.* FROM knowledge_facts f
+              WHERE f.campaign_id=? AND f.knowledge_entry_id=? AND NOT EXISTS (
+                SELECT 1 FROM knowledge_fact_reveals r WHERE r.knowledge_fact_id=f.id AND r.audience='character' AND r.character_id=?
+              ) ORDER BY f.position, f.id LIMIT 1`).get(campaignId, entryId, targetId!) as typeof schema.knowledgeFacts.$inferSelect | undefined;
+        if (!fact) return null;
+        return revealKnowledgeFactInTransaction(campaignId, entryId, fact.id, audience,
+          audience === "character" ? targetId! : null, "next", requestId);
+      });
+      return transaction.immediate();
+    },
+    revealAllKnowledgeFacts(campaignId: string, entryId: string, audience: KnowledgeFactRevealAudience,
+      characterId?: string): KnowledgeFactRevealBatchResult {
+      return db.transaction(() => {
+        const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+          .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+        if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+        if (audience === "character") {
+          if (!characterId) throw new Error("A character must be selected.");
+          const target = db.select({ archivedAt: schema.characters.archivedAt }).from(schema.characters)
+            .where(and(eq(schema.characters.id, characterId), eq(schema.characters.campaignId, campaignId))).get();
+          if (!target) throw new Error("Character is not in this campaign.");
+          if (target.archivedAt) throw new Error("Archived characters cannot receive new knowledge facts.");
+        } else if (audience !== "party" || characterId) throw new Error("Knowledge fact audience is invalid.");
+        const facts = db.select().from(schema.knowledgeFacts).where(and(
+          eq(schema.knowledgeFacts.campaignId, campaignId), eq(schema.knowledgeFacts.knowledgeEntryId, entryId)
+        )).orderBy(asc(schema.knowledgeFacts.position), asc(schema.knowledgeFacts.id)).all();
+        const existing = db.select({ factId: schema.knowledgeFactReveals.knowledgeFactId }).from(schema.knowledgeFactReveals).where(and(
+          eq(schema.knowledgeFactReveals.campaignId, campaignId), eq(schema.knowledgeFactReveals.audience, audience),
+          audience === "character" ? eq(schema.knowledgeFactReveals.characterId, characterId!) : eq(schema.knowledgeFactReveals.audience, "party")
+        )).all();
+        const existingIds = new Set(existing.map((row) => row.factId));
+        const sessionId = activeSessionId(campaignId);
+        const now = new Date().toISOString();
+        const insertedIds: string[] = [];
+        for (const fact of facts) {
+          if (existingIds.has(fact.id)) continue;
+          const inserted = db.insert(schema.knowledgeFactReveals).values({
+            id: randomUUID(), campaignId, knowledgeFactId: fact.id, audience,
+            characterId: audience === "character" ? characterId! : null, sessionId,
+            operationId: null, createdAt: now
+          }).onConflictDoNothing().returning({ id: schema.knowledgeFactReveals.id }).get();
+          if (inserted) insertedIds.push(inserted.id);
+        }
+        if (insertedIds.length) appendActivity({ campaignId, sessionId, characterId: audience === "character" ? characterId : null,
+          knowledgeEntryId: entryId, type: "knowledge_fact_revealed",
+          details: { audience, factCount: insertedIds.length, scope: "all" } });
+        const reveals = db.select().from(schema.knowledgeFactReveals).where(and(
+          eq(schema.knowledgeFactReveals.campaignId, campaignId), eq(schema.knowledgeFactReveals.audience, audience),
+          inArray(schema.knowledgeFactReveals.knowledgeFactId, facts.map((fact) => fact.id).length ? facts.map((fact) => fact.id) : [""]),
+          audience === "character" ? eq(schema.knowledgeFactReveals.characterId, characterId!) : eq(schema.knowledgeFactReveals.audience, "party")
+        )).all().map(({ operationId: _operationId, ...row }) => row);
+        return { reveals, createdCount: insertedIds.length };
+      });
+    },
+    revokeKnowledgeFactReveal(campaignId: string, entryId: string, factId: string,
+      audience: KnowledgeFactRevealAudience, characterId?: string): boolean {
+      return db.transaction(() => {
+        const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+          .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+        if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+        const fact = db.select({ id: schema.knowledgeFacts.id }).from(schema.knowledgeFacts).where(and(
+          eq(schema.knowledgeFacts.id, factId), eq(schema.knowledgeFacts.campaignId, campaignId),
+          eq(schema.knowledgeFacts.knowledgeEntryId, entryId)
+        )).get();
+        if (!fact) throw new Error("Knowledge fact not found in this entry.");
+        if (audience === "character") {
+          if (!characterId) throw new Error("A character must be selected.");
+          const character = db.select({ id: schema.characters.id }).from(schema.characters).where(and(
+            eq(schema.characters.id, characterId), eq(schema.characters.campaignId, campaignId)
+          )).get();
+          if (!character) throw new Error("Character is not in this campaign.");
+        } else if (audience !== "party" || characterId) throw new Error("Knowledge fact audience is invalid.");
+        const removed = db.delete(schema.knowledgeFactReveals).where(and(
+          eq(schema.knowledgeFactReveals.campaignId, campaignId), eq(schema.knowledgeFactReveals.knowledgeFactId, factId),
+          eq(schema.knowledgeFactReveals.audience, audience),
+          audience === "character" ? eq(schema.knowledgeFactReveals.characterId, characterId!) : eq(schema.knowledgeFactReveals.audience, "party")
+        )).returning({ id: schema.knowledgeFactReveals.id }).get();
+        if (removed) appendActivity({ campaignId, sessionId: activeSessionId(campaignId), characterId: audience === "character" ? characterId : null,
+          knowledgeEntryId: entryId, type: "knowledge_fact_access_revoked", details: { audience, factCount: 1, scope: "selected" } });
+        return Boolean(removed);
       });
     },
     createCharacter(campaignId: string, name: string) {
