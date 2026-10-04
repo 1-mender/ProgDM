@@ -202,6 +202,68 @@ test("inconsistent assignment sessions cannot grant private reads or writes", (t
   } finally { db.close(); }
 });
 
+test("Player inventory projection scopes catalog metadata to its campaign and preserves safe legacy rows", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "progdm-db-test-"));
+  const file = join(directory, "nested", "game.db");
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  t.after(() => db.close());
+  t.after(() => {
+    assert.equal(dirname(directory), resolve(tmpdir()));
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const campaign = db.createCampaign("Projection");
+  const otherCampaign = db.createCampaign("Foreign");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const otherCharacter = db.createCharacter(otherCampaign.id, "Nora");
+  const ownCatalog = db.createCatalogItem(campaign.id, "Compass");
+  const foreignCatalog = db.createCatalogItem(otherCampaign.id, "Foreign relic");
+  db.updateCatalogItemMetadata(ownCatalog.id, { description: "A brass compass", category: "tool", rarity: "rare", equipmentSlot: "accessory" });
+  db.updateCatalogItemMetadata(foreignCatalog.id, { description: "Secret campaign metadata", category: "artifact", rarity: "unique", equipmentSlot: "special" });
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const approved = db.submitPlayerRequest(session.id, "A", "projection-approved");
+  db.approvePlayer(approved.id, { characterId: character.id });
+  const pending = db.submitPlayerRequest(session.id, "Pending", "projection-pending");
+  const rejected = db.submitPlayerRequest(session.id, "Rejected", "projection-rejected");
+  db.rejectPlayer(rejected.id);
+
+  const ownRow = db.grantInventoryItem(character.id, ownCatalog.id, 1);
+  const raw = new SQLite(db.file);
+  try {
+    raw.pragma("foreign_keys = OFF");
+    raw.prepare(`INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, equipped_slot, created_at)
+      VALUES (?, ?, NULL, ?, ?, NULL, ?), (?, ?, ?, ?, ?, NULL, ?)`)
+      .run("legacy-player-row", character.id, "Old item", 3, "2026-01-01T00:00:00.000Z",
+        "foreign-player-row", character.id, foreignCatalog.id, "Borrowed row", 1, "2026-01-02T00:00:00.000Z");
+  } finally { raw.close(); }
+  db.updateCharacterInventoryCapacity(character.id, 7);
+  const state = db.getPlayerState("projection-approved");
+  assert.equal(state.inventoryCapacity, 7);
+  assert.deepEqual(state.inventory.find((item) => item.id === ownRow.id), {
+    id: ownRow.id, catalogItemId: ownCatalog.id, name: "Compass", quantity: 1,
+    description: "A brass compass", category: "tool", rarity: "rare", equipmentSlot: "accessory",
+    equippedSlot: null, createdAt: ownRow.createdAt
+  });
+  assert.deepEqual(state.inventory.find((item) => item.id === "legacy-player-row"), {
+    id: "legacy-player-row", catalogItemId: null, name: "Old item", quantity: 3,
+    description: "", category: "special", rarity: null, equipmentSlot: null, equippedSlot: null,
+    createdAt: "2026-01-01T00:00:00.000Z"
+  });
+  assert.deepEqual(state.inventory.find((item) => item.id === "foreign-player-row"), {
+    id: "foreign-player-row", catalogItemId: null, name: "Borrowed row", quantity: 1,
+    description: "", category: "special", rarity: null, equipmentSlot: null, equippedSlot: null,
+    createdAt: "2026-01-02T00:00:00.000Z"
+  });
+  assert.equal(JSON.stringify(state.inventory).includes("Secret campaign metadata"), false);
+  for (const token of ["projection-pending", "projection-rejected"]) {
+    const restricted = db.getPlayerState(token);
+    assert.deepEqual(restricted.inventory, []);
+    assert.equal(restricted.inventoryCapacity, null);
+  }
+  assert.equal(db.getCharacterOverview(otherCharacter.id).inventory.length, 0);
+});
+
 test("import rejects activity tied to another player's session and rolls back", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Audit");

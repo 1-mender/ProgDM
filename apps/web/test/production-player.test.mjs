@@ -166,11 +166,12 @@ test("Knowledge filters all six universal categories and maps player labels", ()
   assert.equal(knowledge.includes("hasImage"), false);
 });
 
-test("Inventory, Journal, Settings and existing player mutations remain in the production workspace", () => {
+test("InventoryPage, Journal, Settings and existing player mutations remain in the production workspace", () => {
   for (const view of ["inventory", "journal"]) assert.ok(workspace.includes(`view === "${view}"`));
   assert.match(workspace, /Настройки/);
-  for (const path of ["/api/player/profile", "/api/player/settings", "/api/player/notes", "/api/player/activity/seen"]) assert.ok(workspace.includes(path));
-  assert.match(workspace, /player\.inventory\.map/);
+  for (const path of ["/api/player/profile", "/api/player/settings", "/api/player/notes", "/api/player/activity/seen", "/api/player/inventory/${itemId}/equip", "/api/player/inventory/${itemId}/unequip"]) assert.ok(workspace.includes(path));
+  assert.match(workspace, /<InventoryPage player=\{player\}/);
+  assert.doesNotMatch(workspace, /player\.inventory\.map/);
   assert.match(workspace, /player\.recentActivity\.map/);
   assert.match(personalNotes, /visibleNotes\.map/);
 });

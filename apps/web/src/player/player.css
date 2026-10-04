@@ -276,6 +276,101 @@
 .prod-legacy-page .prod-primary,
 .prod-legacy-page .prod-secondary { justify-self: start; }
 
+.prod-inventory-page { display: grid; gap: 23px; }
+.prod-inventory-section { min-width: 0; }
+.prod-inventory-section > h2,
+.prod-inventory-section-heading { margin-bottom: 10px; }
+.prod-inventory-section > h2,
+.prod-inventory-section-heading h2 { font: 400 20px/1.3 Georgia, serif; }
+.prod-inventory-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.prod-capacity { flex: 0 0 auto; color: var(--player-secondary); font-size: 14px; font-variant-numeric: tabular-nums; }
+.prod-equipment-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.prod-player .prod-equipment-slot {
+  min-width: 0;
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  color: var(--player-text);
+  text-align: left;
+  border: 1px solid var(--player-border);
+  border-radius: 2px;
+  background: #f4f0e5;
+  box-shadow: inset 0 0 0 2px #f4f0e5, inset 0 0 0 3px #e3ddce;
+}
+.prod-player .prod-equipment-slot.is-empty { border-style: dashed; background: #eae5da; color: var(--player-secondary); }
+.prod-equipment-icon { position: relative; isolation: isolate; flex: 0 0 30px; width: 30px; height: 30px; display: grid; place-items: center; overflow: hidden; color: var(--player-muted); background: #e5dfd1; border: 1px solid var(--player-border); }
+.prod-equipment-icon svg { width: 17px; height: 17px; stroke-width: 1.6; }
+.prod-equipment-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.prod-equipment-copy small { color: var(--player-secondary); font-size: 11px; line-height: 1.2; }
+.prod-equipment-copy strong { font-size: 12px; line-height: 1.3; overflow-wrap: anywhere; }
+.prod-equipment-slot > svg:last-child { flex: 0 0 14px; width: 14px; height: 14px; color: var(--player-muted); }
+.prod-bag-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.prod-player .prod-bag-cell {
+  position: relative;
+  min-width: 0;
+  min-height: 142px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px;
+  color: var(--player-text);
+  text-align: left;
+  border: 1px solid var(--player-border);
+  border-radius: 3px;
+  background: #f4f0e5;
+  box-shadow: inset 0 0 0 2px #f4f0e5, inset 0 0 0 3px #e3ddce;
+}
+.prod-player .prod-bag-cell:hover { background: #eee7d8; }
+.prod-player .prod-bag-cell.is-empty { align-items: center; justify-content: center; min-height: 142px; border-style: dashed; background: #eae5da; box-shadow: none; }
+.prod-bag-art,
+.prod-item-art { position: relative; isolation: isolate; width: 100%; height: 48px; flex: 0 0 48px; display: grid; place-items: center; overflow: hidden; color: var(--player-muted); background: #e5dfd1; border: 1px solid var(--player-border); }
+.prod-bag-art::after,
+.prod-item-art::after,
+.prod-equipment-slot.rarity-uncommon .prod-equipment-icon::after,
+.prod-equipment-slot.rarity-rare .prod-equipment-icon::after,
+.prod-equipment-slot.rarity-unique .prod-equipment-icon::after { position: absolute; z-index: 0; inset: 0; content: ""; pointer-events: none; }
+.prod-bag-art > svg,
+.prod-item-art > svg { position: relative; z-index: 1; width: 25px; height: 25px; stroke-width: 1.55; }
+.prod-bag-cell strong { width: 100%; min-width: 0; font-size: 13px; line-height: 1.25; overflow-wrap: anywhere; }
+.prod-bag-category { width: 100%; min-width: 0; color: var(--player-secondary); font-size: 11px; line-height: 1.2; overflow-wrap: anywhere; }
+.prod-bag-quantity { align-self: flex-end; margin-top: auto; color: var(--player-text); font-size: 12px; font-weight: 700; }
+.prod-bag-cell.rarity-uncommon .prod-bag-art::after,
+.prod-item-art.rarity-uncommon::after,
+.prod-equipment-slot.rarity-uncommon .prod-equipment-icon::after { background: #71836c1c; }
+.prod-bag-cell.rarity-rare .prod-bag-art::after,
+.prod-item-art.rarity-rare::after,
+.prod-equipment-slot.rarity-rare .prod-equipment-icon::after { background: #71839420; }
+.prod-bag-cell.rarity-unique .prod-bag-art::after,
+.prod-item-art.rarity-unique::after,
+.prod-equipment-slot.rarity-unique .prod-equipment-icon::after { background: #8b7b9120; }
+.prod-rarity { display: inline-flex; align-items: center; gap: 5px; color: var(--player-secondary); font-size: 12px; }
+.prod-rarity i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.prod-rarity.rarity-uncommon { color: #627357; }
+.prod-rarity.rarity-rare { color: #5d7182; }
+.prod-rarity.rarity-unique { color: #78677e; }
+.prod-free-slots { grid-column: 1 / -1; margin: 0; color: var(--player-muted); font-size: 12px; }
+.prod-item-overlay { position: fixed; z-index: 20; inset: 0; display: flex; align-items: flex-end; justify-content: center; background: #1719168c; }
+.prod-item-sheet { width: min(100%, 480px); max-height: min(84dvh, 680px); overflow-y: auto; overscroll-behavior: contain; padding: 10px 18px max(20px, env(safe-area-inset-bottom)); color: var(--player-text); background: var(--player-paper); border-top: 1px solid var(--player-border); box-shadow: 0 -8px 24px #14141420; }
+.prod-item-sheet-header { position: relative; min-height: 34px; display: flex; align-items: center; justify-content: flex-end; margin-bottom: 10px; }
+.prod-item-sheet-handle { position: absolute; top: 6px; left: calc(50% - 18px); width: 36px; height: 3px; background: var(--player-border); }
+.prod-item-sheet-header .prod-icon-button { min-height: 40px; }
+.prod-item-details { display: grid; gap: 12px; }
+.prod-item-art { height: 92px; flex-basis: 92px; }
+.prod-item-art > svg { width: 35px; height: 35px; }
+.prod-item-details h2 { font: 400 24px/1.2 Georgia, serif; overflow-wrap: anywhere; }
+.prod-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--player-secondary); font-size: 13px; }
+.prod-item-description { margin: 0; font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prod-item-facts { margin: 0; }
+.prod-item-facts > div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--player-divider); }
+.prod-item-facts dt { color: var(--player-secondary); font-size: 13px; }
+.prod-item-facts dd { margin: 0; font-size: 13px; text-align: right; overflow-wrap: anywhere; }
+.prod-player .prod-item-action { width: 100%; min-height: 46px; justify-content: center; }
+.prod-item-hint { margin: -4px 0 0; color: var(--player-secondary); font-size: 12px; line-height: 1.45; }
+.prod-free-slots + .prod-empty { padding: 0; }
+
 .prod-player-nav {
   position: fixed;
   z-index: 10;

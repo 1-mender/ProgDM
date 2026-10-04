@@ -7,7 +7,7 @@ import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type EquipmentSlot, type HealthCheck, type InventoryCategory, type InventoryRarity, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type EquipmentSlot, type HealthCheck, type InventoryCategory, type InventoryRarity, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerInventoryItem, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -503,6 +503,58 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       ))
       .leftJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
       .where(eq(schema.players.id, playerId)).get() ?? null;
+  }
+
+  function equipInventoryItemInTransaction(characterId: string, inventoryItemId: string) {
+    const character = db.select({ campaignId: schema.characters.campaignId }).from(schema.characters)
+      .where(eq(schema.characters.id, characterId)).get();
+    if (!character) throw new Error("Character not found.");
+    const item = db.select().from(schema.inventoryItems)
+      .where(and(eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.characterId, characterId))).get();
+    if (!item) throw new Error("Inventory item not found for this character.");
+    if (item.equippedSlot !== null) throw new Error("Inventory item is already equipped.");
+    if (!item.catalogItemId) throw new Error("Legacy inventory item cannot be equipped.");
+    if (item.quantity !== 1) throw new Error("Only a single item can be equipped; split stacks are not supported.");
+    const catalogItem = db.select().from(schema.catalogItems).where(eq(schema.catalogItems.id, item.catalogItemId)).get();
+    if (!catalogItem || catalogItem.campaignId !== character.campaignId) throw new Error("Catalog item is not in this character's campaign.");
+    if (catalogItem.equipmentSlot === null) throw new Error("Catalog item cannot be equipped.");
+    const occupied = db.select({ id: schema.inventoryItems.id }).from(schema.inventoryItems).where(and(
+      eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.equippedSlot, catalogItem.equipmentSlot)
+    )).get();
+    if (occupied) throw new Error("Equipment slot is already occupied.");
+    return db.update(schema.inventoryItems).set({ equippedSlot: catalogItem.equipmentSlot })
+      .where(eq(schema.inventoryItems.id, item.id)).returning().get();
+  }
+
+  function unequipInventoryItemInTransaction(characterId: string, inventoryItemId: string) {
+    const item = db.select().from(schema.inventoryItems)
+      .where(and(eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.characterId, characterId))).get();
+    if (!item) throw new Error("Inventory item not found for this character.");
+    if (item.equippedSlot === null) throw new Error("Inventory item is not equipped.");
+    const character = db.select({ campaignId: schema.characters.campaignId, inventoryCapacity: schema.characters.inventoryCapacity }).from(schema.characters)
+      .where(eq(schema.characters.id, characterId)).get();
+    if (!character) throw new Error("Character not found.");
+    const catalogItem = item.catalogItemId ? db.select().from(schema.catalogItems)
+      .where(eq(schema.catalogItems.id, item.catalogItemId)).get() : null;
+    if (!catalogItem || catalogItem.campaignId !== character.campaignId || catalogItem.equipmentSlot !== item.equippedSlot || item.quantity !== 1) {
+      throw new Error("Equipped inventory item is invalid.");
+    }
+    const usedSlots = client.prepare("SELECT count(*) AS count FROM inventory_items WHERE character_id=? AND equipped_slot IS NULL")
+      .get(characterId) as { count: number };
+    const bagStack = db.select().from(schema.inventoryItems).where(and(
+      eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.catalogItemId, item.catalogItemId!),
+      isNull(schema.inventoryItems.equippedSlot)
+    )).get();
+    if (bagStack) {
+      if (bagStack.quantity >= 9999) throw new Error("Item quantity limit exceeded.");
+      db.update(schema.inventoryItems).set({ quantity: bagStack.quantity + 1 })
+        .where(eq(schema.inventoryItems.id, bagStack.id)).run();
+      db.delete(schema.inventoryItems).where(eq(schema.inventoryItems.id, item.id)).run();
+      return db.select().from(schema.inventoryItems).where(eq(schema.inventoryItems.id, bagStack.id)).get()!;
+    }
+    if (usedSlots.count >= character.inventoryCapacity) throw new Error("Inventory capacity is full.");
+    return db.update(schema.inventoryItems).set({ equippedSlot: null })
+      .where(eq(schema.inventoryItems.id, item.id)).returning().get();
   }
 
   return {
@@ -1147,6 +1199,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         campaignName: schema.campaigns.name,
         sessionName: schema.sessions.name,
         characterName: schema.characters.name,
+        inventoryCapacity: schema.characters.inventoryCapacity,
         shortDescription: schema.characters.shortDescription,
         archetype: schema.characters.archetype,
         origin: schema.characters.origin,
@@ -1325,11 +1378,22 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           profileFields: characterProfileFields(active.characterId)
         } : null,
         canEdit: !!active,
-        inventory: player.characterId
-          ? db.select().from(schema.inventoryItems)
-            .where(eq(schema.inventoryItems.characterId, player.characterId))
-            .orderBy(asc(schema.inventoryItems.createdAt), asc(schema.inventoryItems.name)).all()
-          : [],
+        inventory: player.characterId ? (client.prepare(`SELECT
+          i.id AS id,
+          CASE WHEN c.id IS NULL THEN NULL ELSE c.id END AS catalogItemId,
+          i.name AS name,
+          i.quantity AS quantity,
+          CASE WHEN c.id IS NULL THEN '' ELSE c.description END AS description,
+          CASE WHEN c.id IS NULL OR c.category NOT IN ('key','document','tool','consumable','equipment','artifact','special') THEN 'special' ELSE c.category END AS category,
+          CASE WHEN c.id IS NULL OR c.rarity NOT IN ('common','uncommon','rare','unique') THEN NULL ELSE c.rarity END AS rarity,
+          CASE WHEN c.id IS NULL OR c.equipment_slot NOT IN ('primary','secondary','armor','accessory','tool','special') THEN NULL ELSE c.equipment_slot END AS equipmentSlot,
+          i.equipped_slot AS equippedSlot,
+          i.created_at AS createdAt
+          FROM inventory_items i
+          LEFT JOIN catalog_items c ON c.id=i.catalog_item_id AND c.campaign_id=?
+          WHERE i.character_id=?
+          ORDER BY i.created_at ASC, i.name ASC, i.id ASC`).all(player.campaignId, player.characterId) as PlayerInventoryItem[]) : [],
+        inventoryCapacity: player.characterId ? player.inventoryCapacity ?? null : null,
         knowledge,
         notes: active ? db.select().from(schema.characterPersonalNotes)
           .where(eq(schema.characterPersonalNotes.characterId, active.characterId))
@@ -1586,57 +1650,21 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       });
     },
     equipInventoryItem(characterId: string, inventoryItemId: string) {
+      return db.transaction(() => equipInventoryItemInTransaction(characterId, inventoryItemId));
+    },
+    equipPlayerInventoryItem(tokenHash: string, inventoryItemId: string) {
       return db.transaction(() => {
-        const character = db.select({ campaignId: schema.characters.campaignId }).from(schema.characters)
-          .where(eq(schema.characters.id, characterId)).get();
-        if (!character) throw new Error("Character not found.");
-        const item = db.select().from(schema.inventoryItems)
-          .where(and(eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.characterId, characterId))).get();
-        if (!item) throw new Error("Inventory item not found for this character.");
-        if (item.equippedSlot !== null) throw new Error("Inventory item is already equipped.");
-        if (!item.catalogItemId) throw new Error("Legacy inventory item cannot be equipped.");
-        if (item.quantity !== 1) throw new Error("Only a single item can be equipped; split stacks are not supported.");
-        const catalogItem = db.select().from(schema.catalogItems).where(eq(schema.catalogItems.id, item.catalogItemId)).get();
-        if (!catalogItem || catalogItem.campaignId !== character.campaignId) throw new Error("Catalog item is not in this character's campaign.");
-        if (catalogItem.equipmentSlot === null) throw new Error("Catalog item cannot be equipped.");
-        const occupied = db.select({ id: schema.inventoryItems.id }).from(schema.inventoryItems).where(and(
-          eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.equippedSlot, catalogItem.equipmentSlot)
-        )).get();
-        if (occupied) throw new Error("Equipment slot is already occupied.");
-        return db.update(schema.inventoryItems).set({ equippedSlot: catalogItem.equipmentSlot })
-          .where(eq(schema.inventoryItems.id, item.id)).returning().get();
+        const active = requireActivePlayerCharacter(tokenHash);
+        return equipInventoryItemInTransaction(active.characterId, inventoryItemId);
       });
     },
     unequipInventoryItem(characterId: string, inventoryItemId: string) {
+      return db.transaction(() => unequipInventoryItemInTransaction(characterId, inventoryItemId));
+    },
+    unequipPlayerInventoryItem(tokenHash: string, inventoryItemId: string) {
       return db.transaction(() => {
-        const item = db.select().from(schema.inventoryItems)
-          .where(and(eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.characterId, characterId))).get();
-        if (!item) throw new Error("Inventory item not found for this character.");
-        if (item.equippedSlot === null) throw new Error("Inventory item is not equipped.");
-        const characterRow = db.select({ campaignId: schema.characters.campaignId, inventoryCapacity: schema.characters.inventoryCapacity }).from(schema.characters)
-          .where(eq(schema.characters.id, characterId)).get();
-        if (!characterRow) throw new Error("Character not found.");
-        const equippedCatalog = item.catalogItemId ? db.select().from(schema.catalogItems)
-          .where(eq(schema.catalogItems.id, item.catalogItemId)).get() : null;
-        if (!equippedCatalog || equippedCatalog.campaignId !== characterRow.campaignId || equippedCatalog.equipmentSlot !== item.equippedSlot || item.quantity !== 1) {
-          throw new Error("Equipped inventory item is invalid.");
-        }
-        const usedSlots = client.prepare("SELECT count(*) AS count FROM inventory_items WHERE character_id=? AND equipped_slot IS NULL")
-          .get(characterId) as { count: number };
-        const bagStack = item.catalogItemId ? db.select().from(schema.inventoryItems).where(and(
-          eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.catalogItemId, item.catalogItemId),
-          isNull(schema.inventoryItems.equippedSlot)
-        )).get() : undefined;
-        if (bagStack) {
-          if (bagStack.quantity >= 9999) throw new Error("Item quantity limit exceeded.");
-          db.update(schema.inventoryItems).set({ quantity: bagStack.quantity + 1 })
-            .where(eq(schema.inventoryItems.id, bagStack.id)).run();
-          db.delete(schema.inventoryItems).where(eq(schema.inventoryItems.id, item.id)).run();
-          return db.select().from(schema.inventoryItems).where(eq(schema.inventoryItems.id, bagStack.id)).get()!;
-        }
-        if (usedSlots.count >= characterRow.inventoryCapacity) throw new Error("Inventory capacity is full.");
-        return db.update(schema.inventoryItems).set({ equippedSlot: null })
-          .where(eq(schema.inventoryItems.id, item.id)).returning().get();
+        const active = requireActivePlayerCharacter(tokenHash);
+        return unequipInventoryItemInTransaction(active.characterId, inventoryItemId);
       });
     },
     listKnowledgeByCampaign(campaignId: string) {

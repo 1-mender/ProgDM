@@ -44,7 +44,7 @@ test("player write responses never return token hashes", async (t) => {
   assert.equal(result.json().player.tokenHash, undefined);
 });
 
-test("full-bag grants return a conflict and Phase 4A adds no player inventory mutation routes", async (t) => {
+test("full-bag grants return a conflict and transfer/discard remain out of scope", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Capacity");
   const character = database.createCharacter(campaign.id, "Mira");
@@ -58,11 +58,163 @@ test("full-bag grants return a conflict and Phase 4A adds no player inventory mu
   const fullBag = await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: item.id, quantity: 1 });
   assert.equal(fullBag.statusCode, 409);
   assert.equal(fullBag.json().message, "В сумке персонажа нет свободных слотов.");
-  for (const action of ["equip", "unequip", "transfer", "discard"]) {
+  for (const action of ["transfer", "discard"]) {
     const response = await app.inject({ method: "POST", url: `/api/player/inventory/${item.id}/${action}`,
       headers: { authorization: "Bearer capacity-api-token" }, payload: {} });
     assert.equal(response.statusCode, 404, `${action} remains out of scope for this phase`);
   }
+});
+
+test("Player equip and unequip use the active Character, enforce domain rules, and persist for historical reads", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Player equipment");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const rowan = database.createCharacter(campaign.id, "Rowan");
+  const session1 = database.createSession(campaign.id, "First");
+  database.activateSession(session1.id);
+  const tokenA = "G".repeat(43);
+  const tokenPending = "H".repeat(43);
+  const tokenRejected = "I".repeat(43);
+  for (const [name, token] of [["Mira player", tokenA], ["Pending", tokenPending], ["Rejected", tokenRejected]]) {
+    await post(app, `/api/join/${session1.joinToken}/request`, { displayName: name, playerToken: token });
+  }
+  const players = database.listPlayersByCampaign(campaign.id).filter((entry) => entry.sessionId === session1.id);
+  database.approvePlayer(players.find((entry) => entry.displayName === "Mira player").id, { characterId: mira.id });
+  database.rejectPlayer(players.find((entry) => entry.displayName === "Rejected").id);
+
+  const sword = database.createCatalogItem(campaign.id, "Охотничий нож");
+  const duplicateSword = database.createCatalogItem(campaign.id, "Второй нож");
+  const ring = database.createCatalogItem(campaign.id, "Амулет");
+  const shield = database.createCatalogItem(campaign.id, "Куртка");
+  const stackItem = database.createCatalogItem(campaign.id, "Аптечка");
+  const book = database.createCatalogItem(campaign.id, "Записная книжка");
+  for (const [item, slot, category] of [[sword, "primary", "equipment"], [duplicateSword, "primary", "equipment"],
+    [ring, "accessory", "artifact"], [shield, "armor", "equipment"], [stackItem, "secondary", "consumable"], [book, null, "document"]]) {
+    database.updateCatalogItemMetadata(item.id, { description: `Описание: ${item.name}`, equipmentSlot: slot, category, rarity: item === ring ? "rare" : null });
+  }
+  const swordRow = database.grantInventoryItem(mira.id, sword.id, 1);
+  const duplicateRow = database.grantInventoryItem(mira.id, duplicateSword.id, 1);
+  const ringRow = database.grantInventoryItem(mira.id, ring.id, 1);
+  const shieldRow = database.grantInventoryItem(mira.id, shield.id, 1);
+  const stackRow = database.grantInventoryItem(mira.id, stackItem.id, 2);
+  const bookRow = database.grantInventoryItem(mira.id, book.id, 1);
+  const api = (token, itemId, action, payload = {}) => app.inject({ method: "POST", url: `/api/player/inventory/${itemId}/${action}`,
+    headers: { authorization: `Bearer ${token}` }, payload });
+  const read = (token) => app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${token}` } });
+
+  const initial = (await read(tokenA)).json();
+  assert.equal(initial.inventoryCapacity, 12);
+  assert.equal(initial.inventory.find((item) => item.id === swordRow.id).description, "Описание: Охотничий нож");
+  assert.equal(initial.inventory.find((item) => item.id === ringRow.id).rarity, "rare");
+  assert.equal(initial.inventory.find((item) => item.id === stackRow.id).equipmentSlot, "secondary");
+  assert.equal(initial.inventory.find((item) => item.id === bookRow.id).rarity, null);
+  assert.equal("dmNotes" in initial, false);
+  assert.equal("dmNotes" in initial.profile, false);
+  assert.deepEqual(Object.keys(initial.inventory[0]).sort(), ["catalogItemId", "category", "createdAt", "description", "equipmentSlot", "equippedSlot", "id", "name", "quantity", "rarity"].sort());
+
+  assert.equal((await api(tokenA, "not-a-uuid", "equip")).statusCode, 400);
+  assert.equal((await api(tokenA, swordRow.id, "equip", { characterId: mira.id })).statusCode, 400);
+  const otherCharacterItem = database.grantInventoryItem(rowan.id, book.id, 1);
+  const inaccessible = await api(tokenA, otherCharacterItem.id, "equip");
+  assert.equal(inaccessible.statusCode, 404);
+  assert.equal(inaccessible.json().message, "Предмет недоступен.");
+  for (const token of [tokenPending, tokenRejected]) {
+    const restricted = (await read(token)).json();
+    assert.deepEqual(restricted.inventory, []);
+    assert.equal(restricted.inventoryCapacity, null);
+    assert.equal(restricted.canEdit, false);
+    const denied = await api(token, swordRow.id, "equip");
+    assert.equal(denied.statusCode, 403, `${token === tokenPending ? "pending" : "rejected"}: ${denied.body}`);
+    assert.equal(denied.json().message.includes("SQLite"), false);
+  }
+  assert.equal((await api(tokenA, stackRow.id, "equip")).statusCode, 409);
+  assert.equal((await api(tokenA, bookRow.id, "equip")).statusCode, 409);
+
+  const activityBefore = database.listCampaignActivity(campaign.id).length;
+  const equipped = await api(tokenA, swordRow.id, "equip");
+  assert.equal(equipped.statusCode, 200);
+  assert.equal(equipped.json().item.equippedSlot, "primary");
+  assert.equal((await read(tokenA)).json().inventoryCapacity, 12);
+  assert.equal((await read(tokenA)).json().inventory.filter((item) => item.equippedSlot === null).length, 5);
+  const occupied = await api(tokenA, duplicateRow.id, "equip");
+  assert.equal(occupied.statusCode, 409);
+  assert.equal(occupied.json().message, "Слот «Основное» уже занят. Сначала снимите текущий предмет.");
+  assert.equal((await api(tokenA, swordRow.id, "equip")).json().message, "Предмет уже экипирован.");
+  assert.equal((await api(tokenA, swordRow.id, "unequip")).statusCode, 200);
+  assert.equal(database.listCampaignActivity(campaign.id).length, activityBefore, "equipment mutations do not append activity");
+
+  database.equipInventoryItem(mira.id, swordRow.id);
+  database.equipInventoryItem(mira.id, ringRow.id);
+  database.equipInventoryItem(mira.id, shieldRow.id);
+  database.grantInventoryItem(mira.id, ring.id, 2);
+  const ringBagStack = database.listCharacterInventory(mira.id).find((item) => item.catalogItemId === ring.id && item.equippedSlot === null);
+  const map = database.createCatalogItem(campaign.id, "Карта");
+  const torch = database.createCatalogItem(campaign.id, "Фонарь");
+  database.grantInventoryItem(mira.id, map.id, 1);
+  database.grantInventoryItem(mira.id, torch.id, 1);
+  database.grantInventoryItem(mira.id, duplicateSword.id, 1);
+  database.updateCharacterInventoryCapacity(mira.id, 6);
+  const full = await api(tokenA, shieldRow.id, "unequip");
+  assert.equal(full.statusCode, 409);
+  assert.equal(full.json().message, "Сумка заполнена. Освободите место перед снятием предмета.");
+  const merged = await api(tokenA, ringRow.id, "unequip");
+  assert.equal(merged.statusCode, 200);
+  assert.equal(merged.json().item.id, ringBagStack.id);
+  assert.equal(merged.json().item.quantity, 3);
+  assert.equal(database.listCharacterInventory(mira.id).some((item) => item.id === ringRow.id), false);
+  assert.equal((await api(tokenA, ringRow.id, "unequip")).statusCode, 404, "stale item ID cannot target a different row");
+  assert.equal((await read(tokenA)).json().inventoryCapacity, 6);
+  database.updateCharacterInventoryCapacity(mira.id, 7);
+
+  await post(app, `/api/dm/sessions/${session1.id}/end`);
+  const session2 = database.createSession(campaign.id, "Second");
+  database.activateSession(session2.id);
+  const tokenB = "J".repeat(43);
+  await post(app, `/api/join/${session2.joinToken}/request`, { displayName: "Mira player B", playerToken: tokenB });
+  const playerB = database.listPlayersByCampaign(campaign.id).find((entry) => entry.sessionId === session2.id);
+  database.approvePlayer(playerB.id, { characterId: mira.id });
+  const historicalState = (await read(tokenA)).json();
+  assert.equal(historicalState.canEdit, false);
+  assert.equal(historicalState.inventoryCapacity, 7);
+  assert.equal(historicalState.inventory.find((item) => item.id === swordRow.id).equippedSlot, "primary");
+  assert.equal((await api(tokenA, swordRow.id, "unequip")).statusCode, 403);
+  assert.equal((await api(tokenB, swordRow.id, "unequip")).statusCode, 200);
+  const afterUnequip = (await read(tokenB)).json();
+  assert.equal(afterUnequip.inventory.some((item) => item.id === swordRow.id && item.equippedSlot === null), true);
+  assert.equal((await read(tokenA)).json().inventory.some((item) => item.id === swordRow.id && item.equippedSlot === null), true,
+    "historical reads reflect persistent Character equipment changes");
+  assert.equal(database.listCampaignActivity(campaign.id).filter((event) => ["item_equipped", "item_unequipped"].includes(event.type)).length, 0);
+});
+
+test("legacy Player inventory rows remain visible and cannot be equipped", async (t) => {
+  const { app, database } = fixture(t);
+  const source = database.createCampaign("Legacy source");
+  const sourceCharacter = database.createCharacter(source.id, "Old hero");
+  const catalog = database.createCatalogItem(source.id, "Imported old item");
+  database.grantInventoryItem(sourceCharacter.id, catalog.id, 3);
+  const archive = database.exportCampaign(source.id);
+  archive.inventoryItems[0].catalogItemId = null;
+  const campaign = database.importCampaign(archive);
+  const character = database.listCharactersByCampaign(campaign.id)[0];
+  const session = database.createSession(campaign.id, "New session");
+  database.activateSession(session.id);
+  const token = "K".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "New controller", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  database.approvePlayer(player.id, { characterId: character.id });
+  const state = await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(state.statusCode, 200);
+  assert.deepEqual({ catalogItemId: state.json().inventory[0].catalogItemId, name: state.json().inventory[0].name,
+    quantity: state.json().inventory[0].quantity, description: state.json().inventory[0].description,
+    category: state.json().inventory[0].category, rarity: state.json().inventory[0].rarity,
+    equipmentSlot: state.json().inventory[0].equipmentSlot }, {
+    catalogItemId: null, name: "Imported old item", quantity: 3, description: "", category: "special",
+    rarity: null, equipmentSlot: null
+  });
+  const result = await app.inject({ method: "POST", url: `/api/player/inventory/${state.json().inventory[0].id}/equip`,
+    headers: { authorization: `Bearer ${token}` }, payload: {} });
+  assert.equal(result.statusCode, 409);
+  assert.equal(result.json().message, "Этот предмет нельзя экипировать.");
 });
 
 test("DM inventory grants target persistent non-archived characters in preparation and live sessions", async (t) => {

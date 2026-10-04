@@ -1,20 +1,15 @@
 import { useState } from "react";
-import { BookOpen, Check, Package, ScrollText, Settings, UserRound } from "lucide-react";
+import { BookOpen, Check, ScrollText, Settings, UserRound } from "lucide-react";
 import type { PlayerState } from "@progdm/shared";
 import { playerPost } from "./api";
 import { HomePage } from "./HomePage";
+import { InventoryPage } from "./InventoryPage";
 import { KnowledgePage } from "./KnowledgePage";
 import { PersonalNotesPage } from "./PersonalNotesPage";
 import { PlayerShell } from "./PlayerShell";
 import { ProfilePage } from "./ProfilePage";
 import { journalActivityLabel, type PlayerView } from "./model";
 import "./player.css";
-
-const quantityPlural = new Intl.PluralRules("ru");
-function quantityLabel(quantity: number) {
-  const unit = { one: "предмет", few: "предмета", many: "предметов", other: "предмета" }[quantityPlural.select(quantity) as "one" | "few" | "many" | "other"];
-  return quantity + " " + unit;
-}
 
 export function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState; credential: string; refresh: () => Promise<void> }) {
   const [view, setView] = useState<PlayerView>("home");
@@ -61,9 +56,9 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
     () => playerPost(credential, "/api/player/profile", fields), "Профиль сохранён."
   )} />;
   else if (view === "knowledge") content = <KnowledgePage player={player} />;
-  else if (view === "inventory") content = <section className="prod-page prod-legacy-page"><h1>Инвентарь</h1>
-    {player.inventory.length ? <ul className="player-simple-list">{player.inventory.map((item) => <li key={item.id}><Package aria-hidden="true" />{item.name}<span className="muted">{quantityLabel(item.quantity)}</span></li>)}</ul> : <p className="prod-empty">Пока пусто.</p>}
-  </section>;
+  else if (view === "inventory") content = <InventoryPage player={player} busy={busy}
+    onEquip={(itemId) => run(() => playerPost(credential, `/api/player/inventory/${itemId}/equip`, {}), "Предмет экипирован.")}
+    onUnequip={(itemId) => run(() => playerPost(credential, `/api/player/inventory/${itemId}/unequip`, {}), "Предмет перемещён в сумку.")} />;
   else if (view === "journal") content = <section className="prod-page prod-legacy-page"><h1>Журнал</h1>
     <div className="player-journal-tabs" role="tablist" aria-label="Разделы журнала">
       <button type="button" role="tab" aria-selected={journalTab === "activity"} className={journalTab === "activity" ? "selected" : ""} onClick={() => setJournalTab("activity")}>Хроника</button>

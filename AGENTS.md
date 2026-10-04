@@ -33,11 +33,11 @@ Personal Notes принадлежат Character: `title`, `body`, `marker` (`nor
 
 B3 Profile хранит универсальные `traits`, `appearance`, `quote` наряду с базовыми полями. Campaign-defined profile fields хранятся отдельно и имеют определения/порядок на Campaign. Игроку не выдавать `dmNotes`.
 
-### Inventory foundation (Phase 4A)
+### Player Inventory (Phase 4B)
 
-Инвентарь принадлежит Character. `inventoryCapacity` — вместимость сумки в слотах (по умолчанию 12); одна неэкипированная stack-запись занимает один слот независимо от quantity. Экипированные строки сумку не занимают. Каталог Campaign Item содержит `description`, `category`, `rarity`, `equipmentSlot`, `transferAllowed`, `discardAllowed`; Inventory Item хранит `equippedSlot`. Выдачи объединяются по `catalogItemId`, не по имени. Веса/encumbrance нет. Foundation DB операции существуют, но не предполагай наличие Player equip/transfer/discard API или Inventory UI без отдельной задачи.
+Инвентарь и экипировка принадлежат Character. Production Player UI показывает Equipment 2×3 и 3-колоночную сумку. `inventoryCapacity` — число слотов сумки (по умолчанию 12); одна неэкипированная stack-строка занимает один слот независимо от quantity, экипированные строки не занимают слот. Каталог содержит `description`, `category`, `rarity`, `equipmentSlot`, `transferAllowed`, `discardAllowed`; Inventory Item хранит `equippedSlot`. PlayerState проецирует только inventory rows персонажа и метаданные каталога из той же Campaign; legacy/missing/foreign catalog references получают безопасный fallback. У Player API есть `POST /api/player/inventory/:id/equip` и `/unequip` с пустым body: сервер сам находит Character через текущий активный approved assignment. History token читает inventory/equipment/capacity, но не может экипировать или снимать. Экипировка требует quantity=1 и свободного совместимого слота; автоматической замены и разделения stack нет. Снятие требует свободный slot либо объединяет строку в совместимый catalog stack с запасом до 9999. Equip/unequip не создают Activity. Выдачи DM объединяются по `catalogItemId`, не по имени. Веса/encumbrance, Transfer и Discard не реализованы.
 
-Последняя миграция — `0014`; campaign archive format — v9. Backup/restore должен мигрировать поддерживаемые старые базы на staged-копии, проверять целостность и не менять оригинал. Для этой cleanup-фазы не создавать migration и не менять export v9.
+Последняя миграция — `0014`; campaign archive format — v9. Backup/restore должен мигрировать поддерживаемые старые базы на staged-копии, проверять целостность и не менять оригинал. Player Inventory UI/equip/unequip не меняют схему, backup или export v9.
 
 ## Разработка
 

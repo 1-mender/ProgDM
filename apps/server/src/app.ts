@@ -100,6 +100,41 @@ export function createApp(options: {
         throw error;
       }
     };
+    const inventoryAction = (request: { params: { id: string } }, reply: { code: (status: number) => { send: (body: object) => unknown } },
+      action: (hash: string, itemId: string) => unknown) => activeAction(request, reply, (hash) => {
+      try { return action(hash, request.params.id); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Active character access required.") throw error;
+        if (message === "Inventory item not found for this character.") return reply.code(404).send({ message: "Предмет недоступен." });
+        if (message === "Only a single item can be equipped; split stacks are not supported.") {
+          return reply.code(409).send({ message: "Стопку из нескольких предметов пока нельзя экипировать." });
+        }
+        if (message === "Legacy inventory item cannot be equipped." || message === "Catalog item is not in this character's campaign.") {
+          return reply.code(409).send({ message: "Этот предмет нельзя экипировать." });
+        }
+        if (message === "Catalog item cannot be equipped.") return reply.code(409).send({ message: "Этот предмет не предназначен для экипировки." });
+        if (message === "Equipment slot is already occupied.") {
+          const slot = database.getPlayerState(playerCredentials.get(request)!)?.inventory.find((item) => item.id === request.params.id)?.equipmentSlot;
+          const label = slot ? ({ primary: "Основное", secondary: "Вторичное", armor: "Защита", accessory: "Аксессуар", tool: "Инструмент", special: "Особое" } as const)[slot] : "экипировки";
+          return reply.code(409).send({ message: `Слот «${label}» уже занят. Сначала снимите текущий предмет.` });
+        }
+        if (message === "Inventory item is already equipped.") return reply.code(409).send({ message: "Предмет уже экипирован." });
+        if (message === "Inventory item is not equipped.") return reply.code(409).send({ message: "Предмет уже находится в сумке." });
+        if (message === "Inventory capacity is full.") return reply.code(409).send({ message: "Сумка заполнена. Освободите место перед снятием предмета." });
+        if (message === "Item quantity limit exceeded.") return reply.code(409).send({ message: "В стопке достигнуто максимальное количество предметов." });
+        if (message === "Equipped inventory item is invalid.") return reply.code(409).send({ message: "Не удалось безопасно снять этот предмет." });
+        return reply.code(500).send({ message: "Не удалось изменить экипировку. Попробуйте ещё раз." });
+      }
+    });
+    const inventoryItemParams = { type: "object", required: ["id"], properties: { id: { type: "string", format: "uuid" } } };
+    const emptyBody = { type: "object", additionalProperties: false };
+    player.post<{ Params: { id: string }; Body: Record<string, never> }>("/api/player/inventory/:id/equip", {
+      schema: { params: inventoryItemParams, body: emptyBody }
+    }, async (request, reply) => inventoryAction(request, reply, (hash, itemId) => ({ item: database.equipPlayerInventoryItem(hash, itemId) })));
+    player.post<{ Params: { id: string }; Body: Record<string, never> }>("/api/player/inventory/:id/unequip", {
+      schema: { params: inventoryItemParams, body: emptyBody }
+    }, async (request, reply) => inventoryAction(request, reply, (hash, itemId) => ({ item: database.unequipPlayerInventoryItem(hash, itemId) })));
     player.post<{ Body: { shortDescription: string; personalGoal: string; traits?: string[]; appearance?: string; quote?: string } }>("/api/player/profile", {
       schema: { body: { type: "object", additionalProperties: false, required: ["shortDescription", "personalGoal"], properties: {
         shortDescription: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 },

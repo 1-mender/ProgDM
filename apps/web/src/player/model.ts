@@ -1,5 +1,5 @@
-import type { KnowledgeCategory, PersonalNote, PersonalNoteMarker, PlayerActivityEvent } from "@progdm/shared";
-import { BookOpen, Home, Package, ScrollText, UserRound, type LucideIcon } from "lucide-react";
+import type { EquipmentSlot, InventoryCategory, InventoryRarity, KnowledgeCategory, PersonalNote, PersonalNoteMarker, PlayerActivityEvent, PlayerInventoryItem } from "@progdm/shared";
+import { BookOpen, CircleDot, Diamond, FileText, FlaskConical, Home, KeyRound, Package, ScrollText, Shield, Sparkles, UserRound, Wrench, type LucideIcon } from "lucide-react";
 
 export type PlayerView = "home" | "inventory" | "knowledge" | "journal" | "profile" | "settings";
 
@@ -26,6 +26,66 @@ export const PERSONAL_NOTE_MARKER_LABELS: Record<PersonalNoteMarker, string> = {
   check: "Проверить",
   question: "Вопрос"
 };
+
+export const INVENTORY_CATEGORY_LABELS: Record<InventoryCategory, string> = {
+  key: "Ключевой предмет",
+  document: "Документ",
+  tool: "Инструмент",
+  consumable: "Расходник",
+  equipment: "Снаряжение",
+  artifact: "Артефакт",
+  special: "Особое"
+};
+
+export const INVENTORY_CATEGORY_ICONS: Record<InventoryCategory, LucideIcon> = {
+  key: KeyRound,
+  document: FileText,
+  tool: Wrench,
+  consumable: FlaskConical,
+  equipment: Shield,
+  artifact: Diamond,
+  special: Sparkles
+};
+
+export const INVENTORY_RARITY_LABELS: Record<InventoryRarity, string> = {
+  common: "Обычный",
+  uncommon: "Необычный",
+  rare: "Редкий",
+  unique: "Уникальный"
+};
+
+export const EQUIPMENT_SLOT_ORDER: EquipmentSlot[] = ["primary", "secondary", "armor", "accessory", "tool", "special"];
+export const EQUIPMENT_SLOT_LABELS: Record<EquipmentSlot, string> = {
+  primary: "Основное",
+  secondary: "Вторичное",
+  armor: "Защита",
+  accessory: "Аксессуар",
+  tool: "Инструмент",
+  special: "Особое"
+};
+export const EQUIPMENT_SLOT_ICONS: Record<EquipmentSlot, LucideIcon> = {
+  primary: KeyRound,
+  secondary: CircleDot,
+  armor: Shield,
+  accessory: Diamond,
+  tool: Wrench,
+  special: Sparkles
+};
+
+export function inventoryBagSlotsUsed(items: PlayerInventoryItem[]) {
+  return items.filter((item) => item.equippedSlot === null).length;
+}
+
+export function canEquipInventoryItem(items: PlayerInventoryItem[], item: PlayerInventoryItem, canEdit: boolean, capacity: number | null) {
+  return canEdit && capacity !== null && item.equippedSlot === null && item.equipmentSlot !== null && item.quantity === 1 &&
+    !items.some((candidate) => candidate.equippedSlot === item.equipmentSlot);
+}
+
+export function canUnequipInventoryItem(items: PlayerInventoryItem[], capacity: number | null, item: PlayerInventoryItem) {
+  const bagStack = item.catalogItemId && items.find((candidate) => candidate.catalogItemId === item.catalogItemId && candidate.equippedSlot === null);
+  if (bagStack) return bagStack.quantity < 9999;
+  return capacity !== null && inventoryBagSlotsUsed(items) < capacity;
+}
 
 function assertNever(value: never): never {
   throw new Error(`Unsupported player activity: ${String(value)}`);

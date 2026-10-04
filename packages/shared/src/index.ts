@@ -126,11 +126,25 @@ export interface PlayerState {
   characterId: EntityId | null;
   profile: (Pick<Character, "shortDescription" | "archetype" | "origin" | "personalGoal" | "traits" | "appearance" | "quote"> & { profileFields: CharacterProfileFieldValue[] }) | null;
   canEdit: boolean;
-  inventory: InventoryItem[];
+  inventory: PlayerInventoryItem[];
+  inventoryCapacity: number | null;
   knowledge: PlayerKnowledgeEntry[];
   notes: PersonalNote[];
   recentActivity: PlayerActivityEvent[];
   newActivity: PlayerActivityEvent[];
+}
+
+export interface PlayerInventoryItem {
+  id: EntityId;
+  catalogItemId: EntityId | null;
+  name: string;
+  quantity: number;
+  description: string;
+  category: InventoryCategory;
+  rarity: InventoryRarity | null;
+  equipmentSlot: EquipmentSlot | null;
+  equippedSlot: EquipmentSlot | null;
+  createdAt: string;
 }
 
 interface PlayerActivityEventBase {
