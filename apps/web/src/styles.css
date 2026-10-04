@@ -108,13 +108,18 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .inline-form > button { min-height: 42px; flex-shrink: 0; }
 .session-history { padding-top: 22px; }
 .session-list { list-style: none; margin: 0; padding: 0; }
-.session-row { display: grid; grid-template-columns: minmax(0, 1fr) 140px 135px; align-items: center; gap: 16px; padding: 18px 0; border-bottom: 1px solid #e0e4e7; }
+.session-row { display: grid; grid-template-columns: minmax(0, 1fr) 140px minmax(190px, 230px); align-items: center; gap: 16px; padding: 18px 0; border-bottom: 1px solid #e0e4e7; }
 .session-info { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .session-info strong { overflow-wrap: anywhere; font-size: 15px; font-weight: 550; }
 .badge { font-size: 12px; color: #727780; }
 .badge.active { color: #286f63; font-weight: 600; }
 .badge.planned { color: #927022; }
 .session-action { min-height: 40px; display: flex; justify-content: flex-end; align-items: center; }
+.session-action-group { flex-wrap: wrap; gap: 4px 8px; }
+.cleanup-action { min-height: 36px; padding: 6px 8px; border-color: transparent; color: #795050; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.cleanup-action svg { width: 16px; height: 16px; }
+.cleanup-action:not(:disabled):hover { background: #f6eded; color: #693b3b; }
+.cleanup-disabled-note { flex: 0 0 100%; color: #727780; font-size: 12px; text-align: right; }
 .empty { min-height: 340px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 20px; text-align: center; }
 .empty > svg { color: #8b939a; }
 .empty h1 { font-size: 23px; }
@@ -129,6 +134,7 @@ dialog::backdrop { background: #20252a66; }
 .dialog-heading h2 { font-size: 20px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; flex-wrap: wrap; }
 .confirmation-copy { line-height: 1.6; overflow-wrap: anywhere; margin-bottom: 0; }
+.cleanup-release-note { margin: 14px 0 0; color: #286f63; font-size: 14px; line-height: 1.5; }
 .login { max-width: 420px; margin: 12vh auto; padding: 24px; }
 .login .brand { margin-bottom: 40px; }
 .login h1 { font-size: 24px; margin-bottom: 26px; }
@@ -207,6 +213,10 @@ dialog::backdrop { background: #20252a66; }
 .party-actions { display: flex; align-items: center; gap: 8px; }
 .party-actions .primary { flex: 1; }
 .accepted-row { grid-template-columns: minmax(0, 1fr) minmax(100px, .8fr) auto; align-items: center; }
+.accepted-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.rejected-list { margin-top: 4px; }
+.rejected-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid #e4e7e9; }
+.subsection-title { margin: 22px 0 4px; color: #626870; font-size: 14px; font-weight: 600; }
 .badge.accepted { display: inline-flex; align-items: center; gap: 5px; color: #286f63; white-space: nowrap; }
 .character-tools { padding-top: 24px; }
 .campaign-profile-fields { max-width: 900px; margin: 0 0 18px; padding: 12px 0; border-top: 1px solid #dce0e3; border-bottom: 1px solid #dce0e3; }
@@ -386,14 +396,16 @@ dialog::backdrop { background: #20252a66; }
   .inline-form > button { width: 100%; }
   .session-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
   .session-info { grid-column: 1; }
-  .badge { grid-column: 1; grid-row: auto; }
-  .session-action { grid-column: 2; grid-row: span 2; }
-  .session-row .session-action { grid-row: 1 / 3; }
+  .session-row > .badge { grid-column: 2; grid-row: 1; }
+  .session-action { grid-column: 1 / -1; grid-row: auto; justify-content: flex-start; }
+  .cleanup-disabled-note { text-align: left; }
   .join-share { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 16px; }
   .join-share-info { width: 100%; }
   .party-row, .accepted-row { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .accepted-row { align-items: start; }
   .party-actions { flex-wrap: wrap; }
+  .accepted-actions { justify-content: flex-start; }
+  .rejected-row { align-items: flex-start; flex-direction: column; gap: 4px; }
   .character-create-form .field { flex-basis: 100%; }
   .knowledge-create-form { align-items: stretch; flex-direction: column; }
   .knowledge-create-fields { grid-template-columns: minmax(0, 1fr); }

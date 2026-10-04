@@ -103,7 +103,7 @@ async function downloadFile(token: string, path: string, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function Modal({ title, children, close, busy }: { title: string; children: ReactNode; close: () => void; busy: boolean }) {
+function Modal({ title, children, close, busy, closeOnBackdrop = false }: { title: string; children: ReactNode; close: () => void; busy: boolean; closeOnBackdrop?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
@@ -112,13 +112,18 @@ function Modal({ title, children, close, busy }: { title: string; children: Reac
     dialog?.querySelector<HTMLInputElement>("input")?.focus();
     return () => { dialog?.close(); previouslyFocused?.focus(); };
   }, []);
-  return <dialog ref={ref} aria-labelledby="dialog-title" onCancel={(event) => { event.preventDefault(); if (!busy) close(); }}>
+  return <dialog ref={ref} role="dialog" aria-modal="true" aria-labelledby="dialog-title"
+    onClick={(event) => { if (closeOnBackdrop && event.target === event.currentTarget && !busy) close(); }}
+    onCancel={(event) => { event.preventDefault(); if (!busy) close(); }}>
     <div className="dialog-heading"><h2 id="dialog-title">{title}</h2><button type="button" className="icon-button" title="Закрыть" aria-label="Закрыть" disabled={busy} onClick={close}><X /></button></div>
     {children}
   </dialog>;
 }
 
 type Confirmation = { kind: "start" | "end"; session: Session; previousId: string | null; previousName?: string };
+type CleanupConfirmation =
+  | { kind: "session"; session: Session; disposition: "deleted" | "removed" }
+  | { kind: "player"; player: Player; disposition: "deleted" | "removed"; releasedCharacterId: string | null };
 
 export function App() {
   const invite = window.location.pathname.startsWith("/join/")
@@ -157,6 +162,7 @@ function DmWorkspace() {
   const [campaignName, setCampaignName] = useState("");
   const [sessionName, setSessionName] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [cleanupConfirmation, setCleanupConfirmation] = useState<CleanupConfirmation | null>(null);
   const [playerNames, setPlayerNames] = useState<Record<string, string>>({});
   const [characterChoices, setCharacterChoices] = useState<Record<string, string>>({});
   const [newCharacterName, setNewCharacterName] = useState("");
@@ -300,6 +306,7 @@ function DmWorkspace() {
     : [];
   const pendingPlayers = campaignPlayers.filter((player) => player.status === "pending");
   const approvedPlayers = campaignPlayers.filter((player) => player.status === "approved");
+  const rejectedPlayers = campaignPlayers.filter((player) => player.status === "rejected");
   const grantablePlayers = approvedPlayers.filter((player) => player.characterId && player.characterName);
   const campaignItemCatalog = state?.itemCatalog.filter((item) => item.campaignId === selectedId) ?? [];
   const selectedCatalogItem = campaignItemCatalog.find((item) => item.id === catalogItemId) ?? campaignItemCatalog[0];
@@ -368,7 +375,7 @@ function DmWorkspace() {
     }
   }, [addressKey]);
 
-  async function mutate(action: () => Promise<void>) {
+  async function mutate(action: () => Promise<void>, options: { notFoundMessage?: string; conflictMessage?: string } = {}) {
     if (busyRef.current || phase !== "ready") return;
     overviewRequests.current.invalidate(); historyRequests.current.invalidate();
     busyRef.current = true; setBusy(true); setError(""); setNotice("");
@@ -379,10 +386,18 @@ function DmWorkspace() {
       if (failure instanceof ApiError && failure.status === 401) {
         setToken(""); storeValue(tokenKey, ""); setState(null);
       }
-      setError(failure instanceof Error ? failure.message : "Не удалось сохранить изменения.");
+      const message = failure instanceof ApiError && failure.status === 404 && options.notFoundMessage
+        ? options.notFoundMessage
+        : failure instanceof ApiError && failure.status === 409 && options.conflictMessage
+          ? options.conflictMessage
+          : failure instanceof Error ? failure.message : "Не удалось сохранить изменения.";
+      setError(message);
       if (!(failure instanceof ApiError) && !(failure instanceof AmbiguousRevealFailure)) setPhase("error");
       if (failure instanceof ApiError && failure.status === 409) {
-        setConfirmation(null);
+        setConfirmation(null); setCleanupConfirmation(null);
+        try { await refresh(); } catch { setPhase("error"); }
+      } else if (failure instanceof ApiError && failure.status === 404 && options.notFoundMessage) {
+        setCleanupConfirmation(null);
         try { await refresh(); } catch { setPhase("error"); }
       }
     } finally { busyRef.current = false; setBusy(false); }
@@ -750,6 +765,38 @@ function DmWorkspace() {
       setNotice("Заявка отклонена.");
     });
   }
+  function previewSessionCleanup(session: Session) {
+    if (!selected) return;
+    void mutate(async () => {
+      const preview = await request<{ disposition: "deleted" | "removed" }>(token,
+        `/api/dm/campaigns/${selected.id}/sessions/${session.id}/cleanup-preview`);
+      setCleanupConfirmation({ kind: "session", session, disposition: preview.disposition });
+    }, { notFoundMessage: "Запись больше недоступна.", conflictMessage: "Состояние изменилось. Проверьте удаление ещё раз." });
+  }
+  function previewPlayerCleanup(player: Player) {
+    if (!selected) return;
+    void mutate(async () => {
+      const preview = await request<{ disposition: "deleted" | "removed"; releasedCharacterId: string | null }>(token,
+        `/api/dm/campaigns/${selected.id}/players/${player.id}/cleanup-preview`);
+      setCleanupConfirmation({ kind: "player", player, disposition: preview.disposition, releasedCharacterId: preview.releasedCharacterId });
+    }, { notFoundMessage: "Запись больше недоступна.", conflictMessage: "Состояние изменилось. Проверьте удаление ещё раз." });
+  }
+  function executeCleanup(intent: CleanupConfirmation) {
+    if (!selected) return;
+    void mutate(async () => {
+      const isSession = intent.kind === "session";
+      const entityId = isSession ? intent.session.id : intent.player.id;
+      const path = isSession
+        ? `/api/dm/campaigns/${selected.id}/sessions/${entityId}`
+        : `/api/dm/campaigns/${selected.id}/players/${entityId}`;
+      await request(token, path, { expectedDisposition: intent.disposition }, 10000, "DELETE");
+      setCleanupConfirmation(null);
+      if (!isSession && intent.player.characterId && openedCharacter.current === intent.player.characterId) {
+        await refreshOverview(true);
+      }
+      setNotice(isSession ? "Сессия удалена." : "Игрок удалён.");
+    }, { notFoundMessage: "Запись больше недоступна.", conflictMessage: "Состояние изменилось. Проверьте удаление ещё раз." });
+  }
   function startSession(session: Session) {
     const intent: Confirmation = { kind: "start", session, previousId: current?.session.id ?? null, previousName: current?.session.name };
     if (current) confirm(intent);
@@ -900,9 +947,15 @@ function DmWorkspace() {
               {orderedSessions.map((session) => <li key={session.id} className="session-row">
                 <div className="session-info"><strong>{session.name}</strong><span className="muted">{new Date(session.createdAt).toLocaleDateString("ru-RU")}</span></div>
                 <span className={"badge " + session.status}>{statusLabels[session.status]}</span>
-                <div className="session-action">{session.status === "planned" && <button className="secondary" disabled={locked} onClick={() => startSession(session)}><Play />Начать</button>}
-                {session.status === "active" && <button className="secondary" disabled={locked} onClick={() => confirm({ kind: "end", session, previousId: session.id })}><CircleStop />Завершить</button>}
-                {session.status === "ended" && <Check size={18} className="muted" aria-label="Завершена" />}</div>
+                <div className="session-action session-action-group">
+                  {session.status === "planned" && <button className="secondary" disabled={locked} onClick={() => startSession(session)}><Play />Начать</button>}
+                  {session.status === "active" && <button className="secondary" disabled={locked} onClick={() => confirm({ kind: "end", session, previousId: session.id })}><CircleStop />Завершить</button>}
+                  {session.status === "ended" && <Check size={18} className="muted" aria-label="Завершена" />}
+                  <button type="button" className="cleanup-action" disabled={locked || session.status === "active"}
+                    aria-describedby={session.status === "active" ? `session-cleanup-note-${session.id}` : undefined}
+                    onClick={() => previewSessionCleanup(session)}><Trash2 size={16} />Удалить сессию</button>
+                  {session.status === "active" && <span className="cleanup-disabled-note" id={`session-cleanup-note-${session.id}`}>Сначала завершите сессию.</span>}
+                </div>
               </li>)}
             </ul>}
           </section></>}
@@ -994,6 +1047,7 @@ function DmWorkspace() {
                     <div className="party-actions">
                       <button className="primary" disabled={locked || (!choice && !(playerNames[player.id] ?? player.displayName).trim())}><UserCheck />Принять</button>
                       <button type="button" className="icon-button" title="Отклонить заявку" aria-label={"Отклонить заявку " + player.displayName} disabled={locked} onClick={() => rejectPlayer(player)}><UserX /></button>
+                      <button type="button" className="cleanup-action" disabled={locked} onClick={() => previewPlayerCleanup(player)}><Trash2 size={16} />Удалить игрока</button>
                     </div>
                   </form>
                 </li>;
@@ -1002,10 +1056,19 @@ function DmWorkspace() {
             {approvedPlayers.length > 0 && <ul className="party-list accepted-list">
               {approvedPlayers.map((player) => <li key={player.id} className="party-row accepted-row">
                 <div className="player-identity"><strong>{player.displayName}</strong><span className="muted">{player.sessionName}</span></div>
-                <button className="text-link character-name" onClick={() => player.characterId && openCharacter(player.characterId)}>{player.characterName}</button><span className="badge accepted"><Check size={15} />В партии</span>
+                <button className="text-link character-name" onClick={() => player.characterId && openCharacter(player.characterId)}>{player.characterName}</button>
+                <div className="accepted-actions"><span className="badge accepted"><Check size={15} />В партии</span>
+                  <button type="button" className="cleanup-action" disabled={locked} onClick={() => previewPlayerCleanup(player)}><Trash2 size={16} />Удалить игрока</button></div>
               </li>)}
             </ul>}
-            {pendingPlayers.length === 0 && approvedPlayers.length === 0 && <p className="empty-list">Заявок пока нет</p>}
+            {rejectedPlayers.length > 0 && <>
+              <h3 className="subsection-title">Отклонённые заявки</h3>
+              <ul className="party-list rejected-list">{rejectedPlayers.map((player) => <li key={player.id} className="rejected-row">
+                <div className="player-identity"><strong>{player.displayName}</strong><span className="muted">Заявка отклонена</span></div>
+                <button type="button" className="cleanup-action" disabled={locked} onClick={() => previewPlayerCleanup(player)}><Trash2 size={16} />Удалить игрока</button>
+              </li>)}</ul>
+            </>}
+            {pendingPlayers.length === 0 && approvedPlayers.length === 0 && rejectedPlayers.length === 0 && <p className="empty-list">Заявок пока нет</p>}
           </section>
           }
           {section === "character" && !characterOverview && <p role="status">Загружаем профиль...</p>}
@@ -1266,6 +1329,26 @@ function DmWorkspace() {
       {alerts}
       <p className="confirmation-copy">{confirmation.kind === "start" ? <>«{confirmation.previousName}» завершится. Начнётся «{confirmation.session.name}».</> : <>«{confirmation.session.name}» останется в истории. Возобновить её будет нельзя.</>}</p>
       <div className="dialog-actions"><button className="secondary" autoFocus disabled={busy} onClick={() => setConfirmation(null)}>Отмена</button><button className="primary" disabled={locked} onClick={() => execute(confirmation)}>{busy ? "Сохранение..." : confirmation.kind === "start" ? "Сменить сессию" : "Завершить сессию"}</button></div>
+    </Modal>}
+    {cleanupConfirmation && <Modal title={cleanupConfirmation.kind === "session" ? "Удалить сессию?" : "Удалить игрока?"} busy={busy} closeOnBackdrop
+      close={() => { setCleanupConfirmation(null); setError(""); }}>
+      {alerts}
+      {cleanupConfirmation.kind === "session" ? <p className="confirmation-copy">
+        {cleanupConfirmation.disposition === "deleted"
+          ? "Сессия не содержит сохраняемой игровой истории и будет удалена полностью."
+          : "Сессия исчезнет из рабочего списка. Хроника и история кампании сохранятся."}
+      </p> : <>
+        <p className="confirmation-copy">{cleanupConfirmation.player.status === "pending" || cleanupConfirmation.player.status === "rejected"
+          ? cleanupConfirmation.disposition === "deleted"
+            ? "Заявка будет удалена."
+            : "Игрок исчезнет из рабочего списка. История кампании сохранится."
+          : "Игрок потеряет доступ. Его прошлые действия останутся в истории кампании."}</p>
+        {cleanupConfirmation.releasedCharacterId && <p className="cleanup-release-note">Персонаж станет свободен для нового назначения.</p>}
+      </>}
+      <div className="dialog-actions">
+        <button type="button" className="secondary" autoFocus disabled={busy} onClick={() => setCleanupConfirmation(null)}>Отмена</button>
+        <button type="button" className="destructive" disabled={locked} onClick={() => executeCleanup(cleanupConfirmation)}>{busy ? "Удаляем..." : "Удалить"}</button>
+      </div>
     </Modal>}
     {deletingKnowledgeFact && <Modal title="Удалить факт?" busy={busy} close={() => setDeletingKnowledgeFact(null)}>
       <p className="confirmation-copy">Факт исчезнет из текущих знаний. История уже совершённых раскрытий сохранится.</p>
