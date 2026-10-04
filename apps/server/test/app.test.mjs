@@ -1262,6 +1262,105 @@ test("DM Knowledge Fact reveal APIs preserve independent audiences, retry identi
   assert.equal(afterRevoke.filter((event) => event.type === "knowledge_fact_access_revoked").length, 1);
 });
 
+test("DM cleanup endpoints preview disposition, revoke Player tokens, preserve history, and reject stale or cross-campaign requests", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Session cleanup API");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const session = database.createSession(campaign.id, "First");
+  database.activateSession(session.id);
+  const token = "R".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira player", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  database.approvePlayer(player.id, { characterId: character.id });
+
+  const playerPath = `/api/dm/campaigns/${campaign.id}/players/${player.id}`;
+  const unauthenticated = await app.inject({ method: "GET", url: playerPath + "/cleanup-preview" });
+  assert.equal(unauthenticated.statusCode, 401);
+  const playerPreview = await get(app, playerPath + "/cleanup-preview");
+  assert.equal(playerPreview.statusCode, 200);
+  assert.deepEqual(playerPreview.json(), { disposition: "removed", releasedCharacterId: character.id });
+  const playerRemoved = await app.inject({ method: "DELETE", url: playerPath, headers, payload: { expectedDisposition: "removed" } });
+  assert.equal(playerRemoved.statusCode, 200);
+  assert.deepEqual(playerRemoved.json(), { disposition: "removed", releasedCharacterId: character.id });
+  const repeatedPlayerDelete = await app.inject({ method: "DELETE", url: playerPath, headers, payload: { expectedDisposition: "removed" } });
+  assert.deepEqual(repeatedPlayerDelete.json(), { disposition: "removed", releasedCharacterId: null });
+  assert.equal((await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${token}` } })).statusCode, 401);
+  assert.equal(database.listCampaignActivity(campaign.id).some(({ playerId }) => playerId === player.id), true);
+
+  const replacementToken = "S".repeat(43);
+  const replacement = await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira player", playerToken: replacementToken });
+  assert.equal(replacement.statusCode, 200, "removed display names may be reused with a new token");
+  const replacementRow = database.listPlayersByCampaign(campaign.id).find(({ displayName }) => displayName === "Mira player");
+  database.approvePlayer(replacementRow.id, { characterId: character.id });
+
+  const sessionPath = `/api/dm/campaigns/${campaign.id}/sessions/${session.id}`;
+  assert.equal((await get(app, sessionPath + "/cleanup-preview")).statusCode, 409, "active Sessions cannot be removed");
+  assert.equal((await app.inject({ method: "DELETE", url: sessionPath, headers, payload: { expectedDisposition: "removed" } })).statusCode, 409);
+  database.endSession(session.id);
+  const sessionPreview = await get(app, sessionPath + "/cleanup-preview");
+  assert.equal(sessionPreview.json().disposition, "removed");
+  const stale = await app.inject({ method: "DELETE", url: sessionPath, headers, payload: { expectedDisposition: "deleted" } });
+  assert.equal(stale.statusCode, 409);
+  const removed = await app.inject({ method: "DELETE", url: sessionPath, headers, payload: { expectedDisposition: "removed" } });
+  assert.equal(removed.statusCode, 200);
+  assert.deepEqual((await app.inject({ method: "DELETE", url: sessionPath, headers, payload: { expectedDisposition: "removed" } })).json(), { disposition: "removed" });
+  assert.equal((await get(app, `/api/join/${session.joinToken}`)).statusCode, 404, "removed Session invitations are unavailable");
+  assert.equal((await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Late", playerToken: "T".repeat(43) })).statusCode, 404);
+  assert.throws(() => database.activateSession(session.id), /not found|removed/i);
+  assert.equal(database.getSession(session.id).name, "First", "historical lookup retains the original Session name");
+  assert.equal(database.listSessions(campaign.id).some(({ id }) => id === session.id), false);
+  const replacementHash = createHash("sha256").update(replacementToken).digest("hex");
+  assert.equal(database.getPlayerState(replacementHash).characterId, character.id, "removing a Session does not revoke a nonremoved Player token");
+
+  const foreignCampaign = database.createCampaign("Foreign");
+  assert.equal((await get(app, `/api/dm/campaigns/${foreignCampaign.id}/players/${player.id}/cleanup-preview`)).statusCode, 404);
+  const invalidBody = await app.inject({ method: "DELETE", url: playerPath, headers, payload: { expectedDisposition: "removed", extra: true } });
+  assert.equal(invalidBody.statusCode, 400);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/dm/campaigns/${campaign.id}/players/${randomUUID()}`, headers, payload: { expectedDisposition: "deleted" } })).statusCode, 404);
+});
+
+test("removed Player credentials receive the same generic denial on every Player read and mutation route", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Revoked token");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const recipient = database.createCharacter(campaign.id, "Rowan");
+  const session = database.createSession(campaign.id, "Active");
+  database.activateSession(session.id);
+  const token = "U".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  database.approvePlayer(player.id, { characterId: character.id });
+  const recipientRequest = database.submitPlayerRequest(session.id, "Rowan", createHash("sha256").update("recipient-token").digest("hex"));
+  database.approvePlayer(recipientRequest.id, { characterId: recipient.id });
+  const item = database.createCatalogItem(campaign.id, "Key");
+  const owned = database.grantInventoryItem(character.id, item.id, 1);
+  const note = database.createPersonalNote(createHash("sha256").update(token).digest("hex"), "A note", { title: "Note" });
+  database.removePlayer(campaign.id, player.id, "removed");
+
+  const auth = { authorization: `Bearer ${token}` };
+  const requests = [
+    app.inject({ method: "GET", url: "/api/player/me", headers: auth }),
+    app.inject({ method: "GET", url: "/api/player/journal", headers: auth }),
+    app.inject({ method: "GET", url: `/api/player/inventory/${owned.id}/transfer-targets`, headers: auth }),
+    app.inject({ method: "POST", url: "/api/player/profile", headers: auth, payload: { shortDescription: "x", personalGoal: "y" } }),
+    app.inject({ method: "POST", url: "/api/player/settings", headers: auth, payload: { displayName: "New" } }),
+    app.inject({ method: "POST", url: "/api/player/notes", headers: auth, payload: { body: "Another note" } }),
+    app.inject({ method: "POST", url: `/api/player/notes/${note.id}`, headers: auth, payload: { body: "Changed" } }),
+    app.inject({ method: "POST", url: "/api/player/activity/seen", headers: auth, payload: { upToActivityId: randomUUID() } }),
+    app.inject({ method: "POST", url: `/api/player/inventory/${owned.id}/equip`, headers: auth, payload: {} }),
+    app.inject({ method: "POST", url: `/api/player/inventory/${owned.id}/unequip`, headers: auth, payload: {} }),
+    app.inject({ method: "POST", url: `/api/player/inventory/${owned.id}/transfer`, headers: auth,
+      payload: { recipientCharacterId: recipient.id, quantity: 1, operationId: randomUUID() } }),
+    app.inject({ method: "POST", url: `/api/player/inventory/${owned.id}/discard`, headers: auth,
+      payload: { quantity: 1, operationId: randomUUID() } })
+  ];
+  const responses = await Promise.all(requests);
+  assert.ok(responses.every(({ statusCode }) => statusCode === 401), responses.map(({ statusCode, body }) => `${statusCode}: ${body}`).join("\n"));
+  const unknown = await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${"V".repeat(43)}` } });
+  assert.equal(responses[0].json().message, unknown.json().message, "revocation does not reveal whether a Player record existed");
+  assert.equal(database.listCampaignActivity(campaign.id).some(({ playerId }) => playerId === player.id), true);
+});
+
 test("invalid names, malformed JSON, unknown records and transitions are rejected", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Campaign");
@@ -1303,7 +1402,7 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(exported.body.includes(session.joinToken), false);
   assert.equal(exported.body.includes("b".repeat(64)), false);
   const archive = exported.json();
-  assert.equal(archive.version, 10);
+  assert.equal(archive.version, 11);
   assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
 
   const imported = await post(app, "/api/dm/campaigns/import", archive);

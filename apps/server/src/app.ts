@@ -265,6 +265,9 @@ export function createApp(options: {
         if (message.includes("not accepting")) {
           return reply.code(404).send({ message: "Эта ссылка недействительна или набор уже закрыт." });
         }
+        if (message === "Player access is unavailable.") {
+          return reply.code(401).send({ message: "Заявка недоступна. Отправьте запрос заново." });
+        }
         throw error;
       }
     }
@@ -294,9 +297,56 @@ export function createApp(options: {
       properties: { name: { type: "string", minLength: 1, maxLength: 120, pattern: "\\S" } }
     };
     const idParams = {
-      type: "object", required: ["id"],
+      type: "object", additionalProperties: false, required: ["id"],
       properties: { id: { type: "string", format: "uuid" } }
     };
+
+    const sessionCleanupParams = { type: "object", additionalProperties: false, required: ["campaignId", "sessionId"],
+      properties: { campaignId: { type: "string", format: "uuid" }, sessionId: { type: "string", format: "uuid" } } };
+    const playerCleanupParams = { type: "object", additionalProperties: false, required: ["campaignId", "playerId"],
+      properties: { campaignId: { type: "string", format: "uuid" }, playerId: { type: "string", format: "uuid" } } };
+    const cleanupBody = { type: "object", additionalProperties: false, required: ["expectedDisposition"],
+      properties: { expectedDisposition: { type: "string", enum: ["deleted", "removed"] } } };
+
+    dm.get<{ Params: { campaignId: string; sessionId: string } }>("/api/dm/campaigns/:campaignId/sessions/:sessionId/cleanup-preview",
+      { schema: { params: sessionCleanupParams } }, async (request, reply) => {
+        try {
+          const preview = database.previewSessionCleanup(request.params.campaignId, request.params.sessionId);
+          if (!preview) return reply.code(404).send({ message: "Запись не найдена." });
+          return preview;
+        } catch (error) {
+          if (error instanceof Error && error.message === "Active session cannot be removed.") return reply.code(409).send({ message: "Сначала завершите сессию." });
+          throw error;
+        }
+      });
+    dm.delete<{ Params: { campaignId: string; sessionId: string }; Body: { expectedDisposition: "deleted" | "removed" } }>(
+      "/api/dm/campaigns/:campaignId/sessions/:sessionId", { schema: { params: sessionCleanupParams, body: cleanupBody } }, async (request, reply) => {
+        try {
+          const result = database.removeSession(request.params.campaignId, request.params.sessionId, request.body.expectedDisposition);
+          if (!result) return reply.code(404).send({ message: "Запись не найдена." });
+          return result;
+        } catch (error) {
+          if (error instanceof Error && error.message === "Active session cannot be removed.") return reply.code(409).send({ message: "Сначала завершите сессию." });
+          if (error instanceof Error && error.message === "Cleanup preview changed.") return reply.code(409).send({ message: "Состояние изменилось. Проверьте удаление ещё раз." });
+          throw error;
+        }
+      });
+    dm.get<{ Params: { campaignId: string; playerId: string } }>("/api/dm/campaigns/:campaignId/players/:playerId/cleanup-preview",
+      { schema: { params: playerCleanupParams } }, async (request, reply) => {
+        const preview = database.previewPlayerCleanup(request.params.campaignId, request.params.playerId);
+        return preview ?? reply.code(404).send({ message: "Запись не найдена." });
+      });
+    dm.delete<{ Params: { campaignId: string; playerId: string }; Body: { expectedDisposition: "deleted" | "removed" } }>(
+      "/api/dm/campaigns/:campaignId/players/:playerId", { schema: { params: playerCleanupParams, body: cleanupBody } }, async (request, reply) => {
+        try {
+          const result = database.removePlayer(request.params.campaignId, request.params.playerId, request.body.expectedDisposition);
+          if (!result) return reply.code(404).send({ message: "Запись не найдена." });
+          return result;
+        } catch (error) {
+          if (error instanceof Error && error.message === "Cleanup preview changed.") return reply.code(409).send({ message: "Состояние изменилось. Проверьте удаление ещё раз." });
+          throw error;
+        }
+      });
 
     dm.get("/api/session/current", async () => ({ snapshot: database.getCurrentSession() }));
     dm.get("/api/dm/state", async () => {
@@ -361,7 +411,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }
       } } }
     }, async (request, reply) => {
       try {
@@ -832,7 +882,7 @@ export function createApp(options: {
       }
     }, async (request, reply) => {
       const session = database.getSession(request.params.id);
-      if (!session) return reply.code(404).send({ message: "Сессия не найдена." });
+      if (!session || session.removedAt) return reply.code(404).send({ message: "Сессия не найдена." });
       if (session.status === "ended") return reply.code(409).send({ message: "Эта сессия уже завершена." });
       try {
         return { session: database.activateSession(session.id, request.body.expectedActiveSessionId) };
@@ -846,7 +896,7 @@ export function createApp(options: {
     dm.post<{ Params: { id: string } }>("/api/dm/sessions/:id/end",
       { schema: { params: idParams } }, async (request, reply) => {
         const session = database.getSession(request.params.id);
-        if (!session) return reply.code(404).send({ message: "Сессия не найдена." });
+        if (!session || session.removedAt) return reply.code(404).send({ message: "Сессия не найдена." });
         if (session.status === "planned") return reply.code(409).send({ message: "Сессия ещё не началась." });
         return { session: database.endSession(session.id) };
       });

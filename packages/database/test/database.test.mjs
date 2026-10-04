@@ -382,7 +382,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 10);
+  assert.equal(archive.version, 11);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -493,7 +493,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.kind), ["item_received"]);
 
   const exported = db.exportCampaign(campaign.id);
-  assert.equal(exported.version, 10);
+  assert.equal(exported.version, 11);
   assert.deepEqual({ traits: exported.characters[0].traits, appearance: exported.characters[0].appearance, quote: exported.characters[0].quote }, {
     traits: ["Observant", "Careful"], appearance: "A weathered coat", quote: "Not yet."
   });
@@ -537,7 +537,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(db.checkDataHealth().ok, true);
 });
 
-test("campaign archive v10 round-trips six categories and rejects unknown categories atomically", (t) => {
+test("campaign archive v11 round-trips six categories and rejects unknown categories atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Knowledge taxonomy");
   const mira = db.createCharacter(campaign.id, "Mira");
@@ -546,7 +546,7 @@ test("campaign archive v10 round-trips six categories and rejects unknown catego
   db.setKnowledgeVisibility(entries[0].id, "character", mira.id);
   db.setKnowledgeVisibility(entries[1].id, "party");
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 10);
+  assert.equal(archive.version, 11);
   assert.deepEqual(archive.knowledge.map(({ category }) => category), categories);
 
   const imported = db.importCampaign(archive);
@@ -1262,7 +1262,7 @@ test("campaign profile fields validate, order, retain character values, export a
   assert.deepEqual(db.getPlayerState("new-profile-field-token").profile.profileFields.map((field) => field.value), ["Вейр", "Орден Серого Пламени"]);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 10);
+  assert.equal(archive.version, 11);
   assert.deepEqual(archive.profileFields.map(({ label, position }) => [label, position]), [["Родина", 0], ["Орден хранителей", 1]]);
   assert.equal(JSON.stringify(archive).includes("profile-field-token"), false);
   const imported = db.importCampaign(archive);
@@ -1502,7 +1502,7 @@ test("restoring a real schema 0012 backup stages migration 0013 and preserves le
         "00000000-0000-4000-8000-000000000411");
       assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_facts").get().count, 0);
       assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_fact_reveals").get().count, 0);
-      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 16);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 17);
       assert.deepEqual(raw.pragma("foreign_key_check"), []);
     } finally { raw.close(); }
     assert.equal(database.checkDataHealth().ok, true, JSON.stringify(database.checkDataHealth()));
@@ -2012,7 +2012,7 @@ test("Player Journal paginates the full safe activity projection with a strict s
   }
 });
 
-test("Knowledge Fact export v10 remaps references, omits secrets, and imports invalid references atomically", (t) => {
+test("Knowledge Fact export v11 remaps references, omits secrets, and imports invalid references atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Export Facts");
   const character = db.createCharacter(campaign.id, "Mira");
@@ -2025,7 +2025,7 @@ test("Knowledge Fact export v10 remaps references, omits secrets, and imports in
   db.revealKnowledgeFactToCharacter(campaign.id, entry.id, fact.id, character.id);
   db.revealKnowledgeFactToParty(campaign.id, entry.id, fact.id);
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 10);
+  assert.equal(archive.version, 11);
   assert.equal(JSON.stringify(archive).includes("facts-secret-token-hash"), false);
   assert.equal(archive.knowledgeFacts.length, 1);
   assert.equal(archive.knowledgeFactReveals.length, 2);
@@ -2295,7 +2295,7 @@ test("equipment requires free bag space when no merge target exists and catalog 
   assert.equal(db.checkDataHealth().ok, true);
 });
 
-test("campaign export v10 round-trips inventory metadata, capacity and equipment; invalid imports are atomic", (t) => {
+test("campaign export v11 round-trips inventory metadata, capacity and equipment; invalid imports are atomic", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Inventory archive");
   const character = db.createCharacter(campaign.id, "Mira");
@@ -2314,7 +2314,7 @@ test("campaign export v10 round-trips inventory metadata, capacity and equipment
   db.updateCharacterInventoryCapacity(character.id, 3);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 10);
+  assert.equal(archive.version, 11);
   const imported = db.importCampaign(archive);
   const importedArchive = db.exportCampaign(imported.id);
   assert.equal(importedArchive.characters[0].inventoryCapacity, 3);
@@ -2734,7 +2734,7 @@ test("Data Health reports malformed transfer activity without repairing it", (t)
   } finally { db.close(); }
 });
 
-test("campaign archive v10 remaps transfer targets, preserves discard history, and rejects these events in v9 atomically", (t) => {
+test("campaign archive v11 remaps transfer targets, preserves discard history, and rejects these events in v9 atomically", (t) => {
   const db = memoryDatabase(t);
   const { campaign, sender, recipient, session, senderToken } = activeInventoryPair(db, "Archive transfers");
   const item = db.createCatalogItem(campaign.id, "Compass");
@@ -2743,7 +2743,7 @@ test("campaign archive v10 remaps transfer targets, preserves discard history, a
   const remaining = db.listCharacterInventory(sender.id).find((row) => row.catalogItemId === item.id);
   db.discardPlayerInventoryItem(senderToken, remaining.id, 1, randomUUID());
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 10);
+  assert.equal(archive.version, 11);
   assert.equal("operationId" in archive.activity.find((event) => event.type === "item_transferred"), false);
   assert.equal(JSON.stringify(archive).includes("Archive transfers-sender-token"), false);
   const transfer = archive.activity.find((event) => event.type === "item_transferred");
@@ -2797,7 +2797,8 @@ test("current backup preserves transfer/discard; staged pre-0015 restore preserv
 
     const oldBackup = await db.createBackup();
     const oldPath = db.backupFile(oldBackup.id);
-    const migration = readMigrationFiles({ migrationsFolder: fileURLToPath(new URL("../migrations/", import.meta.url)) }).at(-1);
+    const migration = readMigrationFiles({ migrationsFolder: fileURLToPath(new URL("../migrations/", import.meta.url)) }).find(({ folderMillis }) => folderMillis === 1791135636213);
+    assert.ok(migration, "the schema 0015 migration is present");
     let preMigrationEventIds;
     const old = new SQLite(oldPath);
     try {
@@ -2816,7 +2817,29 @@ test("current backup preserves transfer/discard; staged pre-0015 restore preserv
       old.exec("CREATE INDEX campaign_activity_campaign_order_idx ON campaign_activity (campaign_id, created_at, id);");
       old.exec("CREATE INDEX campaign_activity_session_order_idx ON campaign_activity (session_id, created_at, id);");
       old.exec("CREATE UNIQUE INDEX campaign_activity_operation_unique ON campaign_activity (operation_id) WHERE operation_id IS NOT NULL;");
-      old.prepare("DELETE FROM __drizzle_migrations WHERE created_at=?").run(migration.folderMillis);
+      old.exec(`DROP INDEX players_session_name_unique;
+        DROP INDEX players_session_status_idx;
+        ALTER TABLE players DROP COLUMN removed_at;
+        CREATE UNIQUE INDEX players_session_name_unique ON players (session_id, lower(trim(display_name)));
+        CREATE INDEX players_session_status_idx ON players (session_id, status);
+        DROP INDEX session_character_assignments_session_character_unique;
+        DROP INDEX session_character_assignments_character_idx;
+        ALTER TABLE session_character_assignments DROP COLUMN released_at;
+        CREATE UNIQUE INDEX session_character_assignments_session_character_unique ON session_character_assignments (session_id, character_id);
+        CREATE INDEX session_character_assignments_character_idx ON session_character_assignments (character_id);
+        DROP INDEX sessions_campaign_id_idx;
+        CREATE TABLE sessions_pre0016 (
+          id text PRIMARY KEY NOT NULL, campaign_id text NOT NULL REFERENCES campaigns(id) ON DELETE RESTRICT,
+          name text NOT NULL, status text NOT NULL DEFAULT 'planned', join_token text NOT NULL, created_at text NOT NULL,
+          CHECK(status IN ('planned','active','ended')), CHECK(length(trim(name)) BETWEEN 1 AND 120));
+        INSERT INTO sessions_pre0016 SELECT id,campaign_id,name,status,join_token,created_at FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_pre0016 RENAME TO sessions;
+        CREATE INDEX sessions_campaign_id_idx ON sessions (campaign_id);
+        CREATE UNIQUE INDEX sessions_id_campaign_unique ON sessions (id,campaign_id);
+        CREATE UNIQUE INDEX sessions_join_token_unique ON sessions (join_token);
+        CREATE UNIQUE INDEX sessions_one_active ON sessions (status) WHERE status='active';`);
+      old.prepare("DELETE FROM __drizzle_migrations WHERE created_at>=?").run(migration.folderMillis);
     } finally { old.close(); }
     const sourceHash = createHash("sha256").update(readFileSync(oldPath)).digest("hex");
     await db.restoreBackup(oldBackup.id);
@@ -2826,5 +2849,267 @@ test("current backup preserves transfer/discard; staged pre-0015 restore preserv
     assert.equal(restoredOldEvents.some((event) => ["item_transferred", "item_discarded"].includes(event.type)), false);
     assert.deepEqual(db.checkDataHealth().checks.find((check) => check.name === "Внешние ключи").status, "ok");
     assert.equal(createHash("sha256").update(readFileSync(oldPath)).digest("hex"), sourceHash, "restore never changes the original pre-0015 backup");
+  } finally { db.close(); }
+});
+
+test("Player removal revokes its token, releases assignment, and preserves Character and Session history", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Cleanup lifecycle");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "First");
+  db.activateSession(session.id);
+  const removedPlayer = db.submitPlayerRequest(session.id, "Mira player", "cleanup-token-a");
+  db.approvePlayer(removedPlayer.id, { characterId: character.id });
+
+  const preview = db.previewPlayerCleanup(campaign.id, removedPlayer.id);
+  assert.deepEqual(preview, { disposition: "removed", releasedCharacterId: character.id });
+  assert.deepEqual(db.removePlayer(campaign.id, removedPlayer.id, preview.disposition), {
+    disposition: "removed", releasedCharacterId: character.id
+  });
+  assert.equal(db.getPlayerByTokenHash("cleanup-token-a"), null);
+  assert.equal(db.getPlayerState("cleanup-token-a"), null);
+  assert.equal(db.listPlayersByCampaign(campaign.id).some(({ id }) => id === removedPlayer.id), false);
+
+  const sameName = db.submitPlayerRequest(session.id, "Mira player", "cleanup-token-b");
+  db.approvePlayer(sameName.id, { characterId: character.id });
+  assert.equal(db.getPlayerState("cleanup-token-b").characterId, character.id);
+  assert.equal(db.listCharacterInventory(character.id).length, 0);
+
+  db.endSession(session.id);
+  const sessionPreview = db.previewSessionCleanup(campaign.id, session.id);
+  assert.equal(sessionPreview.disposition, "removed", "campaign Activity makes the Session historical");
+  assert.deepEqual(db.removeSession(campaign.id, session.id, sessionPreview.disposition), { disposition: "removed" });
+  assert.equal(db.listSessions(campaign.id).some(({ id }) => id === session.id), false);
+  assert.equal(db.listSessionActivity(session.id).length > 0, true);
+  assert.equal(db.getPlayerState("cleanup-token-b").characterId, character.id, "Session cleanup alone preserves approved historical reads");
+  assert.equal(db.exportCampaign(campaign.id).assignments.find(({ playerId }) => playerId === removedPlayer.id).releasedAt !== null, true);
+});
+
+test("cleanup preview selects hard delete only for disposable rows and detects stale confirmation", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Disposable cleanup");
+    const raw = new SQLite(file);
+    raw.prepare("INSERT INTO sessions (id,campaign_id,name,status,join_token,created_at) VALUES (?,?,?,'planned',?,?)")
+      .run("disposable-session", campaign.id, "Disposable", "disposable-join", "2026-01-01T00:00:00.000Z");
+    raw.prepare("INSERT INTO players (id,session_id,display_name,token_hash,status,created_at) VALUES (?,?,?,?,'pending',?)")
+      .run("disposable-player", "disposable-session", "A", "disposable-token", "2026-01-01T00:00:00.000Z");
+    raw.prepare("INSERT INTO players (id,session_id,display_name,token_hash,status,created_at) VALUES (?,?,?,?,'rejected',?)")
+      .run("disposable-rejected", "disposable-session", "B", "disposable-rejected-token", "2026-01-01T00:00:00.000Z");
+    raw.prepare("INSERT INTO players (id,session_id,display_name,token_hash,status,created_at) VALUES (?,?,?,?,'pending',?)")
+      .run("disposable-child", "disposable-session", "C", "disposable-child-token", "2026-01-01T00:00:00.000Z");
+    raw.close();
+
+    assert.deepEqual(db.previewPlayerCleanup(campaign.id, "disposable-player"), { disposition: "deleted", releasedCharacterId: null });
+    assert.deepEqual(db.removePlayer(campaign.id, "disposable-player", "deleted"), { disposition: "deleted", releasedCharacterId: null });
+    assert.equal(db.previewPlayerCleanup(campaign.id, "disposable-player"), null);
+    assert.deepEqual(db.previewPlayerCleanup(campaign.id, "disposable-rejected"), { disposition: "deleted", releasedCharacterId: null });
+    assert.deepEqual(db.removePlayer(campaign.id, "disposable-rejected", "deleted"), { disposition: "deleted", releasedCharacterId: null });
+    assert.equal(db.previewSessionCleanup(campaign.id, "disposable-session").disposition, "deleted");
+    assert.throws(() => db.removeSession(campaign.id, "disposable-session", "removed"), /Cleanup preview changed/);
+    assert.deepEqual(db.removeSession(campaign.id, "disposable-session", "deleted"), { disposition: "deleted" });
+    assert.equal(db.getSession("disposable-session"), null);
+    assert.equal(db.listPlayersByCampaign(campaign.id).some(({ id }) => id === "disposable-child"), false,
+      "history-free pending child rows cascade with a hard-deleted Session");
+
+    const historical = new SQLite(file);
+    historical.prepare("INSERT INTO sessions (id,campaign_id,name,status,join_token,created_at) VALUES (?,?,?,'planned',?,?)")
+      .run("historical-session", campaign.id, "Historical", "historical-join", "2026-01-01T00:00:00.000Z");
+    historical.prepare("INSERT INTO players (id,session_id,display_name,token_hash,status,created_at) VALUES (?,?,?,?,'pending',?)")
+      .run("requested-player", "historical-session", "Requested", "requested-token", "2026-01-01T00:00:00.000Z");
+    historical.prepare(`INSERT INTO campaign_activity (id,campaign_id,session_id,player_id,type,created_at,payload)
+      VALUES ('request-event',?,'historical-session','requested-player','player_requested','2026-01-01T00:00:00.000Z','{}')`).run(campaign.id);
+    historical.close();
+    assert.deepEqual(db.previewPlayerCleanup(campaign.id, "requested-player"), { disposition: "removed", releasedCharacterId: null });
+    assert.equal(db.removePlayer(campaign.id, "requested-player", "removed").disposition, "removed");
+    assert.equal(db.listSessionActivity("historical-session").some(({ playerId }) => playerId === "requested-player"), true);
+  } finally { db.close(); }
+});
+
+test("Session cleanup tombstones independently for unreleased assignments and Fact Reveal references", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Historical blockers");
+    const character = db.createCharacter(campaign.id, "Mira");
+    const entry = db.createKnowledge(campaign.id, "fact", "Clue", "A campaign-level summary.");
+    const fact = db.createKnowledgeFact(campaign.id, entry.id, "An independently referenced fact.");
+    const raw = new SQLite(file);
+    raw.prepare("INSERT INTO sessions (id,campaign_id,name,status,join_token,created_at) VALUES (?,?,?,'ended',?,?)")
+      .run("assignment-session", campaign.id, "Assignment history", "assignment-join", "2026-01-01T00:00:00.000Z");
+    raw.prepare("INSERT INTO sessions (id,campaign_id,name,status,join_token,created_at) VALUES (?,?,?,'ended',?,?)")
+      .run("reveal-session", campaign.id, "Reveal history", "reveal-join", "2026-01-01T00:00:00.000Z");
+    raw.prepare("INSERT INTO players (id,session_id,display_name,token_hash,status,created_at) VALUES (?,?,?,?,'pending',?)")
+      .run("assignment-player", "assignment-session", "Pending", "assignment-token", "2026-01-01T00:00:00.000Z");
+    raw.prepare("INSERT INTO session_character_assignments (player_id,session_id,character_id,created_at) VALUES (?,?,?,?)")
+      .run("assignment-player", "assignment-session", character.id, "2026-01-01T00:00:00.000Z");
+    raw.prepare(`INSERT INTO knowledge_fact_reveals (id,campaign_id,knowledge_fact_id,audience,session_id,created_at)
+      VALUES ('historical-reveal',?,?,'party','reveal-session','2026-01-01T00:00:00.000Z')`).run(campaign.id, fact.id);
+    raw.close();
+
+    for (const [sessionId, expectedReference] of [["assignment-session", "assignment"], ["reveal-session", "reveal"]]) {
+      const preview = db.previewSessionCleanup(campaign.id, sessionId);
+      assert.equal(preview.disposition, "removed", `${expectedReference} alone preserves the Session`);
+      db.removeSession(campaign.id, sessionId, preview.disposition);
+      assert.equal(db.getSession(sessionId).removedAt !== null, true);
+    }
+    assert.equal(db.exportCampaign(campaign.id).assignments[0].releasedAt, null, "Session cleanup does not silently release assignments");
+    assert.equal(db.exportCampaign(campaign.id).knowledgeFactReveals[0].sessionId, "reveal-session");
+  } finally { db.close(); }
+});
+
+test("campaign archive v11 preserves removed lifecycle state and remaps its historical references", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Lifecycle archive");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "lifecycle-export-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+  db.removePlayer(campaign.id, player.id, "removed");
+  db.endSession(session.id);
+  db.removeSession(campaign.id, session.id, "removed");
+
+  const archive = db.exportCampaign(campaign.id);
+  assert.equal(archive.version, 11);
+  assert.equal("joinToken" in archive.sessions[0], false);
+  assert.equal("tokenHash" in archive.players[0], false);
+  assert.ok(archive.sessions[0].removedAt);
+  assert.ok(archive.players[0].removedAt);
+  assert.ok(archive.assignments[0].releasedAt);
+  const imported = db.importCampaign(archive);
+  const roundTrip = db.exportCampaign(imported.id);
+  assert.notEqual(roundTrip.sessions[0].id, session.id);
+  assert.notEqual(roundTrip.players[0].id, player.id);
+  assert.notEqual(roundTrip.assignments[0].characterId, character.id);
+  assert.ok(roundTrip.sessions[0].removedAt);
+  assert.ok(roundTrip.players[0].removedAt);
+  assert.ok(roundTrip.assignments[0].releasedAt);
+  assert.equal(roundTrip.activity.some(({ sessionId, playerId }) => sessionId === roundTrip.sessions[0].id && playerId === roundTrip.players[0].id), true);
+  const legacy = structuredClone(archive);
+  legacy.version = 10;
+  for (const row of legacy.sessions) delete row.removedAt;
+  for (const row of legacy.players) delete row.removedAt;
+  for (const row of legacy.assignments) delete row.releasedAt;
+  const legacyImport = db.exportCampaign(db.importCampaign(legacy).id);
+  assert.ok(legacyImport.sessions.every(({ removedAt }) => removedAt === null));
+  assert.ok(legacyImport.players.every(({ removedAt }) => removedAt === null));
+  assert.ok(legacyImport.assignments.every(({ releasedAt }) => releasedAt === null));
+});
+
+test("current backup restore preserves removed players, released assignments, and session tombstones", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Lifecycle backup");
+    const character = db.createCharacter(campaign.id, "Mira");
+    const session = db.createSession(campaign.id, "Session");
+    db.activateSession(session.id);
+    const knowledge = db.createKnowledge(campaign.id, "fact", "Old clue", "A persistent summary.");
+    const fact = db.createKnowledgeFact(campaign.id, knowledge.id, "A historical fact revealed in this session.");
+    db.revealKnowledgeFactToParty(campaign.id, knowledge.id, fact.id);
+    const player = db.submitPlayerRequest(session.id, "A", "lifecycle-backup-token");
+    db.approvePlayer(player.id, { characterId: character.id });
+    db.removePlayer(campaign.id, player.id, "removed");
+    db.endSession(session.id);
+    db.removeSession(campaign.id, session.id, "removed");
+    const backup = await db.createBackup();
+    db.createCampaign("Changes after backup");
+    await db.restoreBackup(backup.id);
+    assert.equal(db.listCampaigns().some(({ name }) => name === "Changes after backup"), false);
+    const imported = db.exportCampaign(campaign.id);
+    assert.ok(imported.sessions[0].removedAt);
+    assert.ok(imported.players[0].removedAt);
+    assert.ok(imported.assignments[0].releasedAt);
+    assert.equal(imported.knowledgeFactReveals[0].sessionId, session.id, "historical reveal keeps the removed Session reference");
+    assert.equal(db.listSessionActivity(session.id).some(({ type }) => type === "knowledge_fact_revealed"), true);
+    assert.equal(db.getPlayerByTokenHash("lifecycle-backup-token"), null);
+    assert.equal(db.checkDataHealth().ok, true);
+  } finally { db.close(); }
+});
+
+test("restore migrates a schema 0015 backup through 0016, preserves legacy history, and leaves source bytes unchanged", async (t) => {
+  const liveFile = temporaryFile(t);
+  const root = dirname(dirname(liveFile));
+  const backups = join(root, "backups");
+  const uploads = join(root, "uploads");
+  const migrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-pre-0016-"));
+  const backupId = "progdm-backup-00000000-0000-4000-8000-000000000016.db";
+  const backupFile = join(backups, backupId);
+  const backupUploads = join(backups, "progdm-backup-00000000-0000-4000-8000-000000000016-uploads");
+  mkdirSync(backups, { recursive: true });
+  mkdirSync(backupUploads, { recursive: true });
+  for (const folder of ["monsters", "characters", "items"]) mkdirSync(join(backupUploads, folder), { recursive: true });
+  t.after(() => {
+    assert.equal(dirname(migrationFolder), resolve(tmpdir()));
+    rmSync(migrationFolder, { recursive: true, force: true });
+  });
+  const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
+  const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
+  const entries = journal.entries.filter((entry) => entry.idx <= 15);
+  mkdirSync(join(migrationFolder, "meta"));
+  writeFileSync(join(migrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries }));
+  for (const entry of entries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(migrationFolder, entry.tag + ".sql"));
+
+  const legacy = new SQLite(join(root, "schema-0015.db"));
+  migrate(drizzle(legacy), { migrationsFolder: migrationFolder });
+  legacy.prepare("INSERT INTO campaigns (id,name,created_at) VALUES ('old-campaign','Old','2026-01-01T00:00:00.000Z')").run();
+  const insertSession = legacy.prepare("INSERT INTO sessions (id,campaign_id,name,status,join_token,created_at) VALUES (?,'old-campaign',?,?,?,?)");
+  insertSession.run("old-planned", "Planned", "planned", "old-planned-token", "2026-01-01T00:00:00.000Z");
+  insertSession.run("old-session", "Old session", "ended", "old-join-token", "2026-01-01T00:00:00.000Z");
+  insertSession.run("old-active", "Active", "active", "old-active-token", "2026-01-01T00:00:00.000Z");
+  const insertPlayer = legacy.prepare("INSERT INTO players (id,session_id,display_name,token_hash,status,created_at) VALUES (?,?,?,?,?,?)");
+  insertPlayer.run("old-pending", "old-planned", "Pending", "old-pending-hash", "pending", "2026-01-01T00:00:00.000Z");
+  insertPlayer.run("old-rejected", "old-session", "Rejected", "old-rejected-hash", "rejected", "2026-01-01T00:00:00.000Z");
+  insertPlayer.run("old-player", "old-session", "A", "old-token-hash", "approved", "2026-01-01T00:00:00.000Z");
+  insertPlayer.run("old-active-player", "old-active", "Active player", "old-active-hash", "approved", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO characters (id,campaign_id,name,created_at) VALUES ('old-character','old-campaign','Mira','2026-01-01T00:00:00.000Z')").run();
+  legacy.prepare("INSERT INTO session_character_assignments (player_id,session_id,character_id,created_at) VALUES ('old-player','old-session','old-character','2026-01-01T00:00:00.000Z')").run();
+  legacy.prepare("INSERT INTO session_character_assignments (player_id,session_id,character_id,created_at) VALUES ('old-active-player','old-active','old-character','2026-01-01T00:00:00.000Z')").run();
+  legacy.prepare(`INSERT INTO campaign_activity (id,campaign_id,session_id,player_id,character_id,type,created_at,payload)
+    VALUES ('old-event','old-campaign','old-session','old-player','old-character','player_approved','2026-01-01T00:00:00.000Z','{}')`).run();
+  legacy.prepare(`INSERT INTO campaign_activity (id,campaign_id,session_id,player_id,type,created_at,payload)
+    VALUES ('old-rejected-event','old-campaign','old-session','old-rejected','player_rejected','2026-01-01T00:00:00.000Z','{}')`).run();
+  legacy.prepare(`INSERT INTO knowledge_entries (id,campaign_id,category,title,description,visibility,created_at)
+    VALUES ('old-entry','old-campaign','fact','Old clue','A saved summary','hidden','2026-01-01T00:00:00.000Z')`).run();
+  legacy.prepare(`INSERT INTO knowledge_facts (id,campaign_id,knowledge_entry_id,body,position,created_at,updated_at)
+    VALUES ('old-fact','old-campaign','old-entry','A saved fact',0,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`).run();
+  legacy.prepare(`INSERT INTO knowledge_fact_reveals (id,campaign_id,knowledge_fact_id,audience,session_id,created_at)
+    VALUES ('old-reveal','old-campaign','old-fact','party','old-active','2026-01-01T00:00:00.000Z')`).run();
+  assert.deepEqual(legacy.pragma("foreign_key_check"), []);
+  await legacy.backup(backupFile);
+  legacy.close();
+  const sourceBytes = readFileSync(backupFile);
+
+  const db = openDatabase({ file: liveFile, backupsDirectory: backups, uploadsDirectory: uploads });
+  try {
+    db.createCampaign("Discard me");
+    await db.restoreBackup(backupId);
+    const archive = db.exportCampaign("old-campaign");
+    assert.equal(archive.sessions[0].removedAt, null);
+    assert.equal(archive.players[0].removedAt, null);
+    assert.equal(archive.assignments[0].releasedAt, null);
+    assert.equal(archive.sessions.length, 3);
+    assert.deepEqual(archive.players.map(({ id }) => id).sort(), ["old-active-player", "old-pending", "old-player", "old-rejected"].sort());
+    assert.equal(archive.assignments.length, 2);
+    assert.deepEqual(archive.assignments.map(({ releasedAt }) => releasedAt), [null, null]);
+    assert.deepEqual(archive.activity.filter(({ id }) => id.startsWith("old-")).map(({ id }) => id).sort(), ["old-event", "old-rejected-event"].sort());
+    assert.equal(archive.knowledgeFactReveals[0].sessionId, "old-active");
+    assert.equal(archive.sessions.every(({ removedAt }) => removedAt === null), true);
+    assert.equal(archive.players.every(({ removedAt }) => removedAt === null), true);
+    assert.equal(db.getPlayerState("old-token-hash").characterId, "old-character");
+    assert.equal(db.checkDataHealth().ok, true, JSON.stringify(db.checkDataHealth()));
+    const raw = new SQLite(liveFile);
+    try {
+      assert.deepEqual(raw.pragma("foreign_key_check"), []);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 17);
+      assert.match(raw.prepare("SELECT sql FROM sqlite_master WHERE name='players_session_name_unique'").get().sql, /WHERE .*removed_at.*IS NULL/i);
+      assert.match(raw.prepare("SELECT sql FROM sqlite_master WHERE name='session_character_assignments_session_character_unique'").get().sql, /WHERE .*released_at.*IS NULL/i);
+    } finally { raw.close(); }
+    assert.deepEqual(readFileSync(backupFile), sourceBytes);
   } finally { db.close(); }
 });

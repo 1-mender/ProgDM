@@ -141,6 +141,11 @@ function transferArray(record: Record<string, unknown>, key: string): Record<str
   return value.map(transferRecord);
 }
 
+function validLifecycleTimestamp(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    !Number.isNaN(Date.parse(value));
+}
+
 export function openDatabase(options: { file?: string; backupsDirectory?: string; uploadsDirectory?: string } = {}) {
   const file = resolveDatabaseFile(options.file);
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
@@ -244,9 +249,9 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       .from(schema.players)
       .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
       .innerJoin(schema.sessionCharacterAssignments, and(eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
-        eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)))
+        eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId), isNull(schema.sessionCharacterAssignments.releasedAt)))
       .innerJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
-      .where(and(eq(schema.players.tokenHash, tokenHash), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"), eq(schema.characters.campaignId, schema.sessions.campaignId))).get() ?? null;
+      .where(and(eq(schema.players.tokenHash, tokenHash), isNull(schema.players.removedAt), eq(schema.players.status, "approved"), isNull(schema.sessions.removedAt), eq(schema.sessions.status, "active"), isNull(schema.sessionCharacterAssignments.releasedAt), eq(schema.characters.campaignId, schema.sessions.campaignId))).get() ?? null;
   }
 
   function requireActivePlayerCharacter(tokenHash: string) {
@@ -284,7 +289,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
 
   function activeSessionId(campaignId: string): string | null {
     return db.select({ id: schema.sessions.id }).from(schema.sessions)
-      .where(and(eq(schema.sessions.campaignId, campaignId), eq(schema.sessions.status, "active"))).get()?.id ?? null;
+      .where(and(eq(schema.sessions.campaignId, campaignId), isNull(schema.sessions.removedAt), eq(schema.sessions.status, "active"))).get()?.id ?? null;
   }
 
   function revealKnowledgeFactInTransaction(campaignId: string, entryId: string, factId: string,
@@ -421,6 +426,15 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
 
         if (staged.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Migrated backup failed integrity check.");
         if ((staged.pragma("foreign_key_check") as unknown[]).length) throw new Error("Migrated backup contains invalid references.");
+        const lifecycleTimes = staged.prepare(`SELECT removed_at AS value FROM sessions WHERE removed_at IS NOT NULL
+          UNION ALL SELECT removed_at FROM players WHERE removed_at IS NOT NULL
+          UNION ALL SELECT released_at FROM session_character_assignments WHERE released_at IS NOT NULL`).all() as { value: string }[];
+        if (lifecycleTimes.some(({ value }) => !validLifecycleTimestamp(value))) throw new Error("Migrated backup contains invalid lifecycle timestamps.");
+        const lifecycleViolation = staged.prepare(`SELECT
+          EXISTS(SELECT 1 FROM sessions WHERE removed_at IS NOT NULL AND status='active') OR
+          EXISTS(SELECT 1 FROM players p JOIN session_character_assignments a ON a.player_id=p.id WHERE p.removed_at IS NOT NULL AND a.released_at IS NULL) OR
+          EXISTS(SELECT 1 FROM session_character_assignments a GROUP BY a.session_id, a.character_id HAVING count(*) FILTER (WHERE a.released_at IS NULL)>1) AS invalid`).get() as { invalid: number };
+        if (lifecycleViolation.invalid) throw new Error("Migrated backup contains invalid lifecycle references.");
         const schemaSignature = (database: SQLite.Database, schemaName: string) =>
           (database.prepare(`SELECT type, name, tbl_name, sql FROM ${schemaName}.sqlite_master WHERE type IN ('table', 'index', 'view', 'trigger') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type, name`).all() as { type: string; name: string; tbl_name: string; sql: string }[])
             .map((object) => ({ ...object, sql: object.sql.replace(/\s+/g, " ").trim() }));
@@ -511,14 +525,17 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       sessionName: schema.sessions.name,
       displayName: schema.players.displayName,
       status: schema.players.status,
+      removedAt: schema.players.removedAt,
       createdAt: schema.players.createdAt,
       characterId: schema.characters.id,
-      characterName: schema.characters.name
+      characterName: schema.characters.name,
+      assignmentReleasedAt: schema.sessionCharacterAssignments.releasedAt
     }).from(schema.players)
       .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
       .leftJoin(schema.sessionCharacterAssignments, and(
         eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
-        eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
+        eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId),
+        isNull(schema.sessionCharacterAssignments.releasedAt)
       ))
       .leftJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
       .where(eq(schema.players.id, playerId)).get() ?? null;
@@ -623,8 +640,10 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         AND i.catalog_item_id=? AND i.equipped_slot IS NULL) END AS existingStackQuantity
       FROM session_character_assignments a
       JOIN players p ON p.id=a.player_id AND p.session_id=a.session_id AND p.status='approved'
+        AND p.removed_at IS NULL
+      JOIN sessions s ON s.id=a.session_id AND s.status='active' AND s.removed_at IS NULL
       JOIN characters c ON c.id=a.character_id AND c.campaign_id=? AND c.archived_at IS NULL
-      WHERE a.session_id=? AND c.id!=?
+      WHERE a.session_id=? AND a.released_at IS NULL AND c.id!=?
       ORDER BY c.name COLLATE NOCASE, c.id`).all(item.catalogItemId, item.catalogItemId,
       active.campaignId, active.sessionId, active.characterId) as {
         characterId: string; characterName: string; inventoryCapacity: number; bagSlotsUsed: number; existingStackQuantity: number | null
@@ -727,6 +746,45 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     return relevant;
   }
 
+  type CleanupDisposition = "deleted" | "removed";
+
+  function cleanupSessionState(campaignId: string, sessionId: string) {
+    const session = db.select().from(schema.sessions).where(and(
+      eq(schema.sessions.id, sessionId), eq(schema.sessions.campaignId, campaignId)
+    )).get();
+    if (!session) return null;
+    if (session.removedAt) return { session, disposition: "removed" as const };
+    if (session.status === "active") throw new Error("Active session cannot be removed.");
+    const blockers = client.prepare(`SELECT
+      EXISTS(SELECT 1 FROM campaign_activity WHERE session_id=?) OR
+      EXISTS(SELECT 1 FROM knowledge_fact_reveals WHERE session_id=?) OR
+      EXISTS(SELECT 1 FROM session_character_assignments WHERE session_id=?) OR
+      EXISTS(SELECT 1 FROM session_character_assignments a JOIN players p ON p.id=a.player_id WHERE p.session_id=?) OR
+      EXISTS(SELECT 1 FROM players p WHERE p.session_id=? AND p.status='approved') OR
+      EXISTS(SELECT 1 FROM players p JOIN campaign_activity a ON a.player_id=p.id WHERE p.session_id=?) AS blocked`)
+      .get(sessionId, sessionId, sessionId, sessionId, sessionId, sessionId) as { blocked: number };
+    return { session, disposition: blockers.blocked ? "removed" as const : "deleted" as const };
+  }
+
+  function cleanupPlayerState(campaignId: string, playerId: string) {
+    const player = db.select({
+      id: schema.players.id, sessionId: schema.players.sessionId, status: schema.players.status,
+      removedAt: schema.players.removedAt, sessionCampaignId: schema.sessions.campaignId
+    }).from(schema.players).innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
+      .where(and(eq(schema.players.id, playerId), eq(schema.sessions.campaignId, campaignId))).get();
+    if (!player) return null;
+    const assignment = db.select({ characterId: schema.sessionCharacterAssignments.characterId, releasedAt: schema.sessionCharacterAssignments.releasedAt })
+      .from(schema.sessionCharacterAssignments).where(eq(schema.sessionCharacterAssignments.playerId, playerId)).get();
+    if (player.removedAt) return { player, assignment, disposition: "removed" as const };
+    const references = client.prepare(`SELECT
+      EXISTS(SELECT 1 FROM campaign_activity WHERE player_id=?) OR
+      EXISTS(SELECT 1 FROM session_character_assignments WHERE player_id=?) AS blocked`)
+      .get(playerId, playerId) as { blocked: number };
+    const disposition = player.status === "approved" || references.blocked
+      ? "removed" as const : "deleted" as const;
+    return { player, assignment, disposition };
+  }
+
   return {
     file,
     close(): void {
@@ -823,8 +881,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             EXISTS (SELECT 1 FROM inventory_items d WHERE d.character_id=i.character_id AND d.id!=i.id AND
               i.catalog_item_id IS NOT NULL AND d.catalog_item_id=i.catalog_item_id AND
               i.equipped_slot IS NULL AND d.equipped_slot IS NULL)`],
-        ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
-        ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
+        ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id AND a.released_at IS NULL WHERE p.removed_at IS NULL AND s.removed_at IS NULL AND p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
+        ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE a.released_at IS NULL AND p.removed_at IS NULL AND s.removed_at IS NULL AND c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
         ["Отметки просмотра", "SELECT count(*) AS count FROM character_read_state r JOIN characters c ON c.id=r.character_id LEFT JOIN campaign_activity a ON a.id=r.last_seen_id WHERE a.id IS NULL OR a.campaign_id!=c.campaign_id OR a.created_at!=r.last_seen_at"],
         ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id LEFT JOIN characters r ON r.id=a.related_character_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id) OR (a.related_character_id IS NOT NULL AND (r.id IS NULL OR r.campaign_id!=a.campaign_id))"],
         ["Передачи и выбрасывание", `SELECT count(*) AS count FROM campaign_activity a
@@ -849,6 +907,32 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const count = (client.prepare(query).get() as { count: number }).count;
         return count === 0 ? { status: "ok", message: "Нарушений не найдено." }
           : { status: "error", message: `Найдено несогласованных записей: ${count}.` };
+      });
+      check("Жизненный цикл сессий и игроков", () => {
+        const sessions = client.prepare("SELECT status, removed_at FROM sessions").all() as { status: string; removed_at: string | null }[];
+        const players = client.prepare("SELECT removed_at FROM players").all() as { removed_at: string | null }[];
+        const assignments = client.prepare("SELECT released_at FROM session_character_assignments").all() as { released_at: string | null }[];
+        const badTimestamps = [...sessions.map((row) => row.removed_at), ...players.map((row) => row.removed_at), ...assignments.map((row) => row.released_at)]
+          .filter((value) => value !== null && !validLifecycleTimestamp(value)).length;
+        const invalid = client.prepare(`SELECT
+          (SELECT count(*) FROM sessions WHERE removed_at IS NOT NULL AND status='active') +
+          (SELECT count(*) FROM players p JOIN session_character_assignments a ON a.player_id=p.id WHERE p.removed_at IS NOT NULL AND a.released_at IS NULL) +
+          (SELECT count(*) FROM session_character_assignments a JOIN players p ON p.id=a.player_id WHERE a.released_at IS NULL AND p.session_id!=a.session_id) +
+          (SELECT count(*) FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN characters c ON c.id=a.character_id WHERE a.released_at IS NULL AND c.campaign_id!=s.campaign_id) AS count`).get() as { count: number };
+        const duplicateAssignments = client.prepare(`SELECT count(*) AS count FROM (
+          SELECT session_id, character_id FROM session_character_assignments WHERE released_at IS NULL GROUP BY session_id, character_id HAVING count(*)>1
+        )`).get() as { count: number };
+        const duplicateNames = new Set<string>();
+        const names = client.prepare("SELECT session_id, display_name FROM players WHERE removed_at IS NULL").all() as { session_id: string; display_name: string }[];
+        const seenNames = new Set<string>();
+        for (const row of names) {
+          const key = `${row.session_id}:${row.display_name.trim().toLocaleLowerCase("ru")}`;
+          if (seenNames.has(key)) duplicateNames.add(key);
+          seenNames.add(key);
+        }
+        const issueCount = badTimestamps + invalid.count + duplicateAssignments.count + duplicateNames.size;
+        return issueCount === 0 ? { status: "ok", message: "Отозванные записи, назначения и активные имена согласованы." }
+          : { status: "error", message: `Найдены нарушения жизненного цикла: ${issueCount}.` };
       });
       check("Идентификаторы операций с предметами", () => {
         const rows = client.prepare("SELECT payload FROM campaign_activity WHERE type IN ('item_transferred','item_discarded')").all() as { payload: string }[];
@@ -979,12 +1063,13 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .from(schema.campaigns).where(eq(schema.campaigns.id, id)).get();
       if (!campaign) throw new Error("Campaign not found.");
       const sessions = db.select({
-        id: schema.sessions.id, name: schema.sessions.name, status: schema.sessions.status, createdAt: schema.sessions.createdAt
+        id: schema.sessions.id, name: schema.sessions.name, status: schema.sessions.status, createdAt: schema.sessions.createdAt,
+        removedAt: schema.sessions.removedAt
       }).from(schema.sessions).where(eq(schema.sessions.campaignId, id)).all();
       const sessionIds = sessions.map((session) => session.id);
       const players = sessionIds.length ? db.select({
         id: schema.players.id, sessionId: schema.players.sessionId, displayName: schema.players.displayName,
-        status: schema.players.status, createdAt: schema.players.createdAt
+        status: schema.players.status, createdAt: schema.players.createdAt, removedAt: schema.players.removedAt
       }).from(schema.players).where(inArray(schema.players.sessionId, sessionIds)).all() : [];
       const characters = db.select({
         id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt, archivedAt: schema.characters.archivedAt,
@@ -1007,7 +1092,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         playerId: schema.sessionCharacterAssignments.playerId,
         sessionId: schema.sessionCharacterAssignments.sessionId,
         characterId: schema.sessionCharacterAssignments.characterId,
-        createdAt: schema.sessionCharacterAssignments.createdAt
+        createdAt: schema.sessionCharacterAssignments.createdAt,
+        releasedAt: schema.sessionCharacterAssignments.releasedAt
       }).from(schema.sessionCharacterAssignments)
         .where(inArray(schema.sessionCharacterAssignments.sessionId, sessionIds)).all() : [];
       const catalogItems = db.select().from(schema.catalogItems)
@@ -1039,7 +1125,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeFactReveals).where(eq(schema.knowledgeFactReveals.campaignId, id))
         .orderBy(asc(schema.knowledgeFactReveals.createdAt), asc(schema.knowledgeFactReveals.id)).all();
       return {
-        format: "progdm-campaign", version: 10, exportedAt: new Date().toISOString(), campaign,
+        format: "progdm-campaign", version: 11, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, profileFields, profileFieldValues, personalNotes, catalogItems, inventoryItems, knowledge,
         knowledgeFacts, knowledgeFactReveals,
         activity: activityRows(db.select().from(schema.campaignActivity)
@@ -1049,13 +1135,18 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
       const createdAt = (record: Record<string, unknown>) => {
         const value = transferString(record, "createdAt", 64);
         if (!value || Number.isNaN(Date.parse(value))) throw new Error("Campaign file is invalid.");
+        return value;
+      };
+      const lifecycleTimestamp = (value: unknown) => {
+        if (value === null) return null;
+        if (!validLifecycleTimestamp(value) || value.length > 64) throw new Error("Campaign file contains an invalid lifecycle timestamp.");
         return value;
       };
       const sessions = transferArray(archive, "sessions");
@@ -1090,6 +1181,33 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const assignedCharacters = new Set(assignments.map((row) => `${String(row.sessionId)}:${String(row.playerId)}:${String(row.characterId)}`));
       const approvedSessionCharacters = new Set(assignments.filter((row) => approvedPlayers.has(String(row.playerId)))
         .map((row) => `${String(row.sessionId)}:${String(row.characterId)}`));
+      for (const row of sessions) {
+        const id = transferString(row, "id");
+        const removedAt = archiveVersion >= 11 ? lifecycleTimestamp(row.removedAt) : null;
+        if (!['planned', 'active', 'ended'].includes(transferString(row, "status")) || (removedAt && row.status === "active")) {
+          throw new Error("Campaign file contains an invalid session lifecycle state.");
+        }
+        validatedName(transferString(row, "name", 120));
+        createdAt(row);
+      }
+      const removedPlayerIds = new Set<string>();
+      const activePlayerNames = new Set<string>();
+      for (const row of players) {
+        const playerId = transferString(row, "id");
+        const sessionId = transferString(row, "sessionId");
+        if (!sessionIds.has(sessionId)) throw new Error("Campaign file contains an invalid reference.");
+        if (!['pending', 'approved', 'rejected'].includes(transferString(row, "status"))) throw new Error("Campaign file is invalid.");
+        const removedAt = archiveVersion >= 11 ? lifecycleTimestamp(row.removedAt) : null;
+        if (removedAt) removedPlayerIds.add(playerId);
+        const displayName = validatedPlayerName(transferString(row, "displayName", 60));
+        if (!removedAt) {
+          const nameKey = `${sessionId}:${displayName.toLocaleLowerCase("ru")}`;
+          if (activePlayerNames.has(nameKey)) throw new Error("Campaign file contains duplicate active player names.");
+          activePlayerNames.add(nameKey);
+        }
+        createdAt(row);
+      }
+      const activeAssignmentCharacters = new Set<string>();
       if (knowledgeIds.size !== knowledge.length || knowledgeFactIds.size !== knowledgeFacts.length ||
           knowledgeFactRevealIds.size !== knowledgeFactReveals.length) throw new Error("Campaign file contains duplicate knowledge IDs.");
       if (profileFieldIds.size !== profileFields.length || profileFields.length > 20) throw new Error("Campaign file contains invalid profile fields.");
@@ -1114,6 +1232,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         if (playerSessionIds.get(playerId) !== sessionId) throw new Error("Campaign file contains an invalid reference.");
         requireMapped(characterIds, assignment.characterId);
         requireMapped(sessionIds, assignment.sessionId);
+        const releasedAt = archiveVersion >= 11 ? lifecycleTimestamp(assignment.releasedAt) : null;
+        if (removedPlayerIds.has(playerId) && releasedAt === null) throw new Error("Campaign file contains a removed player with an active assignment.");
+        if (releasedAt === null) {
+          const key = `${sessionId}:${String(assignment.characterId)}`;
+          if (activeAssignmentCharacters.has(key)) throw new Error("Campaign file contains duplicate active character assignments.");
+          activeAssignmentCharacters.add(key);
+        }
+        createdAt(assignment);
       }
       const characterCapacityById = new Map<string, number>();
       for (const row of characters) {
@@ -1175,12 +1301,13 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         }).returning().get();
         for (const row of sessions) {
           const status = transferString(row, "status");
-          if (!["planned", "active", "ended"].includes(status)) throw new Error("Campaign file is invalid.");
+          const removedAt = archiveVersion >= 11 ? lifecycleTimestamp(row.removedAt) : null;
+          if (!["planned", "active", "ended"].includes(status) || removedAt && status === "active") throw new Error("Campaign file is invalid.");
           db.insert(schema.sessions).values({
             id: requireMapped(sessionIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
             status: status === "active" || sessionsWithPlayers.has(transferString(row, "id"))
               ? "ended" : status as "planned" | "ended",
-            joinToken: randomBytes(32).toString("base64url"), createdAt: createdAt(row)
+            joinToken: randomBytes(32).toString("base64url"), createdAt: createdAt(row), removedAt
           }).run();
         }
         for (const row of players) {
@@ -1190,7 +1317,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             id: requireMapped(playerIds, row.id), sessionId: requireMapped(sessionIds, row.sessionId),
             displayName: validatedPlayerName(transferString(row, "displayName", 60)),
             tokenHash: createHash("sha256").update(randomBytes(32)).digest("hex"),
-            status: status as "pending" | "approved" | "rejected", createdAt: createdAt(row)
+            status: status as "pending" | "approved" | "rejected", createdAt: createdAt(row),
+            removedAt: archiveVersion >= 11 ? lifecycleTimestamp(row.removedAt) : null
           }).run();
         }
         for (const row of characters) {
@@ -1246,7 +1374,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         }).run();
         for (const row of assignments) db.insert(schema.sessionCharacterAssignments).values({
           playerId: requireMapped(playerIds, row.playerId), sessionId: requireMapped(sessionIds, row.sessionId),
-          characterId: requireMapped(characterIds, row.characterId), createdAt: createdAt(row)
+          characterId: requireMapped(characterIds, row.characterId), createdAt: createdAt(row),
+          releasedAt: archiveVersion >= 11 ? lifecycleTimestamp(row.releasedAt) : null
         }).run();
         for (const row of inventoryItems) {
           const quantity = row.quantity;
@@ -1393,8 +1522,50 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         return campaign;
       });
     },
+    previewSessionCleanup(campaignId: string, sessionId: string) {
+      const state = cleanupSessionState(campaignId, sessionId);
+      return state ? { disposition: state.disposition, status: state.session.status } : null;
+    },
+    removeSession(campaignId: string, sessionId: string, expectedDisposition: CleanupDisposition) {
+      return db.transaction(() => {
+        const state = cleanupSessionState(campaignId, sessionId);
+        if (!state) return null;
+        if (state.session.removedAt) return { disposition: "removed" as const };
+        if (state.disposition !== expectedDisposition) throw new Error("Cleanup preview changed.");
+        if (state.disposition === "deleted") {
+          db.delete(schema.sessions).where(eq(schema.sessions.id, sessionId)).run();
+          return { disposition: "deleted" as const };
+        }
+        db.update(schema.sessions).set({ removedAt: new Date().toISOString() })
+          .where(and(eq(schema.sessions.id, sessionId), isNull(schema.sessions.removedAt))).run();
+        return { disposition: "removed" as const };
+      });
+    },
+    previewPlayerCleanup(campaignId: string, playerId: string) {
+      const state = cleanupPlayerState(campaignId, playerId);
+      return state ? { disposition: state.disposition, releasedCharacterId: state.assignment?.releasedAt === null ? state.assignment.characterId : null } : null;
+    },
+    removePlayer(campaignId: string, playerId: string, expectedDisposition: CleanupDisposition) {
+      return db.transaction(() => {
+        const state = cleanupPlayerState(campaignId, playerId);
+        if (!state) return null;
+        if (state.player.removedAt) return { disposition: "removed" as const, releasedCharacterId: null };
+        if (state.disposition !== expectedDisposition) throw new Error("Cleanup preview changed.");
+        if (state.disposition === "deleted") {
+          db.delete(schema.players).where(eq(schema.players.id, playerId)).run();
+          return { disposition: "deleted" as const, releasedCharacterId: null };
+        }
+        const now = new Date().toISOString();
+        const releasedCharacterId = state.assignment?.releasedAt === null ? state.assignment.characterId : null;
+        db.update(schema.players).set({ removedAt: now })
+          .where(and(eq(schema.players.id, playerId), isNull(schema.players.removedAt))).run();
+        db.update(schema.sessionCharacterAssignments).set({ releasedAt: now })
+          .where(and(eq(schema.sessionCharacterAssignments.playerId, playerId), isNull(schema.sessionCharacterAssignments.releasedAt))).run();
+        return { disposition: "removed" as const, releasedCharacterId };
+      });
+    },
     listSessions(campaignId: string): Session[] {
-      return db.select().from(schema.sessions).where(eq(schema.sessions.campaignId, campaignId))
+      return db.select().from(schema.sessions).where(and(eq(schema.sessions.campaignId, campaignId), isNull(schema.sessions.removedAt)))
         .orderBy(asc(schema.sessions.createdAt), asc(schema.sessions.id)).all();
     },
     getSession,
@@ -1407,12 +1578,12 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         status: schema.sessions.status
       }).from(schema.sessions)
         .innerJoin(schema.campaigns, eq(schema.sessions.campaignId, schema.campaigns.id))
-        .where(eq(schema.sessions.joinToken, joinToken)).get();
+        .where(and(eq(schema.sessions.joinToken, joinToken), isNull(schema.sessions.removedAt))).get();
       return info?.status === "active" ? info : null;
     },
     getPlayerByTokenHash(tokenHash: string) {
       const player = db.select({ id: schema.players.id }).from(schema.players)
-        .where(eq(schema.players.tokenHash, tokenHash)).get();
+        .where(and(eq(schema.players.tokenHash, tokenHash), isNull(schema.players.removedAt))).get();
       return player ? getPlayer(player.id) : null;
     },
     getPlayerState(tokenHash: string, includeRecentActivity = true) {
@@ -1438,11 +1609,12 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .innerJoin(schema.campaigns, eq(schema.sessions.campaignId, schema.campaigns.id))
         .leftJoin(schema.sessionCharacterAssignments, and(
           eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
-          eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
+          eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId),
+          isNull(schema.sessionCharacterAssignments.releasedAt)
         ))
         .leftJoin(schema.characters, and(eq(schema.characters.id, schema.sessionCharacterAssignments.characterId),
           eq(schema.characters.campaignId, schema.sessions.campaignId), eq(schema.players.status, "approved")))
-        .where(eq(schema.players.tokenHash, tokenHash)).get();
+        .where(and(eq(schema.players.tokenHash, tokenHash), isNull(schema.players.removedAt))).get();
       if (!player) return null;
       const summaryRows = player.status === "approved"
         ? db.select({
@@ -1604,13 +1776,15 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       });
     },
     updatePlayerDisplayName(tokenHash: string, displayName: string) {
-      const active = requireActivePlayerCharacter(tokenHash);
-      const name = validatedPlayerName(displayName);
-      const duplicate = db.select().from(schema.players).where(eq(schema.players.sessionId, active.sessionId)).all()
-        .some((player) => player.id !== active.playerId && player.displayName.toLocaleLowerCase("ru") === name.toLocaleLowerCase("ru"));
-      if (duplicate) throw new Error("A player with this name already requested access.");
-      return db.update(schema.players).set({ displayName: name })
-        .where(eq(schema.players.id, active.playerId)).returning().get();
+      return db.transaction(() => {
+        const active = requireActivePlayerCharacter(tokenHash);
+        const name = validatedPlayerName(displayName);
+        const duplicate = db.select().from(schema.players).where(and(eq(schema.players.sessionId, active.sessionId), isNull(schema.players.removedAt))).all()
+          .some((player) => player.id !== active.playerId && player.displayName.toLocaleLowerCase("ru") === name.toLocaleLowerCase("ru"));
+        if (duplicate) throw new Error("A player with this name already requested access.");
+        return db.update(schema.players).set({ displayName: name })
+          .where(and(eq(schema.players.id, active.playerId), isNull(schema.players.removedAt))).returning().get();
+      });
     },
     createPersonalNote(tokenHash: string, body: string, metadata: { title?: string; marker?: PersonalNoteMarker; pinned?: boolean } = {}) {
       return db.transaction(() => {
@@ -1662,15 +1836,16 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     submitPlayerRequest(sessionId: string, displayName: string, tokenHash: string) {
       return db.transaction(() => {
         const session = getSession(sessionId);
-        if (!session || session.status !== "active") throw new Error("Session is not accepting requests.");
+        if (!session || session.removedAt || session.status !== "active") throw new Error("Session is not accepting requests.");
         const name = validatedPlayerName(displayName);
         const existing = db.select().from(schema.players).where(eq(schema.players.tokenHash, tokenHash)).get();
+        if (existing?.removedAt) throw new Error("Player access is unavailable.");
         if (existing && existing.sessionId !== sessionId) {
           throw new Error("This device already belongs to another session.");
         }
         if (existing && existing.status !== "rejected") return getPlayer(existing.id)!;
         const sameSession = db.select({ id: schema.players.id, displayName: schema.players.displayName })
-          .from(schema.players).where(eq(schema.players.sessionId, sessionId)).all();
+          .from(schema.players).where(and(eq(schema.players.sessionId, sessionId), isNull(schema.players.removedAt))).all();
         if (sameSession.some((player) => player.id !== existing?.id && player.displayName.toLocaleLowerCase("ru") === name.toLocaleLowerCase("ru"))) {
           throw new Error("A player with this name already requested access.");
         }
@@ -1693,19 +1868,21 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         id: schema.players.id,
         sessionId: schema.players.sessionId,
         sessionName: schema.sessions.name,
-        displayName: schema.players.displayName,
-        status: schema.players.status,
-        createdAt: schema.players.createdAt,
+          displayName: schema.players.displayName,
+          status: schema.players.status,
+          removedAt: schema.players.removedAt,
+          createdAt: schema.players.createdAt,
         characterId: schema.characters.id,
         characterName: schema.characters.name
       }).from(schema.players)
         .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
         .leftJoin(schema.sessionCharacterAssignments, and(
           eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
-          eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
+          eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId),
+          isNull(schema.sessionCharacterAssignments.releasedAt)
         ))
         .leftJoin(schema.characters, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
-        .where(eq(schema.sessions.campaignId, campaignId))
+        .where(and(eq(schema.sessions.campaignId, campaignId), isNull(schema.players.removedAt)))
         .orderBy(asc(schema.players.createdAt), asc(schema.players.id)).all();
     },
     listCharactersByCampaign(campaignId: string) {
@@ -1748,7 +1925,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .from(schema.sessionCharacterAssignments)
         .innerJoin(schema.players, eq(schema.sessionCharacterAssignments.playerId, schema.players.id))
         .innerJoin(schema.sessions, eq(schema.sessionCharacterAssignments.sessionId, schema.sessions.id))
-        .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"))).get() ?? null;
+        .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), isNull(schema.sessionCharacterAssignments.releasedAt), isNull(schema.players.removedAt), isNull(schema.sessions.removedAt), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"))).get() ?? null;
       return {
         character: characterRecord(character), player,
         profileFields: characterProfileFields(characterId, true),
@@ -1881,8 +2058,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const assigned = recipient && db.select({ playerId: schema.players.id }).from(schema.sessionCharacterAssignments)
           .innerJoin(schema.players, and(eq(schema.players.id, schema.sessionCharacterAssignments.playerId),
             eq(schema.players.sessionId, schema.sessionCharacterAssignments.sessionId)))
+          .innerJoin(schema.sessions, eq(schema.sessions.id, schema.sessionCharacterAssignments.sessionId))
           .where(and(eq(schema.sessionCharacterAssignments.sessionId, active.sessionId),
-            eq(schema.sessionCharacterAssignments.characterId, recipientCharacterId), eq(schema.players.status, "approved"))).get();
+            eq(schema.sessionCharacterAssignments.characterId, recipientCharacterId), isNull(schema.sessionCharacterAssignments.releasedAt),
+            isNull(schema.players.removedAt), isNull(schema.sessions.removedAt), eq(schema.sessions.status, "active"),
+            eq(schema.players.status, "approved"))).get();
         if (!recipient || !assigned) throw new Error("Inventory transfer recipient is unavailable.");
 
         const existing = item.catalogItemId ? db.select().from(schema.inventoryItems).where(and(
@@ -2206,7 +2386,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const active = db.select({ id: schema.sessions.id }).from(schema.sessionCharacterAssignments)
           .innerJoin(schema.players, eq(schema.sessionCharacterAssignments.playerId, schema.players.id))
           .innerJoin(schema.sessions, eq(schema.sessionCharacterAssignments.sessionId, schema.sessions.id))
-          .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), eq(schema.sessions.status, "active"), eq(schema.players.status, "approved"))).get();
+          .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), isNull(schema.sessionCharacterAssignments.releasedAt),
+            isNull(schema.players.removedAt), isNull(schema.sessions.removedAt), eq(schema.sessions.status, "active"), eq(schema.players.status, "approved"))).get();
         if (active) throw new Error("An active character cannot be archived.");
         const updated = db.update(schema.characters).set({ archivedAt: new Date().toISOString() })
           .where(eq(schema.characters.id, characterId)).returning().get()!;
@@ -2271,14 +2452,16 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           status: schema.players.status,
           sessionId: schema.players.sessionId,
           sessionStatus: schema.sessions.status,
+          sessionRemovedAt: schema.sessions.removedAt,
+          removedAt: schema.players.removedAt,
           campaignId: schema.sessions.campaignId
         }).from(schema.players)
           .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
           .where(eq(schema.players.id, playerId)).get();
-        if (!request) throw new Error("Player request not found.");
+        if (!request || request.removedAt) throw new Error("Player request not found.");
         if (request.status === "approved") return getPlayer(playerId)!;
         if (request.status === "rejected") throw new Error("Rejected request cannot be approved.");
-        if (request.sessionStatus !== "active") throw new Error("Session has ended.");
+        if (request.sessionRemovedAt || request.sessionStatus !== "active") throw new Error("Session has ended.");
 
         if ("characterId" in assignment) {
           const character = db.select().from(schema.characters)
@@ -2289,7 +2472,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             .from(schema.sessionCharacterAssignments)
             .where(and(
               eq(schema.sessionCharacterAssignments.sessionId, request.sessionId),
-              eq(schema.sessionCharacterAssignments.characterId, character.id)
+              eq(schema.sessionCharacterAssignments.characterId, character.id),
+              isNull(schema.sessionCharacterAssignments.releasedAt)
             )).get();
           if (existingAssignment) throw new Error("Character is already assigned in this session.");
           db.insert(schema.sessionCharacterAssignments).values({
@@ -2317,6 +2501,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       return db.transaction(() => {
       const player = getPlayer(playerId);
       if (!player) throw new Error("Player request not found.");
+      if (player.removedAt) throw new Error("Player request not found.");
       if (player.status === "approved") throw new Error("Approved player cannot be rejected.");
       if (player.status === "rejected") return player;
       db.update(schema.players).set({ status: "rejected" })
@@ -2343,14 +2528,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       // End the previous session and activate the next one as one atomic change.
       return db.transaction(() => {
         const session = getSession(id);
-        if (!session) throw new Error("Session not found.");
+        if (!session || session.removedAt) throw new Error("Session not found.");
         if (session.status === "ended") throw new Error("An ended session cannot be activated.");
         if (session.status === "active") return session;
         if (expectedActiveSessionId !== undefined) {
-          const current = db.select().from(schema.sessions).where(eq(schema.sessions.status, "active")).get();
+          const current = db.select().from(schema.sessions).where(and(eq(schema.sessions.status, "active"), isNull(schema.sessions.removedAt))).get();
           if ((current?.id ?? null) !== expectedActiveSessionId) throw new Error("Active session changed.");
         }
-        const previous = db.select().from(schema.sessions).where(eq(schema.sessions.status, "active")).get();
+        const previous = db.select().from(schema.sessions).where(and(eq(schema.sessions.status, "active"), isNull(schema.sessions.removedAt))).get();
         if (previous) {
           db.update(schema.sessions).set({ status: "ended" }).where(eq(schema.sessions.id, previous.id)).run();
           appendActivity({ campaignId: previous.campaignId, sessionId: previous.id, type: "session_ended", details: { sessionName: previous.name } });
@@ -2363,7 +2548,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     endSession(id: string): Session {
       return db.transaction(() => {
       const session = getSession(id);
-      if (!session) throw new Error("Session not found.");
+      if (!session || session.removedAt) throw new Error("Session not found.");
       if (session.status === "ended") return session;
       if (session.status !== "active") throw new Error("Only an active session can be ended.");
       const ended = db.update(schema.sessions).set({ status: "ended" }).where(eq(schema.sessions.id, id)).returning().get()!;
@@ -2374,7 +2559,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     getCurrentSession(): SessionSnapshot | null {
       return db.select({ campaign: schema.campaigns, session: schema.sessions }).from(schema.sessions)
         .innerJoin(schema.campaigns, eq(schema.sessions.campaignId, schema.campaigns.id))
-        .where(eq(schema.sessions.status, "active")).get() ?? null;
+        .where(and(eq(schema.sessions.status, "active"), isNull(schema.sessions.removedAt))).get() ?? null;
     }
   };
 }

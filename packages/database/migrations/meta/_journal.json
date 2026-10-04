@@ -113,6 +113,13 @@
       "when": 1791135636213,
       "tag": "0015_activity_related_character",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1791151629434,
+      "tag": "0016_session_player_cleanup",
+      "breakpoints": true
     }
   ]
 }

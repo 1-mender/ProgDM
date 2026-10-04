@@ -15,6 +15,15 @@ export interface Session {
   status: SessionStatus;
   joinToken: string;
   createdAt: string;
+  removedAt: string | null;
+}
+
+export interface SessionCharacterAssignment {
+  playerId: EntityId;
+  sessionId: EntityId;
+  characterId: EntityId;
+  createdAt: string;
+  releasedAt: string | null;
 }
 
 export interface SessionSnapshot {
@@ -58,6 +67,7 @@ export interface Player {
   createdAt: string;
   characterId: EntityId | null;
   characterName: string | null;
+  removedAt: string | null;
 }
 
 export interface Character {
