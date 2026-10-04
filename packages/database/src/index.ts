@@ -3,11 +3,11 @@ import { accessSync, constants, cpSync, copyFileSync, mkdirSync, readdirSync, re
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import SQLite from "better-sqlite3";
-import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type EquipmentSlot, type HealthCheck, type InventoryCategory, type InventoryRarity, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -51,6 +51,42 @@ function validatedDescription(description: string): string {
     throw new Error("Description must contain between 1 and 2000 characters.");
   }
   return value;
+}
+
+const INVENTORY_CATEGORIES: readonly InventoryCategory[] = ["key", "document", "tool", "consumable", "equipment", "artifact", "special"];
+const INVENTORY_RARITIES: readonly InventoryRarity[] = ["common", "uncommon", "rare", "unique"];
+const EQUIPMENT_SLOTS: readonly EquipmentSlot[] = ["primary", "secondary", "armor", "accessory", "tool", "special"];
+
+function validatedInventoryDescription(value: unknown): string {
+  if (typeof value !== "string" || value.length > 2000) throw new Error("Catalog item description is invalid.");
+  return value;
+}
+
+function validatedInventoryCategory(value: unknown): InventoryCategory {
+  if (typeof value !== "string" || !INVENTORY_CATEGORIES.includes(value as InventoryCategory)) throw new Error("Catalog item category is invalid.");
+  return value as InventoryCategory;
+}
+
+function validatedInventoryRarity(value: unknown): InventoryRarity | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !INVENTORY_RARITIES.includes(value as InventoryRarity)) throw new Error("Catalog item rarity is invalid.");
+  return value as InventoryRarity;
+}
+
+function validatedEquipmentSlot(value: unknown): EquipmentSlot | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !EQUIPMENT_SLOTS.includes(value as EquipmentSlot)) throw new Error("Equipment slot is invalid.");
+  return value as EquipmentSlot;
+}
+
+function validatedInventoryPermission(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`Catalog item ${field} flag is invalid.`);
+  return value;
+}
+
+function validatedInventoryCapacity(value: unknown): number {
+  if (!Number.isInteger(value) || (value as number) < 0) throw new Error("Inventory capacity must be a non-negative integer.");
+  return value as number;
 }
 
 function validatedKnowledgeFactBody(body: string): string {
@@ -545,7 +581,26 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             (r.session_id IS NOT NULL AND (s.id IS NULL OR s.campaign_id!=r.campaign_id)) OR
             (r.audience='party' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.audience='party' AND d.id!=r.id)) OR
             (r.audience='character' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.character_id=r.character_id AND d.audience='character' AND d.id!=r.id))`],
-        ["Инвентарь", "SELECT count(*) AS count FROM inventory_items i JOIN characters c ON c.id=i.character_id JOIN catalog_items ci ON ci.id=i.catalog_item_id WHERE c.campaign_id!=ci.campaign_id"],
+        ["Вместимость сумок", `SELECT count(*) AS count FROM characters c WHERE typeof(c.inventory_capacity)!='integer' OR c.inventory_capacity<0 OR
+          (SELECT count(*) FROM inventory_items i WHERE i.character_id=c.id AND i.equipped_slot IS NULL)>c.inventory_capacity`],
+        ["Каталог предметов", `SELECT count(*) AS count FROM catalog_items WHERE typeof(description)!='text' OR length(description)>2000 OR
+          category NOT IN ('key','document','tool','consumable','equipment','artifact','special') OR
+          (rarity IS NOT NULL AND rarity NOT IN ('common','uncommon','rare','unique')) OR
+          (equipment_slot IS NOT NULL AND equipment_slot NOT IN ('primary','secondary','armor','accessory','tool','special')) OR
+          typeof(transfer_allowed)!='integer' OR transfer_allowed NOT IN (0,1) OR
+          typeof(discard_allowed)!='integer' OR discard_allowed NOT IN (0,1)`],
+        ["Инвентарь и экипировка", `SELECT count(*) AS count FROM inventory_items i
+          LEFT JOIN characters c ON c.id=i.character_id
+          LEFT JOIN catalog_items ci ON ci.id=i.catalog_item_id
+          WHERE c.id IS NULL OR typeof(i.quantity)!='integer' OR i.quantity NOT BETWEEN 1 AND 9999 OR
+            (ci.id IS NOT NULL AND c.campaign_id!=ci.campaign_id) OR
+            (i.equipped_slot IS NOT NULL AND (i.equipped_slot NOT IN ('primary','secondary','armor','accessory','tool','special') OR
+              ci.id IS NULL OR i.quantity!=1 OR ci.equipment_slot IS NOT i.equipped_slot)) OR
+            EXISTS (SELECT 1 FROM inventory_items d WHERE d.character_id=i.character_id AND d.id!=i.id AND
+              i.equipped_slot IS NOT NULL AND d.equipped_slot=i.equipped_slot) OR
+            EXISTS (SELECT 1 FROM inventory_items d WHERE d.character_id=i.character_id AND d.id!=i.id AND
+              i.catalog_item_id IS NOT NULL AND d.catalog_item_id=i.catalog_item_id AND
+              i.equipped_slot IS NULL AND d.equipped_slot IS NULL)`],
         ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
         ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
         ["Отметки просмотра", "SELECT count(*) AS count FROM character_read_state r JOIN characters c ON c.id=r.character_id LEFT JOIN campaign_activity a ON a.id=r.last_seen_id WHERE a.id IS NULL OR a.campaign_id!=c.campaign_id OR a.created_at!=r.last_seen_at"],
@@ -687,7 +742,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt, archivedAt: schema.characters.archivedAt,
         shortDescription: schema.characters.shortDescription, archetype: schema.characters.archetype,
         origin: schema.characters.origin, personalGoal: schema.characters.personalGoal, dmNotes: schema.characters.dmNotes,
-        traits: schema.characters.traits, appearance: schema.characters.appearance, quote: schema.characters.quote
+        traits: schema.characters.traits, appearance: schema.characters.appearance, quote: schema.characters.quote,
+        inventoryCapacity: schema.characters.inventoryCapacity
       }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all()
         .map((character) => ({ ...character, traits: exportTraits(character.traits) }));
       const characterIds = characters.map((character) => character.id);
@@ -706,13 +762,13 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         createdAt: schema.sessionCharacterAssignments.createdAt
       }).from(schema.sessionCharacterAssignments)
         .where(inArray(schema.sessionCharacterAssignments.sessionId, sessionIds)).all() : [];
-      const catalogItems = db.select({
-        id: schema.catalogItems.id, name: schema.catalogItems.name, createdAt: schema.catalogItems.createdAt
-      }).from(schema.catalogItems).where(eq(schema.catalogItems.campaignId, id)).all();
+      const catalogItems = db.select().from(schema.catalogItems)
+        .where(eq(schema.catalogItems.campaignId, id)).all();
       const inventoryItems = characterIds.length ? db.select({
         id: schema.inventoryItems.id, characterId: schema.inventoryItems.characterId,
         catalogItemId: schema.inventoryItems.catalogItemId, name: schema.inventoryItems.name,
-        quantity: schema.inventoryItems.quantity, createdAt: schema.inventoryItems.createdAt
+        quantity: schema.inventoryItems.quantity, equippedSlot: schema.inventoryItems.equippedSlot,
+        createdAt: schema.inventoryItems.createdAt
       }).from(schema.inventoryItems)
         .where(inArray(schema.inventoryItems.characterId, characterIds)).all() : [];
       const knowledge = db.select({
@@ -735,7 +791,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeFactReveals).where(eq(schema.knowledgeFactReveals.campaignId, id))
         .orderBy(asc(schema.knowledgeFactReveals.createdAt), asc(schema.knowledgeFactReveals.id)).all();
       return {
-        format: "progdm-campaign", version: 8, exportedAt: new Date().toISOString(), campaign,
+        format: "progdm-campaign", version: 9, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, profileFields, profileFieldValues, personalNotes, catalogItems, inventoryItems, knowledge,
         knowledgeFacts, knowledgeFactReveals,
         activity: activityRows(db.select().from(schema.campaignActivity)
@@ -745,7 +801,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
@@ -807,6 +863,59 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         requireMapped(characterIds, assignment.characterId);
         requireMapped(sessionIds, assignment.sessionId);
       }
+      const characterCapacityById = new Map<string, number>();
+      for (const row of characters) {
+        const sourceId = transferString(row, "id");
+        characterCapacityById.set(sourceId, archiveVersion >= 9
+          ? validatedInventoryCapacity(row.inventoryCapacity) : 12);
+      }
+      const catalogMetadataById = new Map<string, { equipmentSlot: EquipmentSlot | null }>();
+      for (const row of catalogItems) {
+        const sourceId = transferString(row, "id");
+        catalogMetadataById.set(sourceId, archiveVersion >= 9 ? {
+          equipmentSlot: validatedEquipmentSlot(row.equipmentSlot)
+        } : { equipmentSlot: null });
+        if (archiveVersion >= 9) {
+          validatedInventoryDescription(transferString(row, "description", 2000));
+          validatedInventoryCategory(row.category);
+          validatedInventoryRarity(row.rarity);
+          validatedInventoryPermission(row.transferAllowed, "transferAllowed");
+          validatedInventoryPermission(row.discardAllowed, "discardAllowed");
+        }
+      }
+      const bagRowsByCharacter = new Map<string, number>();
+      const bagStacks = new Set<string>();
+      const equipmentSlots = new Set<string>();
+      for (const row of inventoryItems) {
+        const characterId = transferString(row, "characterId");
+        requireMapped(characterIds, characterId);
+        const quantity = row.quantity;
+        if (!Number.isInteger(quantity) || (quantity as number) < 1 || (quantity as number) > 9999) throw new Error("Campaign file is invalid.");
+        const catalogItemId = row.catalogItemId === null ? null : transferString(row, "catalogItemId");
+        if (catalogItemId !== null) requireMapped(catalogIds, catalogItemId);
+        const equippedSlot = archiveVersion >= 9 ? validatedEquipmentSlot(row.equippedSlot) : null;
+        if (equippedSlot !== null) {
+          const catalog = catalogItemId === null ? null : catalogMetadataById.get(catalogItemId);
+          if (quantity !== 1 || !catalog || catalog.equipmentSlot !== equippedSlot) throw new Error("Campaign file contains invalid equipment state.");
+          const slotKey = `${characterId}:${equippedSlot}`;
+          if (equipmentSlots.has(slotKey)) throw new Error("Campaign file contains duplicate equipment slots.");
+          equipmentSlots.add(slotKey);
+        } else {
+          bagRowsByCharacter.set(characterId, (bagRowsByCharacter.get(characterId) ?? 0) + 1);
+          if (catalogItemId !== null) {
+            const stackKey = `${characterId}:${catalogItemId}`;
+            if (bagStacks.has(stackKey)) throw new Error("Campaign file contains duplicate inventory stacks.");
+            bagStacks.add(stackKey);
+          }
+        }
+      }
+      for (const row of characters) {
+        const sourceId = transferString(row, "id");
+        const capacity = characterCapacityById.get(sourceId)!;
+        const usedSlots = bagRowsByCharacter.get(sourceId) ?? 0;
+        if (archiveVersion < 9) characterCapacityById.set(sourceId, Math.max(12, usedSlots));
+        else if (usedSlots > capacity) throw new Error("Campaign file contains over-capacity inventory.");
+      }
       const newId = () => randomUUID();
       return db.transaction(() => {
         const campaign = db.insert(schema.campaigns).values({
@@ -845,7 +954,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             dmNotes: archiveVersion >= 3 ? profileText(transferString(row, "dmNotes", 2000), 2000) : "",
             traits: JSON.stringify(archiveVersion >= 5 ? profileTraits(row.traits) : []),
             appearance: archiveVersion >= 5 ? profileText(transferString(row, "appearance", 1000), 1000) : "",
-            quote: archiveVersion >= 5 ? profileText(transferString(row, "quote", 300), 300) : ""
+            quote: archiveVersion >= 5 ? profileText(transferString(row, "quote", 300), 300) : "",
+            inventoryCapacity: characterCapacityById.get(String(row.id))!
           }).run();
         }
         for (const row of [...profileFields].sort((a, b) => Number(a.position) - Number(b.position))) {
@@ -873,7 +983,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           }).run();
         }
         for (const row of catalogItems) db.insert(schema.catalogItems).values({
-          id: requireMapped(catalogIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)), createdAt: createdAt(row)
+          id: requireMapped(catalogIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
+          description: archiveVersion >= 9 ? validatedInventoryDescription(transferString(row, "description", 2000)) : "",
+          category: archiveVersion >= 9 ? validatedInventoryCategory(row.category) : "special",
+          rarity: archiveVersion >= 9 ? validatedInventoryRarity(row.rarity) : null,
+          equipmentSlot: archiveVersion >= 9 ? validatedEquipmentSlot(row.equipmentSlot) : null,
+          transferAllowed: archiveVersion >= 9 ? validatedInventoryPermission(row.transferAllowed, "transferAllowed") : true,
+          discardAllowed: archiveVersion >= 9 ? validatedInventoryPermission(row.discardAllowed, "discardAllowed") : true,
+          createdAt: createdAt(row)
         }).run();
         for (const row of assignments) db.insert(schema.sessionCharacterAssignments).values({
           playerId: requireMapped(playerIds, row.playerId), sessionId: requireMapped(sessionIds, row.sessionId),
@@ -885,7 +1002,9 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           db.insert(schema.inventoryItems).values({
             id: newId(), characterId: requireMapped(characterIds, row.characterId),
             catalogItemId: row.catalogItemId === null ? null : requireMapped(catalogIds, row.catalogItemId),
-            name: validatedName(transferString(row, "name", 120)), quantity: quantity as number, createdAt: createdAt(row)
+            name: validatedName(transferString(row, "name", 120)), quantity: quantity as number,
+            equippedSlot: archiveVersion >= 9 ? validatedEquipmentSlot(row.equippedSlot) : null,
+            createdAt: createdAt(row)
           }).run();
         }
         for (const row of knowledge) {
@@ -1353,7 +1472,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         dmNotes: schema.characters.dmNotes,
         traits: schema.characters.traits,
         appearance: schema.characters.appearance,
-        quote: schema.characters.quote
+        quote: schema.characters.quote,
+        inventoryCapacity: schema.characters.inventoryCapacity
       }).from(schema.characters).where(eq(schema.characters.campaignId, campaignId))
         .orderBy(asc(schema.characters.name), asc(schema.characters.id)).all().map(characterRecord);
     },
@@ -1361,6 +1481,10 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       return db.select().from(schema.characterPersonalNotes)
         .where(eq(schema.characterPersonalNotes.characterId, characterId))
         .orderBy(desc(schema.characterPersonalNotes.updatedAt), desc(schema.characterPersonalNotes.id)).all();
+    },
+    listCharacterInventory(characterId: string) {
+      return db.select().from(schema.inventoryItems).where(eq(schema.inventoryItems.characterId, characterId))
+        .orderBy(asc(schema.inventoryItems.createdAt), asc(schema.inventoryItems.id)).all();
     },
     listCharacterActivity(characterId: string, limit = 20) {
       return activityRows(db.select().from(schema.campaignActivity)
@@ -1425,6 +1549,93 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).returning().get();
       appendActivity({ campaignId, type: "catalog_item_created", catalogItemId: item.id, details: { itemName: item.name } });
       return item;
+      });
+    },
+    updateCatalogItemMetadata(catalogItemId: string, fields: Partial<Pick<CampaignItem,
+      "description" | "category" | "rarity" | "equipmentSlot" | "transferAllowed" | "discardAllowed">>): CampaignItem {
+      return db.transaction(() => {
+        const before = db.select().from(schema.catalogItems).where(eq(schema.catalogItems.id, catalogItemId)).get();
+        if (!before) throw new Error("Catalog item not found.");
+        const metadata = {
+          description: fields.description === undefined ? before.description : validatedInventoryDescription(fields.description),
+          category: fields.category === undefined ? before.category : validatedInventoryCategory(fields.category),
+          rarity: fields.rarity === undefined ? before.rarity : validatedInventoryRarity(fields.rarity),
+          equipmentSlot: fields.equipmentSlot === undefined ? before.equipmentSlot : validatedEquipmentSlot(fields.equipmentSlot),
+          transferAllowed: fields.transferAllowed === undefined ? before.transferAllowed : validatedInventoryPermission(fields.transferAllowed, "transferAllowed"),
+          discardAllowed: fields.discardAllowed === undefined ? before.discardAllowed : validatedInventoryPermission(fields.discardAllowed, "discardAllowed")
+        };
+        const incompatibleEquippedCount = client.prepare(`SELECT count(*) AS count FROM inventory_items
+          WHERE catalog_item_id=? AND equipped_slot IS NOT NULL AND equipped_slot IS NOT ?`)
+          .get(catalogItemId, metadata.equipmentSlot) as { count: number };
+        if (incompatibleEquippedCount.count) throw new Error("Catalog equipment slot conflicts with equipped inventory items.");
+        return db.update(schema.catalogItems).set(metadata)
+          .where(eq(schema.catalogItems.id, catalogItemId)).returning().get();
+      });
+    },
+    updateCharacterInventoryCapacity(characterId: string, capacity: number): Character {
+      const validatedCapacity = validatedInventoryCapacity(capacity);
+      return db.transaction(() => {
+        const character = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+        if (!character) throw new Error("Character not found.");
+        const usedSlots = client.prepare("SELECT count(*) AS count FROM inventory_items WHERE character_id=? AND equipped_slot IS NULL")
+          .get(characterId) as { count: number };
+        if (validatedCapacity < usedSlots.count) throw new Error("Inventory capacity cannot be lower than used bag slots.");
+        return characterRecord(db.update(schema.characters).set({ inventoryCapacity: validatedCapacity })
+          .where(eq(schema.characters.id, characterId)).returning().get()!);
+      });
+    },
+    equipInventoryItem(characterId: string, inventoryItemId: string) {
+      return db.transaction(() => {
+        const character = db.select({ campaignId: schema.characters.campaignId }).from(schema.characters)
+          .where(eq(schema.characters.id, characterId)).get();
+        if (!character) throw new Error("Character not found.");
+        const item = db.select().from(schema.inventoryItems)
+          .where(and(eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.characterId, characterId))).get();
+        if (!item) throw new Error("Inventory item not found for this character.");
+        if (item.equippedSlot !== null) throw new Error("Inventory item is already equipped.");
+        if (!item.catalogItemId) throw new Error("Legacy inventory item cannot be equipped.");
+        if (item.quantity !== 1) throw new Error("Only a single item can be equipped; split stacks are not supported.");
+        const catalogItem = db.select().from(schema.catalogItems).where(eq(schema.catalogItems.id, item.catalogItemId)).get();
+        if (!catalogItem || catalogItem.campaignId !== character.campaignId) throw new Error("Catalog item is not in this character's campaign.");
+        if (catalogItem.equipmentSlot === null) throw new Error("Catalog item cannot be equipped.");
+        const occupied = db.select({ id: schema.inventoryItems.id }).from(schema.inventoryItems).where(and(
+          eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.equippedSlot, catalogItem.equipmentSlot)
+        )).get();
+        if (occupied) throw new Error("Equipment slot is already occupied.");
+        return db.update(schema.inventoryItems).set({ equippedSlot: catalogItem.equipmentSlot })
+          .where(eq(schema.inventoryItems.id, item.id)).returning().get();
+      });
+    },
+    unequipInventoryItem(characterId: string, inventoryItemId: string) {
+      return db.transaction(() => {
+        const item = db.select().from(schema.inventoryItems)
+          .where(and(eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.characterId, characterId))).get();
+        if (!item) throw new Error("Inventory item not found for this character.");
+        if (item.equippedSlot === null) throw new Error("Inventory item is not equipped.");
+        const characterRow = db.select({ campaignId: schema.characters.campaignId, inventoryCapacity: schema.characters.inventoryCapacity }).from(schema.characters)
+          .where(eq(schema.characters.id, characterId)).get();
+        if (!characterRow) throw new Error("Character not found.");
+        const equippedCatalog = item.catalogItemId ? db.select().from(schema.catalogItems)
+          .where(eq(schema.catalogItems.id, item.catalogItemId)).get() : null;
+        if (!equippedCatalog || equippedCatalog.campaignId !== characterRow.campaignId || equippedCatalog.equipmentSlot !== item.equippedSlot || item.quantity !== 1) {
+          throw new Error("Equipped inventory item is invalid.");
+        }
+        const usedSlots = client.prepare("SELECT count(*) AS count FROM inventory_items WHERE character_id=? AND equipped_slot IS NULL")
+          .get(characterId) as { count: number };
+        const bagStack = item.catalogItemId ? db.select().from(schema.inventoryItems).where(and(
+          eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.catalogItemId, item.catalogItemId),
+          isNull(schema.inventoryItems.equippedSlot)
+        )).get() : undefined;
+        if (bagStack) {
+          if (bagStack.quantity >= 9999) throw new Error("Item quantity limit exceeded.");
+          db.update(schema.inventoryItems).set({ quantity: bagStack.quantity + 1 })
+            .where(eq(schema.inventoryItems.id, bagStack.id)).run();
+          db.delete(schema.inventoryItems).where(eq(schema.inventoryItems.id, item.id)).run();
+          return db.select().from(schema.inventoryItems).where(eq(schema.inventoryItems.id, bagStack.id)).get()!;
+        }
+        if (usedSlots.count >= characterRow.inventoryCapacity) throw new Error("Inventory capacity is full.");
+        return db.update(schema.inventoryItems).set({ equippedSlot: null })
+          .where(eq(schema.inventoryItems.id, item.id)).returning().get();
       });
     },
     listKnowledgeByCampaign(campaignId: string) {
@@ -1718,6 +1929,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const character = db.select({
           id: schema.characters.id,
           campaignId: schema.characters.campaignId,
+          inventoryCapacity: schema.characters.inventoryCapacity,
           sessionId: schema.sessions.id
         }).from(schema.characters)
           .innerJoin(schema.sessionCharacterAssignments, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
@@ -1736,17 +1948,21 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const catalogItem = db.select().from(schema.catalogItems)
           .where(and(eq(schema.catalogItems.id, catalogItemId), eq(schema.catalogItems.campaignId, character.campaignId))).get();
         if (!catalogItem) throw new Error("Catalog item is unavailable for this campaign.");
-        const existing = db.select().from(schema.inventoryItems)
-          .where(eq(schema.inventoryItems.characterId, characterId)).all()
-          .find((item) => item.name.toLocaleLowerCase("ru") === catalogItem.name.toLocaleLowerCase("ru"));
+        const existing = db.select().from(schema.inventoryItems).where(and(
+          eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.catalogItemId, catalogItemId),
+          isNull(schema.inventoryItems.equippedSlot)
+        )).get();
         if (existing) {
           if (existing.quantity + quantity > 9999) throw new Error("Item quantity limit exceeded.");
           const item = db.update(schema.inventoryItems)
-            .set({ quantity: existing.quantity + quantity, catalogItemId })
+            .set({ quantity: existing.quantity + quantity })
             .where(eq(schema.inventoryItems.id, existing.id)).returning().get();
           appendActivity({ campaignId: character.campaignId, sessionId: character.sessionId, characterId, catalogItemId, type: "item_granted", details: { itemName: catalogItem.name, quantity, totalQuantity: item.quantity } });
           return item;
         }
+        const usedSlots = client.prepare("SELECT count(*) AS count FROM inventory_items WHERE character_id=? AND equipped_slot IS NULL")
+          .get(characterId) as { count: number };
+        if (usedSlots.count >= character.inventoryCapacity) throw new Error("Inventory capacity is full.");
         const item = db.insert(schema.inventoryItems).values({
           id: randomUUID(), characterId, catalogItemId, name: catalogItem.name, quantity, createdAt: new Date().toISOString()
         }).returning().get();

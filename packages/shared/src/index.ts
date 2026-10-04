@@ -81,6 +81,7 @@ export interface Character {
   traits: string[];
   appearance: string;
   quote: string;
+  inventoryCapacity: number;
 }
 
 export interface PersonalNote {
@@ -100,8 +101,18 @@ export interface CampaignItem {
   id: EntityId;
   campaignId: EntityId;
   name: string;
+  description: string;
+  category: InventoryCategory;
+  rarity: InventoryRarity | null;
+  equipmentSlot: EquipmentSlot | null;
+  transferAllowed: boolean;
+  discardAllowed: boolean;
   createdAt: string;
 }
+
+export type InventoryCategory = "key" | "document" | "tool" | "consumable" | "equipment" | "artifact" | "special";
+export type InventoryRarity = "common" | "uncommon" | "rare" | "unique";
+export type EquipmentSlot = "primary" | "secondary" | "armor" | "accessory" | "tool" | "special";
 
 export interface NetworkAddress {
   address: string;
@@ -211,6 +222,7 @@ export interface InventoryItem {
   catalogItemId: EntityId | null;
   name: string;
   quantity: number;
+  equippedSlot: EquipmentSlot | null;
   createdAt: string;
 }
 

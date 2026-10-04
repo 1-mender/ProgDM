@@ -43,6 +43,27 @@ test("player write responses never return token hashes", async (t) => {
   assert.equal(result.json().player.tokenHash, undefined);
 });
 
+test("full-bag grants return a conflict and Phase 4A adds no player inventory mutation routes", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Capacity");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const item = database.createCatalogItem(campaign.id, "Key");
+  database.updateCharacterInventoryCapacity(character.id, 0);
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const player = database.submitPlayerRequest(session.id, "A", "capacity-api-token");
+  database.approvePlayer(player.id, { characterId: character.id });
+
+  const fullBag = await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: item.id, quantity: 1 });
+  assert.equal(fullBag.statusCode, 409);
+  assert.equal(fullBag.json().message, "В сумке персонажа нет свободных слотов.");
+  for (const action of ["equip", "unequip", "transfer", "discard"]) {
+    const response = await app.inject({ method: "POST", url: `/api/player/inventory/${item.id}/${action}`,
+      headers: { authorization: "Bearer capacity-api-token" }, payload: {} });
+    assert.equal(response.statusCode, 404, `${action} remains out of scope for this phase`);
+  }
+});
+
 test("pending, rejected and historical tokens cannot write private character data", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Campaign");
@@ -831,7 +852,7 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(exported.body.includes(session.joinToken), false);
   assert.equal(exported.body.includes("b".repeat(64)), false);
   const archive = exported.json();
-  assert.equal(archive.version, 8);
+  assert.equal(archive.version, 9);
   assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
 
   const imported = await post(app, "/api/dm/campaigns/import", archive);
@@ -851,6 +872,9 @@ test("campaign export and import are authenticated and omit player and invitatio
   const malformedProfileArchive = structuredClone(archive);
   malformedProfileArchive.characters[0].traits = ["x".repeat(41)];
   assert.equal((await post(app, "/api/dm/campaigns/import", malformedProfileArchive)).statusCode, 400);
+  const malformedInventoryArchive = structuredClone(archive);
+  malformedInventoryArchive.characters[0].inventoryCapacity = 0;
+  assert.equal((await post(app, "/api/dm/campaigns/import", malformedInventoryArchive)).statusCode, 400);
   assert.notEqual(importedData.knowledge[0].visibleToCharacterId, character.id);
   const invalid = await post(app, "/api/dm/campaigns/import", { ...archive, inventoryItems: [{ ...archive.inventoryItems[0], characterId: "missing" }] });
   assert.equal(invalid.statusCode, 400);

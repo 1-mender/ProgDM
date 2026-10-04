@@ -11,6 +11,7 @@ import SQLite from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
+import { ACTIVITY_TYPES } from "@progdm/shared";
 import { openDatabase, resolveDatabaseFile } from "../dist/index.js";
 
 function temporaryFile(t) {
@@ -74,23 +75,26 @@ test("backup migration hashes remain compatible across LF and CRLF checkouts", a
   } finally { db.close(); }
 });
 
-test("legacy campaign formats v1 through v7 import with profile defaults and ID remapping", (t) => {
+test("legacy campaign formats v1 through v8 import with inventory defaults and ID remapping", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Legacy");
   const mira = db.createCharacter(campaign.id, "Mira");
+  const legacyItem = db.createCatalogItem(campaign.id, "Legacy catalog item");
   const session = db.createSession(campaign.id, "Session");
   db.activateSession(session.id);
   const player = db.submitPlayerRequest(session.id, "A", "secret-hash");
   db.approvePlayer(player.id, { characterId: mira.id });
+  db.grantInventoryItem(mira.id, legacyItem.id, 1);
   db.createPersonalNote("secret-hash", "Legacy note body");
   const clue = db.createKnowledge(campaign.id, "fact", "Clue", "Personal knowledge");
   db.setKnowledgeVisibility(clue.id, "character", mira.id);
   const current = db.exportCampaign(campaign.id);
-  for (const version of [1, 2, 3, 4, 5, 6, 7]) {
+  for (const version of [1, 2, 3, 4, 5, 6, 7, 8]) {
     const legacy = structuredClone(current);
     legacy.version = version;
     if (version < 7) legacy.knowledge[0].category = "note";
     for (const character of legacy.characters) {
+      if (version < 9) delete character.inventoryCapacity;
       if (version < 5) {
         delete character.traits;
         delete character.appearance;
@@ -103,6 +107,17 @@ test("legacy campaign formats v1 through v7 import with profile defaults and ID 
         delete character.personalGoal;
         delete character.dmNotes;
       }
+    }
+    if (version < 9) {
+      for (const item of legacy.catalogItems) {
+        delete item.description;
+        delete item.category;
+        delete item.rarity;
+        delete item.equipmentSlot;
+        delete item.transferAllowed;
+        delete item.discardAllowed;
+      }
+      for (const item of legacy.inventoryItems) delete item.equippedSlot;
     }
     if (version < 3) delete legacy.personalNotes;
     if (version === 1) {
@@ -129,6 +144,12 @@ test("legacy campaign formats v1 through v7 import with profile defaults and ID 
     assert.deepEqual({ traits: exported.characters[0].traits, appearance: exported.characters[0].appearance, quote: exported.characters[0].quote }, {
       traits: [], appearance: "", quote: ""
     });
+    assert.equal(exported.characters[0].inventoryCapacity, 12);
+    assert.deepEqual({ description: exported.catalogItems[0].description, category: exported.catalogItems[0].category,
+      rarity: exported.catalogItems[0].rarity, equipmentSlot: exported.catalogItems[0].equipmentSlot,
+      transferAllowed: exported.catalogItems[0].transferAllowed, discardAllowed: exported.catalogItems[0].discardAllowed },
+    { description: "", category: "special", rarity: null, equipmentSlot: null, transferAllowed: true, discardAllowed: true });
+    assert.equal(exported.inventoryItems[0].equippedSlot, null);
     if (version === 3) assert.deepEqual({ title: exported.personalNotes[0].title, marker: exported.personalNotes[0].marker, pinned: exported.personalNotes[0].pinned }, {
       title: "", marker: "normal", pinned: false
     });
@@ -285,7 +306,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 8);
+  assert.equal(archive.version, 9);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -396,7 +417,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.kind), ["item_received"]);
 
   const exported = db.exportCampaign(campaign.id);
-  assert.equal(exported.version, 8);
+  assert.equal(exported.version, 9);
   assert.deepEqual({ traits: exported.characters[0].traits, appearance: exported.characters[0].appearance, quote: exported.characters[0].quote }, {
     traits: ["Observant", "Careful"], appearance: "A weathered coat", quote: "Not yet."
   });
@@ -440,7 +461,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(db.checkDataHealth().ok, true);
 });
 
-test("campaign archive v8 round-trips six categories and rejects unknown categories atomically", (t) => {
+test("campaign archive v9 round-trips six categories and rejects unknown categories atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Knowledge taxonomy");
   const mira = db.createCharacter(campaign.id, "Mira");
@@ -449,7 +470,7 @@ test("campaign archive v8 round-trips six categories and rejects unknown categor
   db.setKnowledgeVisibility(entries[0].id, "character", mira.id);
   db.setKnowledgeVisibility(entries[1].id, "party");
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 8);
+  assert.equal(archive.version, 9);
   assert.deepEqual(archive.knowledge.map(({ category }) => category), categories);
 
   const imported = db.importCampaign(archive);
@@ -498,6 +519,7 @@ test("backup restores profile, notes and character read marker", async (t) => {
     const campaign = db.createCampaign("Backup story");
     const mira = db.createCharacter(campaign.id, "Mira");
     const item = db.createCatalogItem(campaign.id, "Key");
+    db.updateCatalogItemMetadata(item.id, { description: "A small brass key.", category: "key", rarity: "rare", equipmentSlot: "accessory" });
     const session = db.createSession(campaign.id, "Night");
     db.activateSession(session.id);
     const player = db.submitPlayerRequest(session.id, "A", "backup-player-hash");
@@ -505,12 +527,16 @@ test("backup restores profile, notes and character read marker", async (t) => {
     db.updatePlayerProfile("backup-player-hash", { shortDescription: "Before backup", personalGoal: "Remember",
       traits: ["Patient", "Curious"], appearance: "A blue cloak", quote: "One more question." });
     db.createPersonalNote("backup-player-hash", "Private thought", { title: "Идея", marker: "question", pinned: true });
-    db.grantInventoryItem(mira.id, item.id, 1);
+    const granted = db.grantInventoryItem(mira.id, item.id, 1);
+    db.equipInventoryItem(mira.id, granted.id);
+    db.updateCharacterInventoryCapacity(mira.id, 4);
     db.markPlayerActivitySeen("backup-player-hash", db.getPlayerState("backup-player-hash").newActivity[0].id);
     const backup = await db.createBackup();
     db.updatePlayerProfile("backup-player-hash", { shortDescription: "After backup", personalGoal: "Changed" });
     db.updateCharacterProfile(mira.id, { name: "Mira", shortDescription: "After backup", archetype: "", origin: "", personalGoal: "Changed", dmNotes: "",
       traits: [], appearance: "", quote: "" });
+    db.updateCatalogItemMetadata(item.id, { description: "Changed after backup", rarity: null });
+    db.updateCharacterInventoryCapacity(mira.id, 8);
     db.createPersonalNote("backup-player-hash", "Later thought");
     db.grantInventoryItem(mira.id, item.id, 1);
     await db.restoreBackup(backup.id);
@@ -524,6 +550,10 @@ test("backup restores profile, notes and character read marker", async (t) => {
       title: "Идея", marker: "question", pinned: true
     });
     assert.equal(db.getPlayerState("backup-player-hash").newActivity.length, 0);
+    assert.equal(db.listCharactersByCampaign(campaign.id)[0].inventoryCapacity, 4);
+    assert.equal(db.listCatalogItemsByCampaign(campaign.id)[0].description, "A small brass key.");
+    assert.equal(db.listCatalogItemsByCampaign(campaign.id)[0].equipmentSlot, "accessory");
+    assert.equal(db.listCharacterInventory(mira.id).find(({ equippedSlot }) => equippedSlot !== null).equippedSlot, "accessory");
     assert.equal(db.checkDataHealth().ok, true);
   } finally { db.close(); }
 });
@@ -1151,7 +1181,7 @@ test("campaign profile fields validate, order, retain character values, export a
   assert.deepEqual(db.getPlayerState("new-profile-field-token").profile.profileFields.map((field) => field.value), ["Вейр", "Орден Серого Пламени"]);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 8);
+  assert.equal(archive.version, 9);
   assert.deepEqual(archive.profileFields.map(({ label, position }) => [label, position]), [["Родина", 0], ["Орден хранителей", 1]]);
   assert.equal(JSON.stringify(archive).includes("profile-field-token"), false);
   const imported = db.importCampaign(archive);
@@ -1391,7 +1421,7 @@ test("restoring a real schema 0012 backup stages migration 0013 and preserves le
         "00000000-0000-4000-8000-000000000411");
       assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_facts").get().count, 0);
       assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_fact_reveals").get().count, 0);
-      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 14);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 15);
       assert.deepEqual(raw.pragma("foreign_key_check"), []);
     } finally { raw.close(); }
     assert.equal(database.checkDataHealth().ok, true, JSON.stringify(database.checkDataHealth()));
@@ -1742,7 +1772,7 @@ test("Player activity projection is safe, audience-scoped, and uses the existing
   assert.equal(db.getPlayerState("activity-mira-hash").recentActivity.some((event) => "type" in event || "details" in event), false);
 });
 
-test("Knowledge Fact export v8 remaps references, omits secrets, and imports invalid references atomically", (t) => {
+test("Knowledge Fact export v9 remaps references, omits secrets, and imports invalid references atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Export Facts");
   const character = db.createCharacter(campaign.id, "Mira");
@@ -1755,7 +1785,7 @@ test("Knowledge Fact export v8 remaps references, omits secrets, and imports inv
   db.revealKnowledgeFactToCharacter(campaign.id, entry.id, fact.id, character.id);
   db.revealKnowledgeFactToParty(campaign.id, entry.id, fact.id);
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 8);
+  assert.equal(archive.version, 9);
   assert.equal(JSON.stringify(archive).includes("facts-secret-token-hash"), false);
   assert.equal(archive.knowledgeFacts.length, 1);
   assert.equal(archive.knowledgeFactReveals.length, 2);
@@ -1894,5 +1924,333 @@ test("Data Health reports malformed Knowledge Facts and reveal grants without re
       assert.equal(health.checks.find(({ name }) => name === "Раскрытие фактов").status, "error");
       assert.equal(raw.prepare("SELECT body, position FROM knowledge_facts WHERE id=?").get(fact.id).body, "   ");
     } finally { raw.close(); }
+  } finally { db.close(); }
+});
+
+test("inventory capacity, metadata defaults, bag stack identity and grant limits follow slot semantics", (t) => {
+  let db;
+  t.after(() => db?.close());
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  const campaign = db.createCampaign("Inventory foundation");
+  const character = db.createCharacter(campaign.id, "Mira");
+  assert.equal(character.inventoryCapacity, 12);
+  const potion = db.createCatalogItem(campaign.id, "Potion");
+  assert.deepEqual({ description: potion.description, category: potion.category, rarity: potion.rarity,
+    equipmentSlot: potion.equipmentSlot, transferAllowed: potion.transferAllowed, discardAllowed: potion.discardAllowed },
+  { description: "", category: "special", rarity: null, equipmentSlot: null, transferAllowed: true, discardAllowed: true });
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "inventory-domain-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+
+  const legacy = new SQLite(db.file);
+  try {
+    legacy.prepare("INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, equipped_slot, created_at) VALUES (?, ?, NULL, ?, 1, NULL, ?)")
+      .run("legacy-null-row", character.id, "Potion", "2026-01-01T00:00:00.000Z");
+  } finally { legacy.close(); }
+  db.updateCharacterInventoryCapacity(character.id, 2);
+  const first = db.grantInventoryItem(character.id, potion.id, 2);
+  assert.equal(first.quantity, 2);
+  const map = db.createCatalogItem(campaign.id, "Map");
+  const grantEventsBefore = db.listCampaignActivity(campaign.id).filter(({ type }) => type === "item_granted").length;
+  assert.throws(() => db.grantInventoryItem(character.id, map.id, 1), /capacity is full/);
+  assert.equal(db.listCampaignActivity(campaign.id).filter(({ type }) => type === "item_granted").length, grantEventsBefore,
+    "rejected full-bag grant creates no partial inventory activity");
+  assert.equal(db.listCharacterInventory(character.id).length, 2, "legacy same-name row remains separate and the failed grant adds nothing");
+  const merged = db.grantInventoryItem(character.id, potion.id, 3);
+  assert.equal(merged.id, first.id);
+  assert.equal(merged.quantity, 5, "existing bag stacks merge at capacity");
+  assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("equipment operations preserve slot compatibility, stack, and capacity invariants", (t) => {
+  let db;
+  t.after(() => db?.close());
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  const campaign = db.createCampaign("Equipment foundation");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const primary = db.createCatalogItem(campaign.id, "Knife");
+  const secondary = db.createCatalogItem(campaign.id, "Lantern");
+  const nonEquippable = db.createCatalogItem(campaign.id, "Letter");
+  db.updateCatalogItemMetadata(primary.id, { category: "equipment", equipmentSlot: "primary" });
+  db.updateCatalogItemMetadata(secondary.id, { category: "tool", equipmentSlot: "primary" });
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "equipment-domain-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+
+  const equipped = db.grantInventoryItem(character.id, primary.id, 1);
+  assert.equal(db.equipInventoryItem(character.id, equipped.id).equippedSlot, "primary");
+  assert.equal(db.listCharactersByCampaign(campaign.id)[0].inventoryCapacity, 12);
+  const stack = db.grantInventoryItem(character.id, primary.id, 2);
+  assert.notEqual(stack.id, equipped.id, "a bag stack may coexist with its equipped catalog item");
+  assert.equal(stack.equippedSlot, null);
+  assert.equal(db.grantInventoryItem(character.id, primary.id, 1).quantity, 3);
+  assert.throws(() => db.equipInventoryItem(character.id, stack.id), /single item/);
+
+  const collision = db.grantInventoryItem(character.id, secondary.id, 1);
+  assert.throws(() => db.equipInventoryItem(character.id, collision.id), /already occupied/);
+  const letter = db.grantInventoryItem(character.id, nonEquippable.id, 1);
+  assert.throws(() => db.equipInventoryItem(character.id, letter.id), /cannot be equipped/);
+  assert.throws(() => db.updateCatalogItemMetadata(primary.id, { equipmentSlot: "accessory" }), /conflicts/);
+  assert.equal(db.listCampaignActivity(campaign.id).some(({ type }) => type === "item_equipped" || type === "item_unequipped"), false);
+  assert.equal(ACTIVITY_TYPES.includes("item_transferred"), false);
+  assert.equal(ACTIVITY_TYPES.includes("item_discarded"), false);
+
+  db.updateCharacterInventoryCapacity(character.id, 3);
+  const equipableStack = db.listCharacterInventory(character.id).find((item) => item.id === collision.id);
+  db.unequipInventoryItem(character.id, equipped.id);
+  assert.equal(db.listCharacterInventory(character.id).find((item) => item.id === stack.id).quantity, 4,
+    "unequipping merges into an existing bag stack without creating a duplicate");
+  assert.equal(db.listCharacterInventory(character.id).some((item) => item.id === equipped.id), false);
+  assert.equal(db.listCharacterInventory(character.id).find((item) => item.id === collision.id).equippedSlot, null);
+  assert.throws(() => db.unequipInventoryItem(character.id, collision.id), /not equipped/);
+  assert.ok(equipableStack);
+  db.equipInventoryItem(character.id, collision.id);
+  db.updateCharacterInventoryCapacity(character.id, 2);
+  assert.throws(() => db.unequipInventoryItem(character.id, collision.id), /capacity is full/);
+  db.updateCharacterInventoryCapacity(character.id, 3);
+  db.unequipInventoryItem(character.id, collision.id);
+
+  const capacityDb = new SQLite(db.file);
+  try {
+    capacityDb.prepare("INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, equipped_slot, created_at) VALUES (?, ?, NULL, ?, 1, NULL, ?)")
+      .run("legacy-equipped-attempt", character.id, "Loose", "2026-01-01T00:00:00.000Z");
+  } finally { capacityDb.close(); }
+  const legacy = db.listCharacterInventory(character.id).find((item) => item.id === "legacy-equipped-attempt");
+  assert.throws(() => db.equipInventoryItem(character.id, legacy.id), /Legacy/);
+  assert.throws(() => db.updateCharacterInventoryCapacity(character.id, -1), /non-negative integer/);
+  db.updateCharacterInventoryCapacity(character.id, 4);
+  assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("equipment requires free bag space when no merge target exists and catalog metadata is strictly validated", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Equipment capacity");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const item = db.createCatalogItem(campaign.id, "Compass");
+  db.updateCatalogItemMetadata(item.id, { equipmentSlot: "accessory" });
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "equipment-capacity-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+  const row = db.grantInventoryItem(character.id, item.id, 1);
+  db.equipInventoryItem(character.id, row.id);
+  db.updateCharacterInventoryCapacity(character.id, 0);
+  assert.throws(() => db.unequipInventoryItem(character.id, row.id), /capacity is full/);
+  db.updateCharacterInventoryCapacity(character.id, 1);
+  assert.equal(db.unequipInventoryItem(character.id, row.id).equippedSlot, null);
+
+  assert.throws(() => db.updateCatalogItemMetadata(item.id, { category: "weapon" }), /category is invalid/);
+  assert.throws(() => db.updateCatalogItemMetadata(item.id, { rarity: "legendary" }), /rarity is invalid/);
+  assert.throws(() => db.updateCatalogItemMetadata(item.id, { description: "x".repeat(2001) }), /description is invalid/);
+  assert.throws(() => db.updateCatalogItemMetadata(item.id, { transferAllowed: 1 }), /flag is invalid/);
+  assert.equal(db.updateCatalogItemMetadata(item.id, { description: "Plain text", category: "tool", rarity: "rare",
+    transferAllowed: false, discardAllowed: true }).description, "Plain text");
+  assert.throws(() => db.grantInventoryItem(character.id, db.createCatalogItem(campaign.id, "Another").id, 1), /capacity is full/);
+  assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("campaign export v9 round-trips inventory metadata, capacity and equipment; invalid imports are atomic", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Inventory archive");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const equippedCatalog = db.createCatalogItem(campaign.id, "Knife");
+  const bagCatalog = db.createCatalogItem(campaign.id, "Map");
+  db.updateCatalogItemMetadata(equippedCatalog.id, { description: "A small blade.", category: "equipment", rarity: "uncommon",
+    equipmentSlot: "primary", transferAllowed: false, discardAllowed: true });
+  db.updateCatalogItemMetadata(bagCatalog.id, { description: "Old chart", category: "document", rarity: "rare" });
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "inventory-export-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+  const equippedRow = db.grantInventoryItem(character.id, equippedCatalog.id, 1);
+  db.equipInventoryItem(character.id, equippedRow.id);
+  db.grantInventoryItem(character.id, bagCatalog.id, 2);
+  db.updateCharacterInventoryCapacity(character.id, 3);
+
+  const archive = db.exportCampaign(campaign.id);
+  assert.equal(archive.version, 9);
+  const imported = db.importCampaign(archive);
+  const importedArchive = db.exportCampaign(imported.id);
+  assert.equal(importedArchive.characters[0].inventoryCapacity, 3);
+  const importedEquipped = importedArchive.inventoryItems.find((row) => row.equippedSlot !== null);
+  assert.ok(importedEquipped);
+  assert.equal(importedEquipped.equippedSlot, "primary");
+  assert.notEqual(importedEquipped.catalogItemId, equippedCatalog.id);
+  assert.deepEqual(importedArchive.catalogItems.map(({ description, category, rarity, equipmentSlot, transferAllowed, discardAllowed }) =>
+    ({ description, category, rarity, equipmentSlot, transferAllowed, discardAllowed })).sort((a, b) => a.category.localeCompare(b.category)), [
+    { description: "A small blade.", category: "equipment", rarity: "uncommon", equipmentSlot: "primary", transferAllowed: false, discardAllowed: true },
+    { description: "Old chart", category: "document", rarity: "rare", equipmentSlot: null, transferAllowed: true, discardAllowed: true }
+  ].sort((a, b) => a.category.localeCompare(b.category)));
+  assert.equal(db.checkDataHealth().ok, true);
+
+  const beforeCount = db.listCampaigns().length;
+  const overCapacity = structuredClone(archive);
+  overCapacity.characters[0].inventoryCapacity = 0;
+  assert.throws(() => db.importCampaign(overCapacity), /over-capacity/);
+  const wrongEquipment = structuredClone(archive);
+  wrongEquipment.inventoryItems.find((row) => row.equippedSlot !== null).equippedSlot = "armor";
+  assert.throws(() => db.importCampaign(wrongEquipment), /invalid equipment state/);
+  const wrongCatalog = structuredClone(archive);
+  wrongCatalog.catalogItems[0].category = "invalid";
+  assert.throws(() => db.importCampaign(wrongCatalog), /category is invalid/);
+  assert.equal(db.listCampaigns().length, beforeCount, "invalid v9 imports do not leave partially imported campaigns");
+});
+
+test("legacy campaign import derives capacity from bag rows above the default", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Large legacy bag");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "large-legacy-bag-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+  db.updateCharacterInventoryCapacity(character.id, 14);
+  for (let index = 0; index < 14; index++) {
+    const item = db.createCatalogItem(campaign.id, `Item ${index}`);
+    db.grantInventoryItem(character.id, item.id, index === 0 ? 5 : 1);
+  }
+  const legacy = db.exportCampaign(campaign.id);
+  legacy.version = 8;
+  for (const row of legacy.characters) delete row.inventoryCapacity;
+  for (const row of legacy.catalogItems) {
+    delete row.description;
+    delete row.category;
+    delete row.rarity;
+    delete row.equipmentSlot;
+    delete row.transferAllowed;
+    delete row.discardAllowed;
+  }
+  for (const row of legacy.inventoryItems) delete row.equippedSlot;
+
+  const imported = db.importCampaign(legacy);
+  const importedCharacter = db.listCharactersByCampaign(imported.id)[0];
+  assert.equal(importedCharacter.inventoryCapacity, 14, "legacy capacity counts stack rows, not item quantities");
+  assert.equal(db.listCharacterInventory(importedCharacter.id).length, 14);
+  assert.equal(db.listCharacterInventory(importedCharacter.id).find(({ quantity }) => quantity > 1).quantity, 5);
+  assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("Data Health reports capacity, equipment, catalog and cross-campaign inventory corruption without repair", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Inventory health");
+    const other = db.createCampaign("Other inventory");
+    const character = db.createCharacter(campaign.id, "Mira");
+    const item = db.createCatalogItem(campaign.id, "Token");
+    const bagItem = db.createCatalogItem(campaign.id, "Map");
+    db.updateCatalogItemMetadata(item.id, { equipmentSlot: "tool" });
+    const session = db.createSession(campaign.id, "Session");
+    db.activateSession(session.id);
+    const player = db.submitPlayerRequest(session.id, "A", "inventory-health-token");
+    db.approvePlayer(player.id, { characterId: character.id });
+    const inventory = db.grantInventoryItem(character.id, item.id, 1);
+    db.equipInventoryItem(character.id, inventory.id);
+    db.grantInventoryItem(character.id, bagItem.id, 1);
+    const otherCatalogItem = db.createCatalogItem(other.id, "Foreign");
+    const raw = new SQLite(file);
+    try {
+      raw.pragma("ignore_check_constraints = ON");
+      raw.prepare("UPDATE characters SET inventory_capacity=0 WHERE id=?").run(character.id);
+      assert.equal(db.checkDataHealth().checks.find(({ name }) => name === "Вместимость сумок").status, "error");
+      raw.prepare("UPDATE characters SET inventory_capacity=-1 WHERE id=?").run(character.id);
+      raw.prepare("UPDATE catalog_items SET category='invalid' WHERE id=?").run(item.id);
+      raw.prepare("UPDATE catalog_items SET equipment_slot='special' WHERE id=?").run(item.id);
+      raw.prepare("UPDATE inventory_items SET catalog_item_id=? WHERE id=?").run(otherCatalogItem.id, inventory.id);
+      raw.pragma("ignore_check_constraints = OFF");
+      const health = db.checkDataHealth();
+      assert.equal(health.ok, false);
+      assert.equal(health.checks.find(({ name }) => name === "Вместимость сумок").status, "error");
+      assert.equal(health.checks.find(({ name }) => name === "Каталог предметов").status, "error");
+      assert.equal(health.checks.find(({ name }) => name === "Инвентарь и экипировка").status, "error");
+      assert.equal(raw.prepare("SELECT inventory_capacity FROM characters WHERE id=?").get(character.id).inventory_capacity, -1,
+        "health checks do not auto-repair data");
+    } finally { raw.close(); }
+  } finally { db.close(); }
+});
+
+test("restore migrates a real pre-0014 backup, derives safe capacity, preserves inventory and leaves source bytes unchanged", async (t) => {
+  const liveFile = temporaryFile(t);
+  const root = dirname(dirname(liveFile));
+  const backups = join(root, "backups");
+  const uploads = join(root, "uploads");
+  const migrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-pre-0014-"));
+  const backupUuid = "00000000-0000-4000-8000-000000000314";
+  const backupName = `progdm-backup-${backupUuid}.db`;
+  mkdirSync(backups, { recursive: true });
+  const backupUploads = join(backups, `progdm-backup-${backupUuid}-uploads`);
+  mkdirSync(backupUploads, { recursive: true });
+  for (const folder of ["monsters", "characters", "items"]) {
+    mkdirSync(join(uploads, folder), { recursive: true });
+    mkdirSync(join(backupUploads, folder), { recursive: true });
+  }
+  t.after(() => {
+    assert.equal(dirname(migrationFolder), resolve(tmpdir()));
+    rmSync(migrationFolder, { recursive: true, force: true });
+  });
+  const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
+  const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
+  const preInventoryEntries = journal.entries.filter((entry) => entry.idx <= 13);
+  mkdirSync(join(migrationFolder, "meta"));
+  writeFileSync(join(migrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: preInventoryEntries }));
+  for (const entry of preInventoryEntries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(migrationFolder, entry.tag + ".sql"));
+
+  const legacy = new SQLite(join(root, "legacy-pre-0014.db"));
+  legacy.pragma("foreign_keys = ON");
+  migrate(drizzle(legacy), { migrationsFolder: migrationFolder });
+  legacy.prepare("INSERT INTO campaigns (id, name, created_at) VALUES (?, ?, ?)")
+    .run("legacy-campaign", "Legacy inventory", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO sessions (id, campaign_id, name, status, join_token, created_at) VALUES (?, ?, ?, 'ended', ?, ?)")
+    .run("legacy-session", "legacy-campaign", "Old session", "legacy-join-token", "2026-01-01T00:00:00.000Z");
+  legacy.prepare("INSERT INTO characters (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)")
+    .run("legacy-character", "legacy-campaign", "Mira", "2026-01-01T00:00:00.000Z");
+  const insertCatalog = legacy.prepare("INSERT INTO catalog_items (id, campaign_id, name, created_at) VALUES (?, 'legacy-campaign', ?, ?)");
+  const insertInventory = legacy.prepare("INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, created_at) VALUES (?, 'legacy-character', ?, ?, ?, ?)");
+  for (let index = 0; index < 13; index++) {
+    const catalogId = `legacy-catalog-${index}`;
+    const name = `Old item ${index}`;
+    insertCatalog.run(catalogId, name, "2026-01-01T00:00:00.000Z");
+    insertInventory.run(`legacy-inventory-${index}`, catalogId, name, index === 0 ? 7 : 1, "2026-01-01T00:00:00.000Z");
+  }
+  insertInventory.run("legacy-inventory-null", null, "Uncatalogued item", 4, "2026-01-01T00:00:00.000Z");
+  legacy.prepare(`INSERT INTO campaign_activity (id, campaign_id, session_id, character_id, catalog_item_id, type, created_at, payload)
+    VALUES (?, 'legacy-campaign', 'legacy-session', 'legacy-character', 'legacy-catalog-0', 'item_granted', ?, ?)`)
+    .run("legacy-activity", "2026-01-01T00:00:00.000Z", JSON.stringify({ itemName: "Old item 0", quantity: 7, totalQuantity: 7 }));
+  const sourceBackup = join(backups, backupName);
+  await legacy.backup(sourceBackup);
+  legacy.close();
+  const originalBytes = readFileSync(sourceBackup);
+
+  const db = openDatabase({ file: liveFile, backupsDirectory: backups, uploadsDirectory: uploads });
+  try {
+    await db.restoreBackup(backupName);
+    const migratedCharacter = db.listCharactersByCampaign("legacy-campaign")[0];
+    assert.equal(migratedCharacter.inventoryCapacity, 14);
+    const items = db.listCharacterInventory("legacy-character");
+    assert.equal(items.length, 14);
+    assert.equal(items.find(({ id }) => id === "legacy-inventory-0").quantity, 7);
+    assert.equal(items.find(({ id }) => id === "legacy-inventory-null").catalogItemId, null);
+    assert.ok(items.every(({ equippedSlot }) => equippedSlot === null));
+    const migratedCatalog = db.listCatalogItemsByCampaign("legacy-campaign");
+    assert.ok(migratedCatalog.every(({ description, category, rarity, equipmentSlot, transferAllowed, discardAllowed }) =>
+      description === "" && category === "special" && rarity === null && equipmentSlot === null && transferAllowed && discardAllowed));
+    assert.equal(db.listCampaignActivity("legacy-campaign").some(({ id, type }) => id === "legacy-activity" && type === "item_granted"), true);
+    assert.equal(db.checkDataHealth().ok, true, JSON.stringify(db.checkDataHealth()));
+    const raw = new SQLite(liveFile);
+    try { assert.deepEqual(raw.pragma("foreign_key_check"), []); } finally { raw.close(); }
+    assert.deepEqual(readFileSync(sourceBackup), originalBytes, "restore does not modify the legacy backup");
+    const original = new SQLite(sourceBackup, { readonly: true });
+    try {
+      assert.equal(original.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, preInventoryEntries.length);
+      assert.equal(original.prepare("SELECT count(*) AS count FROM inventory_items").get().count, 14);
+      assert.equal(original.prepare("SELECT count(*) AS count FROM pragma_table_info('characters') WHERE name='inventory_capacity'").get().count, 0);
+    } finally { original.close(); }
   } finally { db.close(); }
 });

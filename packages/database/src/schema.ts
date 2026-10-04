@@ -53,12 +53,14 @@ export const characters = sqliteTable("characters", {
   dmNotes: text("dm_notes").notNull().default(""),
   traits: text("traits").notNull().default("[]"),
   appearance: text("appearance").notNull().default(""),
-  quote: text("quote").notNull().default("")
+  quote: text("quote").notNull().default(""),
+  inventoryCapacity: integer("inventory_capacity").notNull().default(12)
 }, (table) => [
   index("characters_campaign_id_idx").on(table.campaignId),
   uniqueIndex("characters_id_campaign_unique").on(table.id, table.campaignId),
   check("character_name_valid", sql`length(trim(${table.name})) between 1 and 120`),
-  check("character_profile_valid", sql`length(${table.shortDescription}) <= 500 and length(${table.archetype}) <= 120 and length(${table.origin}) <= 500 and length(${table.personalGoal}) <= 500 and length(${table.dmNotes}) <= 2000 and length(${table.appearance}) <= 1000 and length(${table.quote}) <= 300`)
+  check("character_profile_valid", sql`length(${table.shortDescription}) <= 500 and length(${table.archetype}) <= 120 and length(${table.origin}) <= 500 and length(${table.personalGoal}) <= 500 and length(${table.dmNotes}) <= 2000 and length(${table.appearance}) <= 1000 and length(${table.quote}) <= 300`),
+  check("character_inventory_capacity_valid", sql`typeof(${table.inventoryCapacity}) = 'integer' and ${table.inventoryCapacity} >= 0`)
 ]);
 
 export const campaignProfileFieldDefinitions = sqliteTable("campaign_profile_field_definitions", {
@@ -126,11 +128,23 @@ export const catalogItems = sqliteTable("catalog_items", {
   id: text("id").primaryKey(),
   campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  category: text("category", { enum: ["key", "document", "tool", "consumable", "equipment", "artifact", "special"] }).notNull().default("special"),
+  rarity: text("rarity", { enum: ["common", "uncommon", "rare", "unique"] }),
+  equipmentSlot: text("equipment_slot", { enum: ["primary", "secondary", "armor", "accessory", "tool", "special"] }),
+  transferAllowed: integer("transfer_allowed", { mode: "boolean" }).notNull().default(true),
+  discardAllowed: integer("discard_allowed", { mode: "boolean" }).notNull().default(true),
   createdAt: text("created_at").notNull()
 }, (table) => [
   uniqueIndex("catalog_items_campaign_name_unique").on(table.campaignId, sql`lower(trim(${table.name}))`),
   index("catalog_items_campaign_id_idx").on(table.campaignId),
-  check("catalog_item_name_valid", sql`length(trim(${table.name})) between 1 and 120`)
+  check("catalog_item_name_valid", sql`length(trim(${table.name})) between 1 and 120`),
+  check("catalog_item_description_valid", sql`length(${table.description}) <= 2000`),
+  check("catalog_item_category_valid", sql`${table.category} in ('key', 'document', 'tool', 'consumable', 'equipment', 'artifact', 'special')`),
+  check("catalog_item_rarity_valid", sql`${table.rarity} is null or ${table.rarity} in ('common', 'uncommon', 'rare', 'unique')`),
+  check("catalog_item_equipment_slot_valid", sql`${table.equipmentSlot} is null or ${table.equipmentSlot} in ('primary', 'secondary', 'armor', 'accessory', 'tool', 'special')`),
+  check("catalog_item_transfer_allowed_valid", sql`typeof(${table.transferAllowed}) = 'integer' and ${table.transferAllowed} in (0, 1)`),
+  check("catalog_item_discard_allowed_valid", sql`typeof(${table.discardAllowed}) = 'integer' and ${table.discardAllowed} in (0, 1)`)
 ]);
 
 export const inventoryItems = sqliteTable("inventory_items", {
@@ -139,12 +153,18 @@ export const inventoryItems = sqliteTable("inventory_items", {
   catalogItemId: text("catalog_item_id").references(() => catalogItems.id, { onDelete: "restrict" }),
   name: text("name").notNull(),
   quantity: integer("quantity").notNull().default(1),
+  equippedSlot: text("equipped_slot", { enum: ["primary", "secondary", "armor", "accessory", "tool", "special"] }),
   createdAt: text("created_at").notNull()
 }, (table) => [
   index("inventory_items_character_id_idx").on(table.characterId),
-  uniqueIndex("inventory_items_character_name_unique").on(table.characterId, sql`lower(trim(${table.name}))`),
+  uniqueIndex("inventory_items_equipped_slot_unique").on(table.characterId, table.equippedSlot)
+    .where(sql`${table.equippedSlot} is not null`),
+  uniqueIndex("inventory_items_character_catalog_bag_unique").on(table.characterId, table.catalogItemId)
+    .where(sql`${table.catalogItemId} is not null and ${table.equippedSlot} is null`),
   check("inventory_item_name_valid", sql`length(trim(${table.name})) between 1 and 120`),
-  check("inventory_item_quantity_valid", sql`${table.quantity} between 1 and 9999`)
+  check("inventory_item_quantity_valid", sql`typeof(${table.quantity}) = 'integer' and ${table.quantity} between 1 and 9999`),
+  check("inventory_item_equipped_slot_valid", sql`${table.equippedSlot} is null or ${table.equippedSlot} in ('primary', 'secondary', 'armor', 'accessory', 'tool', 'special')`),
+  check("inventory_item_equipped_valid", sql`${table.equippedSlot} is null or (${table.catalogItemId} is not null and ${table.quantity} = 1)`)
 ]);
 
 export const knowledgeEntries = sqliteTable("knowledge_entries", {

@@ -265,7 +265,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8, 9] }
       } } }
     }, async (request, reply) => {
       try {
@@ -273,7 +273,7 @@ export function createApp(options: {
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         if (message === "Campaign file format is not supported.") return reply.code(400).send({ message: "Формат файла кампании не поддерживается." });
-        if (/Campaign file|Campaign name|Name must|Player name|Personal note|Description|Profile|Character traits|constraint/i.test(message)) {
+        if (/Campaign file|Campaign name|Name must|Player name|Personal note|Description|Profile|Character traits|Catalog item|Equipment slot|Inventory|over-capacity|equipment state|equipment slots|inventory stacks|constraint/i.test(message)) {
           return reply.code(400).send({ message: "Файл кампании повреждён или содержит недопустимые данные." });
         }
         throw error;
@@ -422,6 +422,9 @@ export function createApp(options: {
         }
         if (message === "Item quantity limit exceeded.") {
           return reply.code(409).send({ message: "В инвентаре нельзя хранить больше 9999 предметов одного вида." });
+        }
+        if (message === "Inventory capacity is full.") {
+          return reply.code(409).send({ message: "В сумке персонажа нет свободных слотов." });
         }
         if (message === "Catalog item is unavailable for this campaign.") {
           return reply.code(409).send({ message: "Предмет не найден в справочнике этой кампании. Обновите данные." });
