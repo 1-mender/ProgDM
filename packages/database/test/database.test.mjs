@@ -1543,7 +1543,9 @@ test("Knowledge Fact export v8 remaps references, omits secrets, and imports inv
   ].sort());
   const before = db.listCampaigns().length;
   const invalid = structuredClone(archive);
-  invalid.knowledgeFactReveals[0].characterId = "missing-character";
+  const characterReveal = invalid.knowledgeFactReveals.find((reveal) => reveal.audience === "character");
+  assert.ok(characterReveal);
+  characterReveal.characterId = "missing-character";
   assert.throws(() => db.importCampaign(invalid), /invalid reference/);
   assert.equal(db.listCampaigns().length, before);
 });
