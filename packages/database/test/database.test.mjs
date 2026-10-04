@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -27,6 +27,20 @@ function memoryDatabase(t) {
   const database = openDatabase({ file: ":memory:" });
   t.after(() => database.close());
   return database;
+}
+
+function activeInventoryPair(database, campaignName = "Transfers") {
+  const campaign = database.createCampaign(campaignName);
+  const sender = database.createCharacter(campaign.id, "Mira");
+  const recipient = database.createCharacter(campaign.id, "Rowan");
+  const session = database.createSession(campaign.id, "Active session");
+  database.activateSession(session.id);
+  const senderPlayer = database.submitPlayerRequest(session.id, "Mira player", `${campaignName}-sender-token`);
+  const recipientPlayer = database.submitPlayerRequest(session.id, "Rowan player", `${campaignName}-recipient-token`);
+  database.approvePlayer(senderPlayer.id, { characterId: sender.id });
+  database.approvePlayer(recipientPlayer.id, { characterId: recipient.id });
+  return { campaign, sender, recipient, session, senderPlayer, recipientPlayer,
+    senderToken: `${campaignName}-sender-token`, recipientToken: `${campaignName}-recipient-token` };
 }
 
 test("failed activity append rolls back an inventory grant", (t) => {
@@ -243,16 +257,16 @@ test("Player inventory projection scopes catalog metadata to its campaign and pr
   assert.deepEqual(state.inventory.find((item) => item.id === ownRow.id), {
     id: ownRow.id, catalogItemId: ownCatalog.id, name: "Compass", quantity: 1,
     description: "A brass compass", category: "tool", rarity: "rare", equipmentSlot: "accessory",
-    equippedSlot: null, createdAt: ownRow.createdAt
+    transferAllowed: true, discardAllowed: true, equippedSlot: null, createdAt: ownRow.createdAt
   });
   assert.deepEqual(state.inventory.find((item) => item.id === "legacy-player-row"), {
     id: "legacy-player-row", catalogItemId: null, name: "Old item", quantity: 3,
-    description: "", category: "special", rarity: null, equipmentSlot: null, equippedSlot: null,
+    description: "", category: "special", rarity: null, equipmentSlot: null, transferAllowed: true, discardAllowed: true, equippedSlot: null,
     createdAt: "2026-01-01T00:00:00.000Z"
   });
   assert.deepEqual(state.inventory.find((item) => item.id === "foreign-player-row"), {
     id: "foreign-player-row", catalogItemId: null, name: "Borrowed row", quantity: 1,
-    description: "", category: "special", rarity: null, equipmentSlot: null, equippedSlot: null,
+    description: "", category: "special", rarity: null, equipmentSlot: null, transferAllowed: false, discardAllowed: false, equippedSlot: null,
     createdAt: "2026-01-02T00:00:00.000Z"
   });
   assert.equal(JSON.stringify(state.inventory).includes("Secret campaign metadata"), false);
@@ -368,7 +382,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 9);
+  assert.equal(archive.version, 10);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -479,7 +493,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.kind), ["item_received"]);
 
   const exported = db.exportCampaign(campaign.id);
-  assert.equal(exported.version, 9);
+  assert.equal(exported.version, 10);
   assert.deepEqual({ traits: exported.characters[0].traits, appearance: exported.characters[0].appearance, quote: exported.characters[0].quote }, {
     traits: ["Observant", "Careful"], appearance: "A weathered coat", quote: "Not yet."
   });
@@ -523,7 +537,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(db.checkDataHealth().ok, true);
 });
 
-test("campaign archive v9 round-trips six categories and rejects unknown categories atomically", (t) => {
+test("campaign archive v10 round-trips six categories and rejects unknown categories atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Knowledge taxonomy");
   const mira = db.createCharacter(campaign.id, "Mira");
@@ -532,7 +546,7 @@ test("campaign archive v9 round-trips six categories and rejects unknown categor
   db.setKnowledgeVisibility(entries[0].id, "character", mira.id);
   db.setKnowledgeVisibility(entries[1].id, "party");
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 9);
+  assert.equal(archive.version, 10);
   assert.deepEqual(archive.knowledge.map(({ category }) => category), categories);
 
   const imported = db.importCampaign(archive);
@@ -549,7 +563,12 @@ test("campaign archive v9 round-trips six categories and rejects unknown categor
     invalid.knowledge[0].category = invalidCategory;
     assert.throws(() => db.importCampaign(invalid), /Campaign file is invalid/);
   }
-  assert.equal(db.listCampaigns().length, 2);
+  const legacyV9 = structuredClone(archive);
+  legacyV9.version = 9;
+  for (const event of legacyV9.activity) delete event.relatedCharacterId;
+  const legacyImported = db.importCampaign(legacyV9);
+  assert.equal(db.exportCampaign(legacyImported.id).activity.every((event) => event.relatedCharacterId === null), true);
+  assert.equal(db.listCampaigns().length, 3);
 });
 
 test("campaign archive v1-v6 deterministically maps every legacy knowledge category", (t) => {
@@ -1243,7 +1262,7 @@ test("campaign profile fields validate, order, retain character values, export a
   assert.deepEqual(db.getPlayerState("new-profile-field-token").profile.profileFields.map((field) => field.value), ["Вейр", "Орден Серого Пламени"]);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 9);
+  assert.equal(archive.version, 10);
   assert.deepEqual(archive.profileFields.map(({ label, position }) => [label, position]), [["Родина", 0], ["Орден хранителей", 1]]);
   assert.equal(JSON.stringify(archive).includes("profile-field-token"), false);
   const imported = db.importCampaign(archive);
@@ -1483,7 +1502,7 @@ test("restoring a real schema 0012 backup stages migration 0013 and preserves le
         "00000000-0000-4000-8000-000000000411");
       assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_facts").get().count, 0);
       assert.equal(raw.prepare("SELECT count(*) AS count FROM knowledge_fact_reveals").get().count, 0);
-      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 15);
+      assert.equal(raw.prepare("SELECT count(*) AS count FROM __drizzle_migrations").get().count, 16);
       assert.deepEqual(raw.pragma("foreign_key_check"), []);
     } finally { raw.close(); }
     assert.equal(database.checkDataHealth().ok, true, JSON.stringify(database.checkDataHealth()));
@@ -1834,7 +1853,7 @@ test("Player activity projection is safe, audience-scoped, and uses the existing
   assert.equal(db.getPlayerState("activity-mira-hash").recentActivity.some((event) => "type" in event || "details" in event), false);
 });
 
-test("Knowledge Fact export v9 remaps references, omits secrets, and imports invalid references atomically", (t) => {
+test("Knowledge Fact export v10 remaps references, omits secrets, and imports invalid references atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Export Facts");
   const character = db.createCharacter(campaign.id, "Mira");
@@ -1847,7 +1866,7 @@ test("Knowledge Fact export v9 remaps references, omits secrets, and imports inv
   db.revealKnowledgeFactToCharacter(campaign.id, entry.id, fact.id, character.id);
   db.revealKnowledgeFactToParty(campaign.id, entry.id, fact.id);
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 9);
+  assert.equal(archive.version, 10);
   assert.equal(JSON.stringify(archive).includes("facts-secret-token-hash"), false);
   assert.equal(archive.knowledgeFacts.length, 1);
   assert.equal(archive.knowledgeFactReveals.length, 2);
@@ -2060,8 +2079,8 @@ test("equipment operations preserve slot compatibility, stack, and capacity inva
   assert.throws(() => db.equipInventoryItem(character.id, letter.id), /cannot be equipped/);
   assert.throws(() => db.updateCatalogItemMetadata(primary.id, { equipmentSlot: "accessory" }), /conflicts/);
   assert.equal(db.listCampaignActivity(campaign.id).some(({ type }) => type === "item_equipped" || type === "item_unequipped"), false);
-  assert.equal(ACTIVITY_TYPES.includes("item_transferred"), false);
-  assert.equal(ACTIVITY_TYPES.includes("item_discarded"), false);
+  assert.equal(ACTIVITY_TYPES.includes("item_transferred"), true);
+  assert.equal(ACTIVITY_TYPES.includes("item_discarded"), true);
 
   db.updateCharacterInventoryCapacity(character.id, 3);
   const equipableStack = db.listCharacterInventory(character.id).find((item) => item.id === collision.id);
@@ -2117,7 +2136,7 @@ test("equipment requires free bag space when no merge target exists and catalog 
   assert.equal(db.checkDataHealth().ok, true);
 });
 
-test("campaign export v9 round-trips inventory metadata, capacity and equipment; invalid imports are atomic", (t) => {
+test("campaign export v10 round-trips inventory metadata, capacity and equipment; invalid imports are atomic", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Inventory archive");
   const character = db.createCharacter(campaign.id, "Mira");
@@ -2136,7 +2155,7 @@ test("campaign export v9 round-trips inventory metadata, capacity and equipment;
   db.updateCharacterInventoryCapacity(character.id, 3);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 9);
+  assert.equal(archive.version, 10);
   const imported = db.importCampaign(archive);
   const importedArchive = db.exportCampaign(imported.id);
   assert.equal(importedArchive.characters[0].inventoryCapacity, 3);
@@ -2161,7 +2180,7 @@ test("campaign export v9 round-trips inventory metadata, capacity and equipment;
   const wrongCatalog = structuredClone(archive);
   wrongCatalog.catalogItems[0].category = "invalid";
   assert.throws(() => db.importCampaign(wrongCatalog), /category is invalid/);
-  assert.equal(db.listCampaigns().length, beforeCount, "invalid v9 imports do not leave partially imported campaigns");
+  assert.equal(db.listCampaigns().length, beforeCount, "invalid v10 imports do not leave partially imported campaigns");
 });
 
 test("legacy campaign import derives capacity from bag rows above the default", (t) => {
@@ -2353,4 +2372,288 @@ test("DM inventory grant belongs to persistent Character and records an optional
   const events = db.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted");
   assert.equal(events.length, 3);
   assert.equal(events.at(-1).sessionId, session.id);
+});
+
+test("catalog transfers merge atomically, project to both characters, and replay without duplicate effects", (t) => {
+  const db = memoryDatabase(t);
+  const { campaign, sender, recipient, session, senderToken, recipientToken } = activeInventoryPair(db);
+  const item = db.createCatalogItem(campaign.id, "Компас");
+  const source = db.grantInventoryItem(sender.id, item.id, 8);
+  const targetStack = db.grantInventoryItem(recipient.id, item.id, 4);
+  db.updateCharacterInventoryCapacity(recipient.id, 1);
+  const targets = db.listPlayerInventoryTransferTargets(senderToken, source.id);
+  assert.deepEqual(targets, [{ characterId: recipient.id, characterName: "Rowan", bagSlotsUsed: 1,
+    inventoryCapacity: 1, willMerge: true, maxQuantity: 9995 }]);
+
+  const operationId = randomUUID();
+  assert.deepEqual(db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 3, operationId), { replayed: false });
+  assert.equal(db.listCharacterInventory(sender.id).find((row) => row.id === source.id).quantity, 5);
+  assert.equal(db.listCharacterInventory(recipient.id).find((row) => row.id === targetStack.id).quantity, 7);
+  const event = db.listCampaignActivity(campaign.id).find((row) => row.operationId === undefined && row.type === "item_transferred");
+  assert.ok(event);
+  assert.deepEqual({ campaignId: event.campaignId, sessionId: event.sessionId, playerId: event.playerId,
+    characterId: event.characterId, relatedCharacterId: event.relatedCharacterId, catalogItemId: event.catalogItemId,
+    itemName: event.details.itemName, quantity: event.details.quantity, source: event.details.sourceInventoryItemId }, {
+    campaignId: campaign.id, sessionId: session.id, playerId: db.listPlayersByCampaign(campaign.id).find((player) => player.displayName === "Mira player").id,
+    characterId: sender.id, relatedCharacterId: recipient.id, catalogItemId: item.id,
+    itemName: "Компас", quantity: 3, source: source.id
+  });
+  assert.equal(db.listCampaignActivity(campaign.id).filter((row) => row.type === "item_transferred").length, 1);
+  assert.deepEqual(db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 3, operationId), { replayed: true });
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 2, operationId), /operation ID conflict/);
+  assert.equal(db.listCharacterInventory(recipient.id).find((row) => row.id === targetStack.id).quantity, 7);
+
+  const sent = db.getPlayerState(senderToken).recentActivity.find((entry) => entry.id === event.id);
+  const received = db.getPlayerState(recipientToken).recentActivity.find((entry) => entry.id === event.id);
+  assert.equal(sent.kind, "item_transferred");
+  assert.equal(sent.direction, "sent");
+  assert.equal(sent.otherCharacterName, "Rowan");
+  assert.equal(received.kind, "item_transferred");
+  assert.equal(received.direction, "received");
+  assert.equal(received.otherCharacterName, "Mira");
+  for (const projection of [sent, received]) {
+    for (const forbidden of ["relatedCharacterId", "characterId", "playerId", "sourceInventoryItemId", "operationId", "payload"]) {
+      assert.equal(forbidden in projection, false);
+    }
+  }
+});
+
+test("transfers enforce eligible target, stack limits, bag capacity, equipment and permissions atomically", (t) => {
+  const db = memoryDatabase(t);
+  const { campaign, sender, recipient, senderToken } = activeInventoryPair(db, "Transfer rules");
+  const item = db.createCatalogItem(campaign.id, "Key");
+  const source = db.grantInventoryItem(sender.id, item.id, 2);
+  db.updateCharacterInventoryCapacity(recipient.id, 0);
+  assert.deepEqual(db.listPlayerInventoryTransferTargets(senderToken, source.id)[0], {
+    characterId: recipient.id, characterName: "Rowan", bagSlotsUsed: 0, inventoryCapacity: 0, willMerge: false, maxQuantity: 0
+  });
+  const beforeEvents = db.listCampaignActivity(campaign.id).length;
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 1, randomUUID()), /capacity is full/);
+  assert.equal(db.listCharacterInventory(sender.id)[0].quantity, 2);
+  assert.equal(db.listCampaignActivity(campaign.id).length, beforeEvents);
+
+  db.updateCharacterInventoryCapacity(recipient.id, 1);
+  db.updateCatalogItemMetadata(item.id, { transferAllowed: false });
+  assert.throws(() => db.listPlayerInventoryTransferTargets(senderToken, source.id), /cannot be transferred/);
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 1, randomUUID()), /cannot be transferred/);
+  db.updateCatalogItemMetadata(item.id, { transferAllowed: true, discardAllowed: false });
+  assert.throws(() => db.discardPlayerInventoryItem(senderToken, source.id, 1, randomUUID()), /cannot be discarded/);
+
+  db.updateCatalogItemMetadata(item.id, { discardAllowed: true });
+  const equipCatalog = db.createCatalogItem(campaign.id, "Tool item");
+  db.updateCatalogItemMetadata(equipCatalog.id, { equipmentSlot: "tool" });
+  const equipped = db.grantInventoryItem(sender.id, equipCatalog.id, 1);
+  db.equipInventoryItem(sender.id, equipped.id);
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, equipped.id, recipient.id, 1, randomUUID()), /equipped/);
+  assert.throws(() => db.discardPlayerInventoryItem(senderToken, equipped.id, 1, randomUUID()), /equipped/);
+
+  const otherCampaign = db.createCampaign("Foreign");
+  const foreignCharacter = db.createCharacter(otherCampaign.id, "Foreign character");
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, foreignCharacter.id, 1, randomUUID()), /unavailable/);
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, sender.id, 1, randomUUID()), /same character/);
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 0, randomUUID()), /quantity is invalid/);
+  assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 3, randomUUID()), /exceeds owned/);
+});
+
+test("failed transfer or discard activity append rolls back inventory changes", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const { campaign, sender, recipient, senderToken } = activeInventoryPair(db, "Atomic item events");
+    const item = db.createCatalogItem(campaign.id, "Rope");
+    const source = db.grantInventoryItem(sender.id, item.id, 3);
+    const raw = new SQLite(file);
+    raw.exec(`CREATE TRIGGER reject_item_events BEFORE INSERT ON campaign_activity
+      WHEN NEW.type IN ('item_transferred', 'item_discarded')
+      BEGIN SELECT RAISE(ABORT, 'test item activity failure'); END`);
+    raw.close();
+
+    const historyBefore = db.listCampaignActivity(campaign.id);
+    assert.throws(() => db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 2, randomUUID()), /test item activity failure/);
+    assert.equal(db.listCharacterInventory(sender.id).find((row) => row.id === source.id).quantity, 3);
+    assert.deepEqual(db.listCharacterInventory(recipient.id), []);
+    assert.deepEqual(db.listCampaignActivity(campaign.id), historyBefore);
+
+    assert.throws(() => db.discardPlayerInventoryItem(senderToken, source.id, 2, randomUUID()), /test item activity failure/);
+    assert.equal(db.listCharacterInventory(sender.id).find((row) => row.id === source.id).quantity, 3);
+    assert.deepEqual(db.listCampaignActivity(campaign.id), historyBefore);
+  } finally { db.close(); }
+});
+
+test("legacy inventory transfer creates separate rows and discard supports partial/full idempotent retries", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "progdm-db-test-"));
+  const file = join(directory, "nested", "game.db");
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  t.after(() => db.close());
+  t.after(() => { assert.equal(dirname(directory), resolve(tmpdir())); rmSync(directory, { recursive: true, force: true }); });
+  const { campaign, sender, recipient, senderToken } = activeInventoryPair(db, "Legacy actions");
+  const legacyA = "10000000-0000-4000-8000-000000000001";
+  const legacyB = "10000000-0000-4000-8000-000000000002";
+  const raw = new SQLite(db.file);
+  try {
+    raw.prepare(`INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, equipped_slot, created_at)
+      VALUES (?, ?, NULL, ?, 5, NULL, ?), (?, ?, NULL, ?, 4, NULL, ?)`)
+      .run(legacyA, sender.id, "Old tonic", "2026-01-01T00:00:00.000Z", legacyB, recipient.id, "Old tonic", "2026-01-01T00:00:00.000Z");
+  } finally { raw.close(); }
+  assert.equal(db.listPlayerInventoryTransferTargets(senderToken, legacyA)[0].willMerge, false);
+  const partialTransfer = randomUUID();
+  db.transferPlayerInventoryItem(senderToken, legacyA, recipient.id, 2, partialTransfer);
+  assert.equal(db.listCharacterInventory(sender.id).find((row) => row.id === legacyA).quantity, 3);
+  assert.equal(db.listCharacterInventory(recipient.id).length, 2, "legacy rows with matching names never merge");
+  assert.equal(db.listCharacterInventory(recipient.id).find((row) => row.id !== legacyB).quantity, 2);
+
+  const partialDiscard = randomUUID();
+  db.discardPlayerInventoryItem(senderToken, legacyA, 1, partialDiscard);
+  assert.equal(db.listCharacterInventory(sender.id).find((row) => row.id === legacyA).quantity, 2);
+  assert.deepEqual(db.discardPlayerInventoryItem(senderToken, legacyA, 1, partialDiscard), { replayed: true });
+  assert.equal(db.listCampaignActivity(campaign.id).filter((row) => row.type === "item_discarded").length, 1);
+  assert.throws(() => db.discardPlayerInventoryItem(senderToken, legacyA, 2, partialDiscard), /operation ID conflict/);
+
+  const fullDiscard = randomUUID();
+  db.discardPlayerInventoryItem(senderToken, legacyA, 2, fullDiscard);
+  assert.equal(db.listCharacterInventory(sender.id).some((row) => row.id === legacyA), false);
+  assert.deepEqual(db.discardPlayerInventoryItem(senderToken, legacyA, 2, fullDiscard), { replayed: true }, "full deletion remains replayable by its audit row");
+  assert.equal(db.checkDataHealth().ok, true, JSON.stringify(db.checkDataHealth()));
+});
+
+test("corrupt catalog references fail closed for projection and destructive inventory actions", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const pair = activeInventoryPair(db, "Corrupt inventory");
+    const otherCampaign = db.createCampaign("Foreign catalog");
+    const foreignItem = db.createCatalogItem(otherCampaign.id, "Foreign item");
+    const raw = new SQLite(file);
+    try {
+      raw.pragma("foreign_keys = OFF");
+      raw.prepare(`INSERT INTO inventory_items (id, character_id, catalog_item_id, name, quantity, equipped_slot, created_at)
+        VALUES (?, ?, ?, ?, 1, NULL, ?)`)
+        .run("10000000-0000-4000-8000-000000000003", pair.sender.id, foreignItem.id, "Borrowed", "2026-01-01T00:00:00.000Z");
+    } finally { raw.close(); }
+    const corrupt = db.getPlayerState(pair.senderToken).inventory.find((row) => row.name === "Borrowed");
+    assert.equal(corrupt.catalogItemId, null);
+    assert.equal(corrupt.transferAllowed, false);
+    assert.equal(corrupt.discardAllowed, false);
+    assert.throws(() => db.transferPlayerInventoryItem(pair.senderToken, corrupt.id, pair.recipient.id, 1, randomUUID()), /catalog relation is invalid/);
+    assert.throws(() => db.discardPlayerInventoryItem(pair.senderToken, corrupt.id, 1, randomUUID()), /catalog relation is invalid/);
+  } finally { db.close(); }
+});
+
+test("Data Health reports malformed transfer activity without repairing it", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const { campaign, sender, recipient, session, senderPlayer } = activeInventoryPair(db, "Activity health");
+    const raw = new SQLite(file);
+    try {
+      raw.prepare(`INSERT INTO campaign_activity (id, campaign_id, session_id, player_id, character_id, related_character_id,
+        catalog_item_id, knowledge_entry_id, operation_id, type, created_at, payload)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'item_transferred', ?, '{}')`)
+        .run(randomUUID(), campaign.id, session.id, senderPlayer.id, sender.id, recipient.id, new Date().toISOString());
+    } finally { raw.close(); }
+    const health = db.checkDataHealth();
+    assert.equal(health.ok, false);
+    assert.equal(health.checks.find((check) => check.name === "Передачи и выбрасывание").status, "error");
+    assert.equal(db.listCampaignActivity(campaign.id).some((event) => event.type === "item_transferred"), true,
+      "health checks report corrupt history without changing it");
+  } finally { db.close(); }
+});
+
+test("campaign archive v10 remaps transfer targets, preserves discard history, and rejects these events in v9 atomically", (t) => {
+  const db = memoryDatabase(t);
+  const { campaign, sender, recipient, session, senderToken } = activeInventoryPair(db, "Archive transfers");
+  const item = db.createCatalogItem(campaign.id, "Compass");
+  const source = db.grantInventoryItem(sender.id, item.id, 4);
+  db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 1, randomUUID());
+  const remaining = db.listCharacterInventory(sender.id).find((row) => row.catalogItemId === item.id);
+  db.discardPlayerInventoryItem(senderToken, remaining.id, 1, randomUUID());
+  const archive = db.exportCampaign(campaign.id);
+  assert.equal(archive.version, 10);
+  assert.equal("operationId" in archive.activity.find((event) => event.type === "item_transferred"), false);
+  assert.equal(JSON.stringify(archive).includes("Archive transfers-sender-token"), false);
+  const transfer = archive.activity.find((event) => event.type === "item_transferred");
+  assert.equal(transfer.relatedCharacterId, recipient.id);
+  assert.equal(transfer.details.sourceInventoryItemId, source.id);
+  assert.equal(transfer.sessionId, session.id);
+  assert.equal(archive.activity.find((event) => event.type === "item_discarded").relatedCharacterId, null);
+
+  const imported = db.importCampaign(archive);
+  const importedArchive = db.exportCampaign(imported.id);
+  const mappedSender = importedArchive.characters.find((character) => character.name === "Mira").id;
+  const mappedRecipient = importedArchive.characters.find((character) => character.name === "Rowan").id;
+  const mappedTransfer = importedArchive.activity.find((event) => event.type === "item_transferred");
+  assert.notEqual(mappedSender, sender.id);
+  assert.notEqual(mappedRecipient, recipient.id);
+  assert.equal(mappedTransfer.characterId, mappedSender);
+  assert.equal(mappedTransfer.relatedCharacterId, mappedRecipient);
+  assert.equal(mappedTransfer.sessionId, importedArchive.sessions[0].id);
+  assert.equal(mappedTransfer.details.sourceInventoryItemId, source.id, "opaque source inventory ID is historical and is not remapped");
+  assert.equal(db.checkDataHealth().ok, true, JSON.stringify(db.checkDataHealth()));
+
+  const before = db.listCampaigns().length;
+  const legacyV9 = structuredClone(archive);
+  legacyV9.version = 9;
+  assert.throws(() => db.importCampaign(legacyV9), /invalid event type/);
+  const invalidTarget = structuredClone(archive);
+  invalidTarget.activity.find((event) => event.type === "item_transferred").relatedCharacterId = "missing-character";
+  assert.throws(() => db.importCampaign(invalidTarget), /invalid reference/);
+  assert.equal(db.listCampaigns().length, before, "invalid v10 transfer archive is rejected atomically");
+});
+
+test("current backup preserves transfer/discard; staged pre-0015 restore preserves old events and source bytes", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const { campaign, sender, recipient, senderToken } = activeInventoryPair(db, "Backup transfers");
+    const item = db.createCatalogItem(campaign.id, "Map");
+    const source = db.grantInventoryItem(sender.id, item.id, 3);
+    db.transferPlayerInventoryItem(senderToken, source.id, recipient.id, 1, randomUUID());
+    const remainder = db.listCharacterInventory(sender.id).find((row) => row.catalogItemId === item.id);
+    db.discardPlayerInventoryItem(senderToken, remainder.id, 1, randomUUID());
+    const currentBackup = await db.createBackup();
+    db.grantInventoryItem(sender.id, item.id, 1);
+    await db.restoreBackup(currentBackup.id);
+    const restoredEvents = db.listCampaignActivity(campaign.id).filter((event) => ["item_transferred", "item_discarded"].includes(event.type));
+    assert.equal(restoredEvents.length, 2);
+    assert.equal(restoredEvents.find((event) => event.type === "item_transferred").relatedCharacterId, recipient.id);
+    assert.equal(db.listCharacterInventory(sender.id).find((row) => row.catalogItemId === item.id).quantity, 1);
+    assert.deepEqual(db.checkDataHealth().checks.find((check) => check.name === "Внешние ключи").status, "ok");
+
+    const oldBackup = await db.createBackup();
+    const oldPath = db.backupFile(oldBackup.id);
+    const migration = readMigrationFiles({ migrationsFolder: fileURLToPath(new URL("../migrations/", import.meta.url)) }).at(-1);
+    let preMigrationEventIds;
+    const old = new SQLite(oldPath);
+    try {
+      old.pragma("foreign_keys = OFF");
+      old.exec("DELETE FROM campaign_activity WHERE type IN ('item_transferred','item_discarded')");
+      preMigrationEventIds = old.prepare("SELECT id FROM campaign_activity ORDER BY id").all().map((row) => row.id);
+      old.exec(`CREATE TABLE campaign_activity_pre0015 (
+        id text PRIMARY KEY NOT NULL, campaign_id text NOT NULL REFERENCES campaigns(id) ON DELETE RESTRICT,
+        session_id text REFERENCES sessions(id) ON DELETE RESTRICT, player_id text REFERENCES players(id) ON DELETE RESTRICT,
+        character_id text REFERENCES characters(id) ON DELETE RESTRICT, catalog_item_id text REFERENCES catalog_items(id) ON DELETE RESTRICT,
+        knowledge_entry_id text REFERENCES knowledge_entries(id) ON DELETE RESTRICT, operation_id text, type text NOT NULL,
+        created_at text NOT NULL, payload text NOT NULL CHECK(json_valid(payload)))`);
+      old.exec(`INSERT INTO campaign_activity_pre0015 SELECT id, campaign_id, session_id, player_id, character_id,
+        catalog_item_id, knowledge_entry_id, operation_id, type, created_at, payload FROM campaign_activity`);
+      old.exec("DROP TABLE campaign_activity; ALTER TABLE campaign_activity_pre0015 RENAME TO campaign_activity;");
+      old.exec("CREATE INDEX campaign_activity_campaign_order_idx ON campaign_activity (campaign_id, created_at, id);");
+      old.exec("CREATE INDEX campaign_activity_session_order_idx ON campaign_activity (session_id, created_at, id);");
+      old.exec("CREATE UNIQUE INDEX campaign_activity_operation_unique ON campaign_activity (operation_id) WHERE operation_id IS NOT NULL;");
+      old.prepare("DELETE FROM __drizzle_migrations WHERE created_at=?").run(migration.folderMillis);
+    } finally { old.close(); }
+    const sourceHash = createHash("sha256").update(readFileSync(oldPath)).digest("hex");
+    await db.restoreBackup(oldBackup.id);
+    const restoredOldEvents = db.listCampaignActivity(campaign.id);
+    assert.deepEqual(restoredOldEvents.filter((event) => preMigrationEventIds.includes(event.id)).map((event) => event.id).sort(), preMigrationEventIds.sort());
+    assert.equal(restoredOldEvents.filter((event) => event.relatedCharacterId !== null).length, 0, "pre-0015 rows gain a null related character");
+    assert.equal(restoredOldEvents.some((event) => ["item_transferred", "item_discarded"].includes(event.type)), false);
+    assert.deepEqual(db.checkDataHealth().checks.find((check) => check.name === "Внешние ключи").status, "ok");
+    assert.equal(createHash("sha256").update(readFileSync(oldPath)).digest("hex"), sourceHash, "restore never changes the original pre-0015 backup");
+  } finally { db.close(); }
 });

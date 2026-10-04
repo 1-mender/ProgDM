@@ -41,12 +41,20 @@ test("bag slot count is rows, not item quantity, and free slot rendering is capp
   assert.match(css, /\.prod-bag-grid\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
 });
 
+test("inventory operation IDs use a UUID v4 source compatible with HTTP LAN contexts", () => {
+  const operationId = model.createInventoryOperationId();
+  assert.match(operationId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.match(modelSource, /globalThis\.crypto\.getRandomValues/);
+  assert.doesNotMatch(modelSource, /crypto\.randomUUID/);
+});
+
 test("category and rarity labels are localized and null rarity stays absent", () => {
   assert.deepEqual(Object.values(model.INVENTORY_CATEGORY_LABELS), ["Ключевой предмет", "Документ", "Инструмент", "Расходник", "Снаряжение", "Артефакт", "Особое"]);
   assert.deepEqual(Object.values(model.INVENTORY_RARITY_LABELS), ["Обычный", "Необычный", "Редкий", "Уникальный"]);
   assert.match(page, /INVENTORY_CATEGORY_LABELS\[item\.category\]/);
   assert.match(page, /item\.rarity && <span className=\{`prod-rarity/);
-  assert.doesNotMatch(page, /Передать|Выбросить/);
+  assert.match(page, /onTransfer=\{beginTransfer\}/);
+  assert.match(page, /onDiscard=\{\(\) =>/);
 });
 
 test("equip logic rejects stacks, read-only controllers, non-equippable items, and occupied slots", () => {
@@ -73,11 +81,40 @@ test("unequip supports same-catalog merge at full capacity only when a stack can
   assert.match(page, /event\.key === "Escape"/);
 });
 
-test("details expose only equip/unequip actions and describe safe legacy fallback", () => {
+test("details gate equip, transfer, and discard by controller and independent permission flags", () => {
   assert.match(page, /item\.equippedSlot === null/);
   assert.match(page, /Экипировать:/);
   assert.match(page, />Снять<\/button>/);
+  assert.match(page, /item\.transferAllowed/);
+  assert.match(page, /item\.discardAllowed/);
+  assert.match(page, /Этот предмет нельзя передавать\./);
+  assert.match(page, /Этот предмет нельзя выбросить\./);
+  assert.match(page, /Сначала снимите предмет, чтобы передать или выбросить его/);
   assert.match(page, /aria-label=\{`\$\{EQUIPMENT_SLOT_LABELS\[slot\]\}: пусто`\}/);
   assert.match(css, /@media \(max-width: 380px\)/);
   assert.match(css, /max-height: min\(84dvh, 680px\)/);
+});
+
+test("transfer sheet presents only narrow character targets with capacity, merge, and quantity guards", () => {
+  assert.match(page, /onLoadTransferTargets\(selectedItem\.id\)/);
+  assert.match(page, /role="radiogroup" aria-label="Получатель"/);
+  assert.match(page, /Сумка \{entry\.bagSlotsUsed\} \/ \{entry\.inventoryCapacity\}/);
+  assert.match(page, /entry\.willMerge \? "Уже есть"/);
+  assert.match(page, /Сейчас некому передать предмет\./);
+  assert.match(page, /target\.maxQuantity < quantity/);
+  assert.match(page, /error=\{sheetError \|\| actionError\}/);
+  assert.match(page, /disabled=\{!canSubmit\}/);
+  assert.match(page, /createInventoryOperationId\(\)/);
+  assert.match(page, /outcome !== "ambiguous"/);
+  assert.match(workspace, /transfer-targets/);
+});
+
+test("discard requires an explicit sheet confirmation and supports partial stacks", () => {
+  assert.match(page, /Выбросить предмет\?/);
+  assert.match(page, /Сколько выбросить\?/);
+  assert.match(page, /Предмет исчезнет из инвентаря персонажа\./);
+  assert.match(page, /error && <p className="prod-feedback is-error" role="alert">\{error\}<\/p>/);
+  assert.match(page, /onDiscard\(selectedItem\.id, actionQuantity/);
+  assert.match(css, /\.prod-discard-warning/);
+  assert.match(css, /\.prod-player \.prod-danger/);
 });

@@ -108,6 +108,13 @@ function validatedOperationId(operationId: string): string {
   return value;
 }
 
+function validatedInventoryOperationId(operationId: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId)) {
+    throw new Error("Inventory operation ID is invalid.");
+  }
+  return operationId;
+}
+
 function transferRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Campaign file is invalid.");
   return value as Record<string, unknown>;
@@ -245,6 +252,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     sessionId?: string | null;
     playerId?: string | null;
     characterId?: string | null;
+    relatedCharacterId?: string | null;
     catalogItemId?: string | null;
     knowledgeEntryId?: string | null;
     operationId?: string | null;
@@ -258,6 +266,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     db.insert(schema.campaignActivity).values({
       id: randomUUID(), campaignId: event.campaignId, sessionId: event.sessionId ?? null,
       playerId: event.playerId ?? null, characterId: event.characterId ?? null,
+      relatedCharacterId: event.relatedCharacterId ?? null,
       catalogItemId: event.catalogItemId ?? null, knowledgeEntryId: event.knowledgeEntryId ?? null,
       operationId: event.operationId ?? null,
       type: event.type, createdAt: new Date(timestamp).toISOString(), payload: JSON.stringify(event.details ?? {})
@@ -307,7 +316,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   function activityRows(rows: (typeof schema.campaignActivity.$inferSelect)[]): CampaignActivity[] {
     return rows.map((row) => ({
       id: row.id, campaignId: row.campaignId, sessionId: row.sessionId, playerId: row.playerId,
-      characterId: row.characterId, catalogItemId: row.catalogItemId,
+      characterId: row.characterId, relatedCharacterId: row.relatedCharacterId, catalogItemId: row.catalogItemId,
       knowledgeEntryId: row.knowledgeEntryId, type: row.type as ActivityType,
       createdAt: row.createdAt, details: JSON.parse(row.payload) as ActivityDetails
     }));
@@ -321,6 +330,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     const scopeKeys = new Set(["selected", "next", "all"]);
     for (const [key, part] of Object.entries(details)) {
       if (stringKeys.has(key) && typeof part === "string" && part.length <= 160) continue;
+      if (key === "sourceInventoryItemId" && typeof part === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(part)) continue;
       if (visibilityKeys.has(key) && ["hidden", "party", "character"].includes(String(part))) continue;
       if (["quantity", "totalQuantity"].includes(key) && typeof part === "number" && Number.isInteger(part) && part >= 0 && part <= 9999) continue;
       if (key === "audience" && typeof part === "string" && audienceKeys.has(part)) continue;
@@ -557,6 +567,68 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       .where(eq(schema.inventoryItems.id, item.id)).returning().get();
   }
 
+  function inventoryMutationContext(tokenHash: string, inventoryItemId: string) {
+    const active = requireActivePlayerCharacter(tokenHash);
+    const item = db.select().from(schema.inventoryItems).where(and(
+      eq(schema.inventoryItems.id, inventoryItemId), eq(schema.inventoryItems.characterId, active.characterId)
+    )).get();
+    if (!item) throw new Error("Inventory item not found for this character.");
+    const character = db.select({ archivedAt: schema.characters.archivedAt, inventoryCapacity: schema.characters.inventoryCapacity })
+      .from(schema.characters).where(and(eq(schema.characters.id, active.characterId), eq(schema.characters.campaignId, active.campaignId))).get();
+    if (!character || character.archivedAt) throw new Error("Active character access required.");
+    let catalogItem: typeof schema.catalogItems.$inferSelect | null = null;
+    if (item.catalogItemId !== null) {
+      catalogItem = db.select().from(schema.catalogItems).where(and(
+        eq(schema.catalogItems.id, item.catalogItemId), eq(schema.catalogItems.campaignId, active.campaignId)
+      )).get() ?? null;
+      if (!catalogItem) throw new Error("Inventory catalog relation is invalid.");
+    }
+    return { active, item, character, catalogItem };
+  }
+
+  function existingInventoryOperation(operationId: string, intent: {
+    type: "item_transferred" | "item_discarded"; inventoryItemId: string; quantity: number;
+    recipientCharacterId?: string;
+  }, active: ReturnType<typeof activePlayerCharacter> & {}) {
+    const previous = db.select().from(schema.campaignActivity)
+      .where(eq(schema.campaignActivity.operationId, operationId)).get();
+    if (!previous) {
+      const knowledgeOperation = db.select({ id: schema.knowledgeFactReveals.id }).from(schema.knowledgeFactReveals)
+        .where(eq(schema.knowledgeFactReveals.operationId, operationId)).get();
+      if (knowledgeOperation) throw new Error("Inventory operation ID conflict.");
+      return false;
+    }
+    const details = transferRecord(JSON.parse(previous.payload) as unknown);
+    const matches = previous.type === intent.type && previous.campaignId === active.campaignId &&
+      previous.sessionId === active.sessionId && previous.playerId === active.playerId && previous.characterId === active.characterId &&
+      previous.relatedCharacterId === (intent.recipientCharacterId ?? null) && details.sourceInventoryItemId === intent.inventoryItemId &&
+      details.quantity === intent.quantity;
+    if (!matches) throw new Error("Inventory operation ID conflict.");
+    return true;
+  }
+
+  function eligibleTransferTargets(active: NonNullable<ReturnType<typeof activePlayerCharacter>>, item: typeof schema.inventoryItems.$inferSelect) {
+    const characters = client.prepare(`SELECT c.id AS characterId, c.name AS characterName, c.inventory_capacity AS inventoryCapacity,
+      (SELECT count(*) FROM inventory_items i WHERE i.character_id=c.id AND i.equipped_slot IS NULL) AS bagSlotsUsed,
+      CASE WHEN ? IS NULL THEN NULL ELSE (SELECT i.quantity FROM inventory_items i WHERE i.character_id=c.id
+        AND i.catalog_item_id=? AND i.equipped_slot IS NULL) END AS existingStackQuantity
+      FROM session_character_assignments a
+      JOIN players p ON p.id=a.player_id AND p.session_id=a.session_id AND p.status='approved'
+      JOIN characters c ON c.id=a.character_id AND c.campaign_id=? AND c.archived_at IS NULL
+      WHERE a.session_id=? AND c.id!=?
+      ORDER BY c.name COLLATE NOCASE, c.id`).all(item.catalogItemId, item.catalogItemId,
+      active.campaignId, active.sessionId, active.characterId) as {
+        characterId: string; characterName: string; inventoryCapacity: number; bagSlotsUsed: number; existingStackQuantity: number | null
+      }[];
+    return characters.map((target) => {
+      const willMerge = item.catalogItemId !== null && target.existingStackQuantity !== null;
+      const maxQuantity = willMerge ? Math.max(0, 9999 - target.existingStackQuantity!)
+        : target.bagSlotsUsed < target.inventoryCapacity ? 9999 : 0;
+      return { characterId: target.characterId, characterName: target.characterName, bagSlotsUsed: target.bagSlotsUsed,
+        inventoryCapacity: target.inventoryCapacity, willMerge, maxQuantity };
+    });
+  }
+
   return {
     file,
     close(): void {
@@ -656,13 +728,39 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
         ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
         ["Отметки просмотра", "SELECT count(*) AS count FROM character_read_state r JOIN characters c ON c.id=r.character_id LEFT JOIN campaign_activity a ON a.id=r.last_seen_id WHERE a.id IS NULL OR a.campaign_id!=c.campaign_id OR a.created_at!=r.last_seen_at"],
-        ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id)"],
+        ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id LEFT JOIN characters r ON r.id=a.related_character_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id) OR (a.related_character_id IS NOT NULL AND (r.id IS NULL OR r.campaign_id!=a.campaign_id))"],
+        ["Передачи и выбрасывание", `SELECT count(*) AS count FROM campaign_activity a
+          LEFT JOIN characters sender ON sender.id=a.character_id AND sender.campaign_id=a.campaign_id
+          LEFT JOIN characters recipient ON recipient.id=a.related_character_id AND recipient.campaign_id=a.campaign_id
+          LEFT JOIN sessions s ON s.id=a.session_id AND s.campaign_id=a.campaign_id
+          LEFT JOIN players p ON p.id=a.player_id AND p.session_id=a.session_id
+          WHERE a.type IN ('item_transferred','item_discarded') AND (
+            sender.id IS NULL OR s.id IS NULL OR p.id IS NULL OR p.status!='approved' OR
+            json_type(a.payload,'$.itemName') IS NOT 'text' OR coalesce(length(trim(json_extract(a.payload,'$.itemName'))),0)=0 OR
+            json_type(a.payload,'$.quantity') IS NOT 'integer' OR CAST(json_extract(a.payload,'$.quantity') AS integer) NOT BETWEEN 1 AND 9999 OR
+            json_type(a.payload,'$.sourceInventoryItemId') IS NOT 'text' OR length(json_extract(a.payload,'$.sourceInventoryItemId'))!=36 OR
+            NOT EXISTS (SELECT 1 FROM session_character_assignments a_sender WHERE a_sender.session_id=a.session_id AND a_sender.player_id=a.player_id AND a_sender.character_id=a.character_id) OR
+            (a.type='item_transferred' AND (recipient.id IS NULL OR recipient.id=sender.id OR NOT EXISTS (
+              SELECT 1 FROM session_character_assignments a_target JOIN players p_target ON p_target.id=a_target.player_id
+              WHERE a_target.session_id=a.session_id AND a_target.character_id=a.related_character_id AND p_target.status='approved'))) OR
+            (a.type='item_discarded' AND a.related_character_id IS NOT NULL)
+          )`],
         ["Личные заметки", "SELECT count(*) AS count FROM character_personal_notes n LEFT JOIN characters c ON c.id=n.character_id WHERE c.id IS NULL OR length(n.title)>120 OR length(trim(n.body)) NOT BETWEEN 1 AND 2000 OR n.marker NOT IN ('normal', 'important', 'check', 'question') OR typeof(n.pinned)!='integer' OR n.pinned NOT IN (0, 1)"]
       ] as const;
       for (const [name, query] of domainQueries) check(name, () => {
         const count = (client.prepare(query).get() as { count: number }).count;
         return count === 0 ? { status: "ok", message: "Нарушений не найдено." }
           : { status: "error", message: `Найдено несогласованных записей: ${count}.` };
+      });
+      check("Идентификаторы операций с предметами", () => {
+        const rows = client.prepare("SELECT payload FROM campaign_activity WHERE type IN ('item_transferred','item_discarded')").all() as { payload: string }[];
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        const invalid = rows.filter((row) => {
+          try { return !uuid.test(String((JSON.parse(row.payload) as Record<string, unknown>).sourceInventoryItemId ?? "")); }
+          catch { return true; }
+        }).length;
+        return invalid === 0 ? { status: "ok", message: "Ссылки на исходные строки инвентаря корректны." }
+          : { status: "error", message: `Найдено событий с некорректными ссылками на предметы: ${invalid}.` };
       });
       check("Профили персонажей", () => {
         const rows = client.prepare("SELECT traits, appearance, quote FROM characters").all() as { traits: string; appearance: string; quote: string }[];
@@ -843,7 +941,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeFactReveals).where(eq(schema.knowledgeFactReveals.campaignId, id))
         .orderBy(asc(schema.knowledgeFactReveals.createdAt), asc(schema.knowledgeFactReveals.id)).all();
       return {
-        format: "progdm-campaign", version: 9, exportedAt: new Date().toISOString(), campaign,
+        format: "progdm-campaign", version: 10, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, profileFields, profileFieldValues, personalNotes, catalogItems, inventoryItems, knowledge,
         knowledgeFacts, knowledgeFactReveals,
         activity: activityRows(db.select().from(schema.campaignActivity)
@@ -853,7 +951,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
@@ -890,6 +988,10 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         return map.get(id)!;
       };
       const playerSessionIds = new Map(players.map((row) => [transferString(row, "id"), transferString(row, "sessionId")]));
+      const approvedPlayers = new Set(players.filter((row) => row.status === "approved").map((row) => transferString(row, "id")));
+      const assignedCharacters = new Set(assignments.map((row) => `${String(row.sessionId)}:${String(row.playerId)}:${String(row.characterId)}`));
+      const approvedSessionCharacters = new Set(assignments.filter((row) => approvedPlayers.has(String(row.playerId)))
+        .map((row) => `${String(row.sessionId)}:${String(row.characterId)}`));
       if (knowledgeIds.size !== knowledge.length || knowledgeFactIds.size !== knowledgeFacts.length ||
           knowledgeFactRevealIds.size !== knowledgeFactReveals.length) throw new Error("Campaign file contains duplicate knowledge IDs.");
       if (profileFieldIds.size !== profileFields.length || profileFields.length > 20) throw new Error("Campaign file contains invalid profile fields.");
@@ -1127,9 +1229,34 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         }
         for (const row of activity) {
           if (typeof row.type !== "string" || !ACTIVITY_TYPES.includes(row.type as ActivityType)) throw new Error("Campaign file contains an invalid event type.");
+          if (archiveVersion < 10 && (row.type === "item_transferred" || row.type === "item_discarded")) throw new Error("Campaign file contains an invalid event type.");
           if (row.playerId !== null && playerSessionIds.get(String(row.playerId)) !== row.sessionId) throw new Error("Campaign file contains an invalid event session.");
           const mapped = (value: unknown, ids: Map<string, string>) => value === null ? null : requireMapped(ids, value);
           const details = parsedActivityDetails(row.details);
+          const relatedCharacterId = archiveVersion >= 10 ? mapped(row.relatedCharacterId, characterIds) : null;
+          if (archiveVersion >= 10 && row.type !== "item_transferred" && relatedCharacterId !== null) throw new Error("Campaign file contains an invalid related character reference.");
+          if (row.type === "item_transferred" || row.type === "item_discarded") {
+            const quantity = details.quantity;
+            const sourceInventoryItemId = details.sourceInventoryItemId;
+            const characterId = typeof row.characterId === "string" ? row.characterId : null;
+            const sessionId = typeof row.sessionId === "string" ? row.sessionId : null;
+            const playerId = typeof row.playerId === "string" ? row.playerId : null;
+            const itemName = details.itemName;
+            if (archiveVersion < 10 || !characterId || !sessionId || !playerId || !itemName ||
+                !Number.isInteger(quantity) || quantity! < 1 || quantity! > 9999 ||
+                typeof sourceInventoryItemId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sourceInventoryItemId) ||
+                !approvedPlayers.has(playerId) || !assignedCharacters.has(`${sessionId}:${playerId}:${characterId}`)) {
+              throw new Error("Campaign file contains an invalid inventory activity event.");
+            }
+            validatedName(itemName);
+            if (row.catalogItemId !== null) requireMapped(catalogIds, row.catalogItemId);
+            if (row.type === "item_transferred") {
+              if (typeof row.relatedCharacterId !== "string" || row.relatedCharacterId === characterId || !characterIds.has(row.relatedCharacterId) ||
+                  !approvedSessionCharacters.has(`${sessionId}:${row.relatedCharacterId}`)) {
+                throw new Error("Campaign file contains an invalid transfer target.");
+              }
+            } else if (row.relatedCharacterId !== null) throw new Error("Campaign file contains an invalid discard event target.");
+          }
           if (row.type === "knowledge_fact_revealed" || row.type === "knowledge_fact_access_revoked") {
             if (row.knowledgeEntryId === null || !["party", "character"].includes(String(details.audience)) ||
                 !Number.isInteger(details.factCount) || (details.factCount ?? -1) < 1 || !["selected", "next", "all"].includes(String(details.scope))) {
@@ -1143,7 +1270,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           db.insert(schema.campaignActivity).values({
             id: newId(), campaignId,
             sessionId: mapped(row.sessionId, sessionIds), playerId: mapped(row.playerId, playerIds),
-            characterId: mapped(row.characterId, characterIds), catalogItemId: mapped(row.catalogItemId, catalogIds),
+            characterId: mapped(row.characterId, characterIds), relatedCharacterId,
+            catalogItemId: mapped(row.catalogItemId, catalogIds),
             knowledgeEntryId: mapped(row.knowledgeEntryId, knowledgeIds),
             type: row.type, createdAt: createdAt(row), payload: JSON.stringify(details)
           }).run();
@@ -1301,7 +1429,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const safeEntries = new Map(knowledge.map((entry) => [entry.id, entry]));
         const sessionNames = new Map(db.select({ id: schema.sessions.id, name: schema.sessions.name }).from(schema.sessions)
           .where(eq(schema.sessions.campaignId, active.campaignId)).all().map((session) => [session.id, session.name]));
-        const playerProjectionTypes: ActivityType[] = ["knowledge_created", "knowledge_visibility_changed", "item_granted", "knowledge_fact_revealed"];
+        const playerProjectionTypes: ActivityType[] = ["knowledge_created", "knowledge_visibility_changed", "item_granted", "knowledge_fact_revealed", "item_transferred", "item_discarded"];
         const campaignEvents = activityRows(db.select().from(schema.campaignActivity)
           .where(and(eq(schema.campaignActivity.campaignId, active.campaignId), inArray(schema.campaignActivity.type, playerProjectionTypes)))
           .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all());
@@ -1339,6 +1467,33 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           if (event.type === "item_granted" && event.characterId === active.characterId) {
             relevant.push({
               id: event.id, kind: "item_received", createdAt: event.createdAt,
+              sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
+              itemName: event.details.itemName ?? "Предмет",
+              quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1
+            });
+            continue;
+          }
+          if (event.type === "item_transferred") {
+            const isSender = event.characterId === active.characterId;
+            const isRecipient = event.relatedCharacterId === active.characterId;
+            if (isSender !== isRecipient) {
+              const otherCharacterId = isSender ? event.relatedCharacterId : event.characterId;
+              const otherCharacter = otherCharacterId ? db.select({ name: schema.characters.name }).from(schema.characters)
+                .where(and(eq(schema.characters.id, otherCharacterId), eq(schema.characters.campaignId, active.campaignId))).get() : null;
+              if (otherCharacter) relevant.push({
+                id: event.id, kind: "item_transferred", direction: isSender ? "sent" : "received",
+                createdAt: event.createdAt, sessionId: event.sessionId,
+                sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
+                itemName: event.details.itemName ?? "Предмет",
+                quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1,
+                otherCharacterName: otherCharacter.name
+              });
+            }
+            continue;
+          }
+          if (event.type === "item_discarded" && event.characterId === active.characterId) {
+            relevant.push({
+              id: event.id, kind: "item_discarded", createdAt: event.createdAt,
               sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
               itemName: event.details.itemName ?? "Предмет",
               quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1
@@ -1387,12 +1542,17 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           CASE WHEN c.id IS NULL OR c.category NOT IN ('key','document','tool','consumable','equipment','artifact','special') THEN 'special' ELSE c.category END AS category,
           CASE WHEN c.id IS NULL OR c.rarity NOT IN ('common','uncommon','rare','unique') THEN NULL ELSE c.rarity END AS rarity,
           CASE WHEN c.id IS NULL OR c.equipment_slot NOT IN ('primary','secondary','armor','accessory','tool','special') THEN NULL ELSE c.equipment_slot END AS equipmentSlot,
+          CASE WHEN i.catalog_item_id IS NULL THEN 1 WHEN c.id IS NULL THEN 0 ELSE c.transfer_allowed END AS transferAllowed,
+          CASE WHEN i.catalog_item_id IS NULL THEN 1 WHEN c.id IS NULL THEN 0 ELSE c.discard_allowed END AS discardAllowed,
           i.equipped_slot AS equippedSlot,
           i.created_at AS createdAt
           FROM inventory_items i
           LEFT JOIN catalog_items c ON c.id=i.catalog_item_id AND c.campaign_id=?
           WHERE i.character_id=?
-          ORDER BY i.created_at ASC, i.name ASC, i.id ASC`).all(player.campaignId, player.characterId) as PlayerInventoryItem[]) : [],
+          ORDER BY i.created_at ASC, i.name ASC, i.id ASC`).all(player.campaignId, player.characterId) as PlayerInventoryItem[]).map((item) => ({
+            ...item, transferAllowed: (item.transferAllowed as unknown as number) === 1,
+            discardAllowed: (item.discardAllowed as unknown as number) === 1
+          })) : [],
         inventoryCapacity: player.characterId ? player.inventoryCapacity ?? null : null,
         knowledge,
         notes: active ? db.select().from(schema.characterPersonalNotes)
@@ -1553,7 +1713,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     listCharacterActivity(characterId: string, limit = 20) {
       return activityRows(db.select().from(schema.campaignActivity)
-        .where(eq(schema.campaignActivity.characterId, characterId))
+        .where(or(eq(schema.campaignActivity.characterId, characterId), eq(schema.campaignActivity.relatedCharacterId, characterId)))
         .orderBy(desc(schema.campaignActivity.createdAt), desc(schema.campaignActivity.id)).limit(limit).all());
     },
     getCharacterOverview(characterId: string) {
@@ -1665,6 +1825,82 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       return db.transaction(() => {
         const active = requireActivePlayerCharacter(tokenHash);
         return unequipInventoryItemInTransaction(active.characterId, inventoryItemId);
+      });
+    },
+    listPlayerInventoryTransferTargets(tokenHash: string, inventoryItemId: string) {
+      const active = requireActivePlayerCharacter(tokenHash);
+      const { item, catalogItem } = inventoryMutationContext(tokenHash, inventoryItemId);
+      if (item.equippedSlot !== null) throw new Error("Inventory item is equipped.");
+      if (item.catalogItemId !== null && !catalogItem) throw new Error("Inventory catalog relation is invalid.");
+      if (catalogItem && !catalogItem.transferAllowed) throw new Error("Catalog item cannot be transferred.");
+      return eligibleTransferTargets(active, item);
+    },
+    transferPlayerInventoryItem(tokenHash: string, inventoryItemId: string, recipientCharacterId: string, quantity: number, operationId: string) {
+      const requestId = validatedInventoryOperationId(operationId);
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new Error("Inventory quantity is invalid.");
+      return db.transaction(() => {
+        const active = requireActivePlayerCharacter(tokenHash);
+        if (existingInventoryOperation(requestId, { type: "item_transferred", inventoryItemId, quantity, recipientCharacterId }, active)) {
+          return { replayed: true };
+        }
+        const { item, catalogItem } = inventoryMutationContext(tokenHash, inventoryItemId);
+        if (item.equippedSlot !== null) throw new Error("Inventory item is equipped.");
+        if (item.catalogItemId !== null && !catalogItem) throw new Error("Inventory catalog relation is invalid.");
+        if (catalogItem && !catalogItem.transferAllowed) throw new Error("Catalog item cannot be transferred.");
+        if (quantity > item.quantity) throw new Error("Inventory quantity exceeds owned amount.");
+        if (recipientCharacterId === active.characterId) throw new Error("Cannot transfer inventory to the same character.");
+        const recipient = db.select().from(schema.characters).where(and(
+          eq(schema.characters.id, recipientCharacterId), eq(schema.characters.campaignId, active.campaignId),
+          isNull(schema.characters.archivedAt)
+        )).get();
+        const assigned = recipient && db.select({ playerId: schema.players.id }).from(schema.sessionCharacterAssignments)
+          .innerJoin(schema.players, and(eq(schema.players.id, schema.sessionCharacterAssignments.playerId),
+            eq(schema.players.sessionId, schema.sessionCharacterAssignments.sessionId)))
+          .where(and(eq(schema.sessionCharacterAssignments.sessionId, active.sessionId),
+            eq(schema.sessionCharacterAssignments.characterId, recipientCharacterId), eq(schema.players.status, "approved"))).get();
+        if (!recipient || !assigned) throw new Error("Inventory transfer recipient is unavailable.");
+
+        const existing = item.catalogItemId ? db.select().from(schema.inventoryItems).where(and(
+          eq(schema.inventoryItems.characterId, recipientCharacterId), eq(schema.inventoryItems.catalogItemId, item.catalogItemId),
+          isNull(schema.inventoryItems.equippedSlot)
+        )).get() : null;
+        if (existing && existing.quantity + quantity > 9999) throw new Error("Recipient inventory stack limit exceeded.");
+        if (!existing) {
+          const used = client.prepare("SELECT count(*) AS count FROM inventory_items WHERE character_id=? AND equipped_slot IS NULL")
+            .get(recipientCharacterId) as { count: number };
+          if (used.count >= recipient.inventoryCapacity) throw new Error("Recipient inventory capacity is full.");
+        }
+        const now = new Date().toISOString();
+        if (existing) db.update(schema.inventoryItems).set({ quantity: existing.quantity + quantity }).where(eq(schema.inventoryItems.id, existing.id)).run();
+        else db.insert(schema.inventoryItems).values({ id: randomUUID(), characterId: recipientCharacterId,
+          catalogItemId: item.catalogItemId, name: item.name, quantity, equippedSlot: null, createdAt: now }).run();
+        if (quantity === item.quantity) db.delete(schema.inventoryItems).where(eq(schema.inventoryItems.id, item.id)).run();
+        else db.update(schema.inventoryItems).set({ quantity: item.quantity - quantity }).where(eq(schema.inventoryItems.id, item.id)).run();
+        appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, playerId: active.playerId,
+          characterId: active.characterId, relatedCharacterId: recipientCharacterId, catalogItemId: item.catalogItemId,
+          operationId: requestId, type: "item_transferred", details: { itemName: item.name, quantity, sourceInventoryItemId: item.id } });
+        return { replayed: false };
+      });
+    },
+    discardPlayerInventoryItem(tokenHash: string, inventoryItemId: string, quantity: number, operationId: string) {
+      const requestId = validatedInventoryOperationId(operationId);
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new Error("Inventory quantity is invalid.");
+      return db.transaction(() => {
+        const active = requireActivePlayerCharacter(tokenHash);
+        if (existingInventoryOperation(requestId, { type: "item_discarded", inventoryItemId, quantity }, active)) {
+          return { replayed: true };
+        }
+        const { item, catalogItem } = inventoryMutationContext(tokenHash, inventoryItemId);
+        if (item.equippedSlot !== null) throw new Error("Inventory item is equipped.");
+        if (item.catalogItemId !== null && !catalogItem) throw new Error("Inventory catalog relation is invalid.");
+        if (catalogItem && !catalogItem.discardAllowed) throw new Error("Catalog item cannot be discarded.");
+        if (quantity > item.quantity) throw new Error("Inventory quantity exceeds owned amount.");
+        if (quantity === item.quantity) db.delete(schema.inventoryItems).where(eq(schema.inventoryItems.id, item.id)).run();
+        else db.update(schema.inventoryItems).set({ quantity: item.quantity - quantity }).where(eq(schema.inventoryItems.id, item.id)).run();
+        appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, playerId: active.playerId,
+          characterId: active.characterId, catalogItemId: item.catalogItemId, operationId: requestId,
+          type: "item_discarded", details: { itemName: item.name, quantity, sourceInventoryItemId: item.id } });
+        return { replayed: false };
       });
     },
     listKnowledgeByCampaign(campaignId: string) {

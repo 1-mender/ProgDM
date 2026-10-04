@@ -27,13 +27,14 @@ const activityLabels: Record<ActivityType, string> = {
   player_requested: "Заявка игрока", player_approved: "Игрок принят", player_rejected: "Заявка отклонена",
   character_created: "Персонаж создан", character_assigned: "Персонаж назначен", character_archived: "Персонаж архивирован", character_restored: "Персонаж восстановлен",
   catalog_item_created: "Предмет добавлен в справочник", item_granted: "Предмет выдан",
+  item_transferred: "Предмет передан", item_discarded: "Предмет выброшен",
   knowledge_created: "Знание создано", knowledge_visibility_changed: "Видимость знания изменена",
   knowledge_fact_revealed: "Факт знания открыт", knowledge_fact_access_revoked: "Доступ к факту знания отозван",
   character_profile_updated: "Профиль обновлён", personal_note_created: "Личная заметка добавлена", personal_note_updated: "Личная заметка обновлена"
 };
 function activitySummary(event: CampaignActivity): string {
   const subject = event.details.characterName ?? event.details.playerName ?? event.details.knowledgeTitle ?? event.details.itemName ?? event.details.sessionName ?? event.details.campaignName;
-  const quantity = event.type === "item_granted" ? ` × ${event.details.quantity ?? 1}` : "";
+  const quantity = ["item_granted", "item_transferred", "item_discarded"].includes(event.type) ? ` × ${event.details.quantity ?? 1}` : "";
   return `${activityLabels[event.type]}${subject ? `: ${subject}` : ""}${quantity}`;
 }
 const sessionPlural = new Intl.PluralRules("ru");

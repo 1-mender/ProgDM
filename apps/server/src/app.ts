@@ -135,6 +135,45 @@ export function createApp(options: {
     player.post<{ Params: { id: string }; Body: Record<string, never> }>("/api/player/inventory/:id/unequip", {
       schema: { params: inventoryItemParams, body: emptyBody }
     }, async (request, reply) => inventoryAction(request, reply, (hash, itemId) => ({ item: database.unequipPlayerInventoryItem(hash, itemId) })));
+    const inventoryMutationAction = (request: { params: { id: string } }, reply: { code: (status: number) => { send: (body: object) => unknown } },
+      action: (hash: string, itemId: string) => unknown) => activeAction(request, reply, (hash) => {
+      try { return action(hash, request.params.id); }
+      catch (error) {
+        if (error instanceof Error && error.message === "Active character access required.") throw error;
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Inventory item not found for this character.") return reply.code(404).send({ message: "Предмет недоступен." });
+        if (message === "Inventory item is equipped.") return reply.code(409).send({ message: "Сначала снимите предмет." });
+        if (message === "Inventory catalog relation is invalid.") return reply.code(409).send({ message: "Предмет недоступен." });
+        if (message === "Catalog item cannot be transferred.") return reply.code(409).send({ message: "Этот предмет нельзя передавать." });
+        if (message === "Catalog item cannot be discarded.") return reply.code(409).send({ message: "Этот предмет нельзя выбросить." });
+        if (message === "Inventory quantity is invalid.") return reply.code(400).send({ message: "Укажите корректное количество предметов." });
+        if (message === "Inventory quantity exceeds owned amount.") return reply.code(409).send({ message: "Такого количества нет в сумке." });
+        if (message === "Inventory transfer recipient is unavailable.") return reply.code(404).send({ message: "Получатель недоступен." });
+        if (message === "Cannot transfer inventory to the same character.") return reply.code(409).send({ message: "Нельзя передать предмет своему персонажу." });
+        if (message === "Recipient inventory capacity is full.") return reply.code(409).send({ message: "В сумке персонажа нет свободного места." });
+        if (message === "Recipient inventory stack limit exceeded.") return reply.code(409).send({ message: "В стопке получателя достигнуто максимальное количество." });
+        if (message === "Inventory operation ID is invalid." || message === "Inventory operation ID conflict.") return reply.code(409).send({ message: "Операцию нельзя безопасно повторить. Обновите страницу и проверьте инвентарь." });
+        return reply.code(500).send({ message: "Не удалось изменить инвентарь. Попробуйте ещё раз." });
+      }
+    });
+    player.get<{ Params: { id: string } }>("/api/player/inventory/:id/transfer-targets", {
+      schema: { params: inventoryItemParams }
+    }, async (request, reply) => inventoryMutationAction(request, reply,
+      (hash, itemId) => ({ targets: database.listPlayerInventoryTransferTargets(hash, itemId) })));
+    const operationId = { type: "string", format: "uuid" };
+    const quantity = { type: "integer", minimum: 1, maximum: 9999 };
+    player.post<{ Params: { id: string }; Body: { recipientCharacterId: string; quantity: number; operationId: string } }>("/api/player/inventory/:id/transfer", {
+      schema: { params: inventoryItemParams, body: { type: "object", additionalProperties: false, required: ["recipientCharacterId", "quantity", "operationId"], properties: {
+        recipientCharacterId: { type: "string", format: "uuid" }, quantity, operationId
+      } } }
+    }, async (request, reply) => inventoryMutationAction(request, reply, (hash, itemId) => ({
+      result: database.transferPlayerInventoryItem(hash, itemId, request.body.recipientCharacterId, request.body.quantity, request.body.operationId)
+    })));
+    player.post<{ Params: { id: string }; Body: { quantity: number; operationId: string } }>("/api/player/inventory/:id/discard", {
+      schema: { params: inventoryItemParams, body: { type: "object", additionalProperties: false, required: ["quantity", "operationId"], properties: { quantity, operationId } } }
+    }, async (request, reply) => inventoryMutationAction(request, reply, (hash, itemId) => ({
+      result: database.discardPlayerInventoryItem(hash, itemId, request.body.quantity, request.body.operationId)
+    })));
     player.post<{ Body: { shortDescription: string; personalGoal: string; traits?: string[]; appearance?: string; quote?: string } }>("/api/player/profile", {
       schema: { body: { type: "object", additionalProperties: false, required: ["shortDescription", "personalGoal"], properties: {
         shortDescription: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 },
@@ -306,7 +345,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8, 9] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }
       } } }
     }, async (request, reply) => {
       try {

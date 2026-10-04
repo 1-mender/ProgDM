@@ -1,5 +1,5 @@
 import type { EquipmentSlot, InventoryCategory, InventoryRarity, KnowledgeCategory, PersonalNote, PersonalNoteMarker, PlayerActivityEvent, PlayerInventoryItem } from "@progdm/shared";
-import { BookOpen, CircleDot, Diamond, FileText, FlaskConical, Home, KeyRound, Package, ScrollText, Shield, Sparkles, UserRound, Wrench, type LucideIcon } from "lucide-react";
+import { ArrowLeftRight, BookOpen, CircleDot, Diamond, FileText, FlaskConical, Home, KeyRound, Package, ScrollText, Shield, Sparkles, Trash2, UserRound, Wrench, type LucideIcon } from "lucide-react";
 
 export type PlayerView = "home" | "inventory" | "knowledge" | "journal" | "profile" | "settings";
 
@@ -72,6 +72,14 @@ export const EQUIPMENT_SLOT_ICONS: Record<EquipmentSlot, LucideIcon> = {
   special: Sparkles
 };
 
+export function createInventoryOperationId() {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function inventoryBagSlotsUsed(items: PlayerInventoryItem[]) {
   return items.filter((item) => item.equippedSlot === null).length;
 }
@@ -94,6 +102,10 @@ function assertNever(value: never): never {
 export function homeActivityLabel(event: PlayerActivityEvent) {
   switch (event.kind) {
     case "item_received": return `Получен предмет «${event.itemName}»`;
+    case "item_transferred": return event.direction === "sent"
+      ? `Передан предмет «${event.itemName}» персонажу ${event.otherCharacterName}`
+      : `Получен предмет «${event.itemName}» от ${event.otherCharacterName}`;
+    case "item_discarded": return `Выброшен предмет «${event.itemName}»`;
     case "knowledge_summary_opened": return `Открыто знание «${event.knowledgeTitle}»`;
     case "knowledge_facts_revealed": return `Новые сведения «${event.knowledgeTitle}»`;
     default: return assertNever(event);
@@ -103,6 +115,10 @@ export function homeActivityLabel(event: PlayerActivityEvent) {
 export function journalActivityLabel(event: PlayerActivityEvent) {
   switch (event.kind) {
     case "item_received": return `Получен предмет: ${event.itemName} × ${event.quantity}`;
+    case "item_transferred": return event.direction === "sent"
+      ? `Передан предмет: ${event.itemName} ×${event.quantity} — ${event.otherCharacterName}`
+      : `Получен предмет: ${event.itemName} ×${event.quantity} от ${event.otherCharacterName}`;
+    case "item_discarded": return `Выброшен предмет: ${event.itemName} ×${event.quantity}`;
     case "knowledge_summary_opened": return `Открыто знание: ${event.knowledgeTitle}`;
     case "knowledge_facts_revealed": return `Открыты новые сведения: ${event.knowledgeTitle}`;
     default: return assertNever(event);
@@ -112,6 +128,8 @@ export function journalActivityLabel(event: PlayerActivityEvent) {
 export function homeActivityIcon(event: PlayerActivityEvent): LucideIcon {
   switch (event.kind) {
     case "item_received": return Package;
+    case "item_transferred": return ArrowLeftRight;
+    case "item_discarded": return Trash2;
     case "knowledge_summary_opened":
     case "knowledge_facts_revealed": return BookOpen;
     default: return assertNever(event);

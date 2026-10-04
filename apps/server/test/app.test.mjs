@@ -44,7 +44,7 @@ test("player write responses never return token hashes", async (t) => {
   assert.equal(result.json().player.tokenHash, undefined);
 });
 
-test("full-bag grants return a conflict and transfer/discard remain out of scope", async (t) => {
+test("full-bag grants return a conflict without changing the inventory", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Capacity");
   const character = database.createCharacter(campaign.id, "Mira");
@@ -58,11 +58,7 @@ test("full-bag grants return a conflict and transfer/discard remain out of scope
   const fullBag = await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: item.id, quantity: 1 });
   assert.equal(fullBag.statusCode, 409);
   assert.equal(fullBag.json().message, "В сумке персонажа нет свободных слотов.");
-  for (const action of ["transfer", "discard"]) {
-    const response = await app.inject({ method: "POST", url: `/api/player/inventory/${item.id}/${action}`,
-      headers: { authorization: "Bearer capacity-api-token" }, payload: {} });
-    assert.equal(response.statusCode, 404, `${action} remains out of scope for this phase`);
-  }
+  assert.deepEqual(database.listCharacterInventory(character.id), []);
 });
 
 test("Player equip and unequip use the active Character, enforce domain rules, and persist for historical reads", async (t) => {
@@ -110,7 +106,7 @@ test("Player equip and unequip use the active Character, enforce domain rules, a
   assert.equal(initial.inventory.find((item) => item.id === bookRow.id).rarity, null);
   assert.equal("dmNotes" in initial, false);
   assert.equal("dmNotes" in initial.profile, false);
-  assert.deepEqual(Object.keys(initial.inventory[0]).sort(), ["catalogItemId", "category", "createdAt", "description", "equipmentSlot", "equippedSlot", "id", "name", "quantity", "rarity"].sort());
+  assert.deepEqual(Object.keys(initial.inventory[0]).sort(), ["catalogItemId", "category", "createdAt", "description", "discardAllowed", "equipmentSlot", "equippedSlot", "id", "name", "quantity", "rarity", "transferAllowed"].sort());
 
   assert.equal((await api(tokenA, "not-a-uuid", "equip")).statusCode, 400);
   assert.equal((await api(tokenA, swordRow.id, "equip", { characterId: mira.id })).statusCode, 400);
@@ -215,6 +211,65 @@ test("legacy Player inventory rows remain visible and cannot be equipped", async
     headers: { authorization: `Bearer ${token}` }, payload: {} });
   assert.equal(result.statusCode, 409);
   assert.equal(result.json().message, "Этот предмет нельзя экипировать.");
+});
+
+test("Player transfer/discard endpoints validate strict bodies, enforce active control, and replay safely", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Inventory actions API");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const rowan = database.createCharacter(campaign.id, "Rowan");
+  const unassigned = database.createCharacter(campaign.id, "Not assigned");
+  const session = database.createSession(campaign.id, "Active");
+  database.activateSession(session.id);
+  const tokenA = "L".repeat(43);
+  const tokenB = "M".repeat(43);
+  const pendingToken = "N".repeat(43);
+  const hash = (token) => createHash("sha256").update(token).digest("hex");
+  const playerA = database.submitPlayerRequest(session.id, "Mira", hash(tokenA));
+  const playerB = database.submitPlayerRequest(session.id, "Rowan", hash(tokenB));
+  database.approvePlayer(playerA.id, { characterId: mira.id });
+  database.approvePlayer(playerB.id, { characterId: rowan.id });
+  const pending = database.submitPlayerRequest(session.id, "Pending", hash(pendingToken));
+  const catalog = database.createCatalogItem(campaign.id, "Compass");
+  const item = database.grantInventoryItem(mira.id, catalog.id, 5);
+  const call = (token, method, url, payload) => app.inject({ method, url, headers: { authorization: `Bearer ${token}` }, payload });
+  const targetsResponse = await call(tokenA, "GET", `/api/player/inventory/${item.id}/transfer-targets`);
+  assert.equal(targetsResponse.statusCode, 200);
+  assert.deepEqual(targetsResponse.json().targets.map(({ characterId, characterName, bagSlotsUsed, inventoryCapacity, willMerge, maxQuantity, playerId }) => ({
+    characterId, characterName, bagSlotsUsed, inventoryCapacity, willMerge, maxQuantity, playerId
+  })), [{ characterId: rowan.id, characterName: "Rowan", bagSlotsUsed: 0, inventoryCapacity: 12, willMerge: false, maxQuantity: 9999, playerId: undefined }]);
+  assert.equal(targetsResponse.body.includes(playerA.id), false);
+  assert.equal(targetsResponse.body.includes(playerB.id), false);
+  assert.equal(targetsResponse.json().targets.some((target) => target.characterId === unassigned.id), false);
+
+  const operationId = randomUUID();
+  const transfer = { recipientCharacterId: rowan.id, quantity: 2, operationId };
+  assert.equal((await call(tokenA, "POST", `/api/player/inventory/${item.id}/transfer`, { ...transfer, senderCharacterId: mira.id })).statusCode, 400);
+  assert.equal((await call(tokenA, "POST", `/api/player/inventory/${item.id}/transfer`, transfer)).statusCode, 200);
+  assert.equal((await call(tokenA, "POST", `/api/player/inventory/${item.id}/transfer`, transfer)).statusCode, 200, "same operation replays as success");
+  assert.equal(database.listCharacterInventory(mira.id).find((row) => row.id === item.id).quantity, 3);
+  assert.equal(database.listCharacterInventory(rowan.id).find((row) => row.catalogItemId === catalog.id).quantity, 2);
+  const conflict = await call(tokenA, "POST", `/api/player/inventory/${item.id}/transfer`, { ...transfer, quantity: 1 });
+  assert.equal(conflict.statusCode, 409);
+  assert.doesNotMatch(conflict.body, /SQLITE|constraint|operation_id/i);
+
+  const discard = { quantity: 1, operationId: randomUUID() };
+  assert.equal((await call(pendingToken, "POST", `/api/player/inventory/${item.id}/discard`, discard)).statusCode, 403);
+  assert.equal((await call(tokenA, "POST", `/api/player/inventory/${item.id}/discard`, { ...discard, characterId: mira.id })).statusCode, 400);
+  assert.equal((await call(tokenA, "POST", `/api/player/inventory/${item.id}/discard`, discard)).statusCode, 200);
+  assert.equal((await call(tokenA, "POST", `/api/player/inventory/${item.id}/discard`, discard)).statusCode, 200);
+  assert.equal(database.listCharacterInventory(mira.id).find((row) => row.id === item.id).quantity, 2);
+
+  database.updateCatalogItemMetadata(catalog.id, { transferAllowed: false });
+  assert.equal((await call(tokenA, "GET", `/api/player/inventory/${item.id}/transfer-targets`)).json().message, "Этот предмет нельзя передавать.");
+  const transferDenied = await call(tokenA, "POST", `/api/player/inventory/${item.id}/transfer`, { ...transfer, operationId: randomUUID() });
+  assert.equal(transferDenied.statusCode, 409);
+  assert.equal(transferDenied.json().message, "Этот предмет нельзя передавать.");
+
+  await post(app, `/api/dm/sessions/${session.id}/end`);
+  const historical = await call(tokenA, "POST", `/api/player/inventory/${item.id}/discard`, { quantity: 1, operationId: randomUUID() });
+  assert.equal(historical.statusCode, 403);
+  assert.equal(database.listCharacterInventory(mira.id).find((row) => row.id === item.id).quantity, 2);
 });
 
 test("DM inventory grants target persistent non-archived characters in preparation and live sessions", async (t) => {
@@ -1113,11 +1168,11 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(exported.body.includes(session.joinToken), false);
   assert.equal(exported.body.includes("b".repeat(64)), false);
   const archive = exported.json();
-  assert.equal(archive.version, 9);
+  assert.equal(archive.version, 10);
   assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
 
   const imported = await post(app, "/api/dm/campaigns/import", archive);
-  assert.equal(imported.statusCode, 201);
+  assert.equal(imported.statusCode, 201, imported.body);
   assert.notEqual(imported.json().campaign.id, campaign.id);
   const importedData = database.exportCampaign(imported.json().campaign.id);
   assert.equal(importedData.characters[0].name, "Mira");
@@ -1158,7 +1213,7 @@ test("players reconnect by the same name in a new session after importing campai
 
   const destination = fixture(t);
   const imported = await post(destination.app, "/api/dm/campaigns/import", exported.json());
-  assert.equal(imported.statusCode, 201);
+  assert.equal(imported.statusCode, 201, imported.body);
   const importedCampaign = imported.json().campaign;
   const importedSession1 = destination.database.listSessions(importedCampaign.id)[0];
   const importedCharacter = destination.database.listCharactersByCampaign(importedCampaign.id)[0];

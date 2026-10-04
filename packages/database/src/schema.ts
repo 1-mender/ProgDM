@@ -243,6 +243,7 @@ export const campaignActivity = sqliteTable("campaign_activity", {
   sessionId: text("session_id").references(() => sessions.id, { onDelete: "restrict" }),
   playerId: text("player_id").references(() => players.id, { onDelete: "restrict" }),
   characterId: text("character_id").references(() => characters.id, { onDelete: "restrict" }),
+  relatedCharacterId: text("related_character_id"),
   catalogItemId: text("catalog_item_id").references(() => catalogItems.id, { onDelete: "restrict" }),
   knowledgeEntryId: text("knowledge_entry_id").references(() => knowledgeEntries.id, { onDelete: "restrict" }),
   operationId: text("operation_id"),
@@ -250,8 +251,10 @@ export const campaignActivity = sqliteTable("campaign_activity", {
   createdAt: text("created_at").notNull(),
   payload: text("payload").notNull()
 }, (table) => [
+  foreignKey({ columns: [table.relatedCharacterId, table.campaignId], foreignColumns: [characters.id, characters.campaignId], name: "campaign_activity_related_character_campaign_fk" }).onDelete("restrict"),
   index("campaign_activity_campaign_order_idx").on(table.campaignId, table.createdAt, table.id),
   index("campaign_activity_session_order_idx").on(table.sessionId, table.createdAt, table.id),
+  index("campaign_activity_related_character_idx").on(table.relatedCharacterId, table.campaignId),
   uniqueIndex("campaign_activity_operation_unique").on(table.operationId).where(sql`${table.operationId} is not null`),
   check("campaign_activity_payload_valid", sql`json_valid(${table.payload})`)
 ]);

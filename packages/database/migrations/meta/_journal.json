@@ -106,6 +106,13 @@
       "when": 1791116498976,
       "tag": "0014_wonderful_santa_claus",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1791135636213,
+      "tag": "0015_activity_related_character",
+      "breakpoints": true
     }
   ]
 }

@@ -40,3 +40,10 @@ export async function playerPost<T>(credential: string, path: string, body: obje
     cache: "no-store"
   });
 }
+
+export async function playerGet<T>(credential: string, path: string): Promise<T> {
+  return playerRequest<T>(path, {
+    headers: { Authorization: "Bearer " + credential },
+    cache: "no-store"
+  });
+}

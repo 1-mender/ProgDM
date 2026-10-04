@@ -144,7 +144,18 @@ export interface PlayerInventoryItem {
   rarity: InventoryRarity | null;
   equipmentSlot: EquipmentSlot | null;
   equippedSlot: EquipmentSlot | null;
+  transferAllowed: boolean;
+  discardAllowed: boolean;
   createdAt: string;
+}
+
+export interface PlayerInventoryTransferTarget {
+  characterId: EntityId;
+  characterName: string;
+  bagSlotsUsed: number;
+  inventoryCapacity: number;
+  willMerge: boolean;
+  maxQuantity: number;
 }
 
 interface PlayerActivityEventBase {
@@ -156,6 +167,8 @@ interface PlayerActivityEventBase {
 
 export type PlayerActivityEvent =
   | (PlayerActivityEventBase & { kind: "item_received"; itemName: string; quantity: number })
+  | (PlayerActivityEventBase & { kind: "item_transferred"; direction: "sent" | "received"; itemName: string; quantity: number; otherCharacterName: string })
+  | (PlayerActivityEventBase & { kind: "item_discarded"; itemName: string; quantity: number })
   | (PlayerActivityEventBase & { kind: "knowledge_summary_opened"; knowledgeEntryId: EntityId; knowledgeTitle: string })
   | (PlayerActivityEventBase & { kind: "knowledge_facts_revealed"; knowledgeEntryId: EntityId; knowledgeTitle: string });
 
@@ -232,7 +245,7 @@ export const ACTIVITY_TYPES = [
   "player_requested", "player_approved", "player_rejected",
   "character_created", "character_assigned", "character_archived", "character_restored",
   "catalog_item_created", "item_granted", "knowledge_created", "knowledge_visibility_changed",
-  "knowledge_fact_revealed", "knowledge_fact_access_revoked",
+  "item_transferred", "item_discarded", "knowledge_fact_revealed", "knowledge_fact_access_revoked",
   "character_profile_updated", "personal_note_created", "personal_note_updated"
 ] as const;
 
@@ -244,6 +257,7 @@ export interface ActivityDetails {
   playerName?: string;
   characterName?: string;
   itemName?: string;
+  sourceInventoryItemId?: string;
   knowledgeTitle?: string;
   quantity?: number;
   totalQuantity?: number;
@@ -261,6 +275,7 @@ export interface CampaignActivity {
   sessionId: EntityId | null;
   playerId: EntityId | null;
   characterId: EntityId | null;
+  relatedCharacterId: EntityId | null;
   catalogItemId: EntityId | null;
   knowledgeEntryId: EntityId | null;
   type: ActivityType;
