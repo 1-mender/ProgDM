@@ -91,7 +91,6 @@ test("player Knowledge API serializes only visible summaries and granted Facts",
   await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira player", playerToken: token });
   const player = database.listPlayersByCampaign(campaign.id)[0];
   database.approvePlayer(player.id, { characterId: mira.id });
-
   const partySummary = database.createKnowledge(campaign.id, "place", "Public place", "The public description.");
   database.setKnowledgeVisibility(partySummary.id, "party");
   const hiddenEntry = database.createKnowledge(campaign.id, "fact", "Fact-only entry", "API_HIDDEN_SUMMARY");
@@ -130,6 +129,67 @@ test("player Knowledge API serializes only visible summaries and granted Facts",
   assert.equal(historical.statusCode, 200);
   assert.equal(historical.json().canEdit, false);
   assert.equal(historical.json().knowledge.find(({ id }) => id === hiddenEntry.id).facts[0].body, "API_VISIBLE_FACT");
+});
+
+test("serialized Player activity is safe and drops a hidden Entry title after its last revoke", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Safe activity");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const rowan = database.createCharacter(campaign.id, "Rowan");
+  const session = database.createSession(campaign.id, "Chapter 2");
+  database.activateSession(session.id);
+  const token = "A".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira player", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  database.approvePlayer(player.id, { characterId: mira.id });
+  const pendingToken = "B".repeat(43);
+  const rejectedToken = "C".repeat(43);
+  database.submitPlayerRequest(session.id, "Pending player", createHash("sha256").update(pendingToken).digest("hex"));
+  const rejected = database.submitPlayerRequest(session.id, "Rejected player", createHash("sha256").update(rejectedToken).digest("hex"));
+  database.rejectPlayer(rejected.id);
+
+  const entry = database.createKnowledge(campaign.id, "fact", "Secret entry title", "SECRET_ENTRY_SUMMARY_BODY");
+  const fact = database.createKnowledgeFact(campaign.id, entry.id, "SECRET_FACT_BODY");
+  database.revealKnowledgeFactToCharacter(campaign.id, entry.id, fact.id, mira.id);
+  const otherEntry = database.createKnowledge(campaign.id, "fact", "Other character title", "OTHER_SUMMARY_SECRET");
+  const otherFact = database.createKnowledgeFact(campaign.id, otherEntry.id, "OTHER_FACT_SECRET");
+  database.revealKnowledgeFactToCharacter(campaign.id, otherEntry.id, otherFact.id, rowan.id);
+
+  const response = await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(response.statusCode, 200);
+  const state = response.json();
+  const serializedActivity = JSON.stringify({ recentActivity: state.recentActivity, newActivity: state.newActivity });
+  assert.ok(state.recentActivity.some((event) => event.kind === "knowledge_facts_revealed" && event.knowledgeTitle === "Secret entry title"));
+  for (const secret of ["SECRET_ENTRY_SUMMARY_BODY", "Other character title", "OTHER_SUMMARY_SECRET", "OTHER_FACT_SECRET"]) {
+    assert.equal(response.body.includes(secret), false, `Serialized Player API leaked ${secret}`);
+  }
+  assert.equal(serializedActivity.includes("SECRET_FACT_BODY"), false, "Player activity duplicated a Knowledge Fact body");
+  for (const forbidden of ["details", "type", "audience", "characterId", "playerId", "catalogItemId", "visibility", "operationId", "scope", "factCount"]) {
+    assert.equal(serializedActivity.includes(`\"${forbidden}\"`), false, `Serialized activity leaked ${forbidden}`);
+  }
+  assert.equal((await app.inject({ method: "POST", url: `/api/player/knowledge-facts/${fact.id}/reveal`,
+    headers: { authorization: `Bearer ${token}` }, payload: {} })).statusCode, 404);
+  assert.equal((await app.inject({ method: "POST", url: `/api/player/knowledge-facts/${fact.id}/revoke`,
+    headers: { authorization: `Bearer ${token}` }, payload: {} })).statusCode, 404);
+
+  for (const pendingOrRejectedToken of [pendingToken, rejectedToken]) {
+    const responseForUnapproved = await app.inject({ method: "GET", url: "/api/player/me",
+      headers: { authorization: `Bearer ${pendingOrRejectedToken}` } });
+    assert.equal(responseForUnapproved.statusCode, 200);
+    assert.deepEqual(responseForUnapproved.json().knowledge, []);
+    assert.deepEqual(responseForUnapproved.json().recentActivity, []);
+    assert.deepEqual(responseForUnapproved.json().newActivity, []);
+    assert.equal(responseForUnapproved.body.includes("Secret entry title"), false);
+  }
+
+  database.revokeKnowledgeFactReveal(campaign.id, entry.id, fact.id, "character", mira.id);
+  const afterRevoke = await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(afterRevoke.statusCode, 200);
+  assert.equal(afterRevoke.body.includes("Secret entry title"), false);
+  assert.equal(afterRevoke.body.includes("SECRET_ENTRY_SUMMARY_BODY"), false);
+  assert.equal(afterRevoke.body.includes("SECRET_FACT_BODY"), false);
+  assert.equal(afterRevoke.json().recentActivity.some((event) => event.kind === "knowledge_facts_revealed" && event.knowledgeEntryId === entry.id), false);
+  assert.equal(database.listCampaignActivity(campaign.id).some((event) => event.type === "knowledge_fact_access_revoked"), true);
 });
 
 test("public and player validation and unexpected errors are sanitized", async (t) => {
@@ -305,7 +365,10 @@ test("player profile and notes enforce active assignment and field permissions",
   assert.deepEqual({ title: dmNote.title, body: dmNote.body, marker: dmNote.marker, pinned: dmNote.pinned }, {
     title: "Обновлено", body: "My theory", marker: "question", pinned: false
   });
-  assert.equal((await playerGet(aToken)).json().recentActivity.some((event) => event.type.startsWith("personal_note_")), false);
+  const recent = (await playerGet(aToken)).json().recentActivity;
+  assert.equal(JSON.stringify(recent).includes(note.body), false);
+  assert.equal(JSON.stringify(recent).includes(note.title), false);
+  assert.equal(recent.every((event) => ["item_received", "knowledge_summary_opened", "knowledge_facts_revealed"].includes(event.kind)), true);
   const updatedSettings = await playerPost(aToken, "/api/player/settings", { displayName: "New A" });
   assert.equal(updatedSettings.statusCode, 200);
   assert.equal(updatedSettings.json().player.tokenHash, undefined);

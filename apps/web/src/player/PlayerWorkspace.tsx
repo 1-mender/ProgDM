@@ -7,18 +7,13 @@ import { KnowledgePage } from "./KnowledgePage";
 import { PersonalNotesPage } from "./PersonalNotesPage";
 import { PlayerShell } from "./PlayerShell";
 import { ProfilePage } from "./ProfilePage";
-import type { PlayerView } from "./model";
+import { journalActivityLabel, type PlayerView } from "./model";
 import "./player.css";
 
 const quantityPlural = new Intl.PluralRules("ru");
 function quantityLabel(quantity: number) {
   const unit = { one: "предмет", few: "предмета", many: "предметов", other: "предмета" }[quantityPlural.select(quantity) as "one" | "few" | "many" | "other"];
   return quantity + " " + unit;
-}
-
-function journalEvent(event: PlayerState["recentActivity"][number]) {
-  if (event.type === "item_granted") return `Получен предмет: ${event.details.itemName ?? "предмет"} × ${event.details.quantity ?? 1}`;
-  return `Открыто знание: ${event.details.knowledgeTitle ?? "новая запись"}`;
 }
 
 export function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState; credential: string; refresh: () => Promise<void> }) {
@@ -75,7 +70,10 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
       <button type="button" role="tab" aria-selected={journalTab === "notes"} className={journalTab === "notes" ? "selected" : ""} onClick={() => setJournalTab("notes")}>Мои заметки</button>
     </div>
     {journalTab === "activity" && <>
-      {player.recentActivity.length ? <ul className="player-simple-list">{player.recentActivity.map((event) => <li key={event.id}><time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleDateString("ru-RU")}</time>{journalEvent(event)}</li>)}</ul> : <p className="prod-empty">Пока нет событий.</p>}
+      {player.recentActivity.length ? <ul className="player-simple-list">{player.recentActivity.map((event) => <li key={event.id}>
+        <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })}</time>
+        <span className="player-journal-event">{journalActivityLabel(event)}{event.sessionName && <small>{event.sessionName}</small>}</span>
+      </li>)}</ul> : <p className="prod-empty">Пока нет событий.</p>}
       {player.recentActivity[0] && <button className="prod-secondary" type="button" disabled={busy || !player.canEdit} onClick={() => markSeen(player.recentActivity[0]!.id)}><Check aria-hidden="true" />Отметить просмотренным</button>}
     </>}
     {journalTab === "notes" && <PersonalNotesPage notes={player.notes} busy={busy} canEdit={player.canEdit} onSave={(noteId, fields) => run(

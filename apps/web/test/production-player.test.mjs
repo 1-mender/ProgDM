@@ -36,13 +36,47 @@ test("production shell has stable five-section order and exposes settings separa
   assert.match(workspace, /onSettings=\{\(\) => navigate\("settings"\)\}/);
 });
 
-test("Home digest uses only the server-projected player activity, at most three, and opens Profile", () => {
-  const events = Array.from({ length: 5 }, (_, index) => ({ id: String(index) }));
-  assert.deepEqual(model.homeActivityDigest(events).map(({ id }) => id), ["0", "1", "2"]);
+test("Home digest groups only same-entry Fact reveals and keeps the latest event as representative", () => {
+  const base = { sessionId: "session", sessionName: "Chapter", createdAt: "2026-10-04T12:00:00.000Z" };
+  const events = [
+    { ...base, id: "06", kind: "knowledge_facts_revealed", knowledgeEntryId: "entry-a", knowledgeTitle: "Apothecary", createdAt: "2026-10-04T12:06:00.000Z" },
+    { ...base, id: "05", kind: "knowledge_facts_revealed", knowledgeEntryId: "entry-a", knowledgeTitle: "Apothecary", createdAt: "2026-10-04T12:05:00.000Z" },
+    { ...base, id: "04", kind: "knowledge_facts_revealed", knowledgeEntryId: "entry-b", knowledgeTitle: "Old bridge", createdAt: "2026-10-04T12:04:00.000Z" },
+    { ...base, id: "03", kind: "item_received", itemName: "Key", quantity: 1, createdAt: "2026-10-04T12:03:00.000Z" },
+    { ...base, id: "02", kind: "knowledge_summary_opened", knowledgeEntryId: "entry-c", knowledgeTitle: "North road", createdAt: "2026-10-04T12:02:00.000Z" }
+  ];
+  const digest = model.homeActivityDigest(events);
+  assert.deepEqual(digest.map(({ id }) => id), ["06", "04", "03"]);
+  assert.equal(digest.length, 3);
+  assert.equal(digest.filter((event) => event.kind === "knowledge_facts_revealed" && event.knowledgeEntryId === "entry-a").length, 1);
+  assert.equal(digest[0].createdAt, events[0].createdAt);
+  assert.equal(digest[0].id, "06");
+  assert.equal(model.homeActivityDigest([{ ...events[0], id: "07", createdAt: "2026-10-04T12:07:00.000Z" }])[0].id, "07",
+    "a later reveal is a fresh digest item after the caller recomputes unseen events");
   assert.match(home, /homeActivityDigest\(player\.newActivity\)/);
   assert.match(home, /onClick=\{onProfile\}/);
   assert.match(home, /onClick=\{\(\) => onMarkSeen\(latest\.id\)\}/);
   assert.match(workspace, /"\/api\/player\/activity\/seen"/);
+});
+
+test("Home and Journal use player-facing explicit event labels with no generic fallback", () => {
+  const common = { createdAt: "2026-10-04T12:00:00.000Z", sessionId: null, sessionName: null };
+  const item = { ...common, id: "a", kind: "item_received", itemName: "Старинный ключ", quantity: 2 };
+  const summary = { ...common, id: "b", kind: "knowledge_summary_opened", knowledgeEntryId: "entry", knowledgeTitle: "Аптекарь" };
+  const facts = { ...common, id: "c", kind: "knowledge_facts_revealed", knowledgeEntryId: "entry", knowledgeTitle: "Аптекарь" };
+  assert.equal(model.homeActivityLabel(item), "Получен предмет «Старинный ключ»");
+  assert.equal(model.homeActivityLabel(summary), "Открыто знание «Аптекарь»");
+  assert.equal(model.homeActivityLabel(facts), "Новые сведения «Аптекарь»");
+  assert.equal(model.journalActivityLabel(item), "Получен предмет: Старинный ключ × 2");
+  assert.equal(model.journalActivityLabel(summary), "Открыто знание: Аптекарь");
+  assert.equal(model.journalActivityLabel(facts), "Открыты новые сведения: Аптекарь");
+  assert.match(modelSource, /switch \(event\.kind\)/);
+  assert.match(modelSource, /assertNever\(event\)/);
+  assert.match(workspace, /journalActivityLabel\(event\)/);
+  assert.match(workspace, /event\.sessionName &&/);
+  assert.doesNotMatch(home, /CampaignActivity|event\.type/);
+  assert.doesNotMatch(workspace, /event\.type|event\.details/);
+  assert.match(home, /Пока ничего нового\./);
 });
 
 test("Profile uses only existing player-safe fields and guards its existing edit action", () => {

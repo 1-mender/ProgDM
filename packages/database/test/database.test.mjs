@@ -354,7 +354,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual({ title: firstView.notes[0].title, body: firstView.notes[0].body, marker: firstView.notes[0].marker, pinned: firstView.notes[0].pinned }, {
     title: "Старая дверь", body: note.body, marker: "check", pinned: true
   });
-  assert.deepEqual(firstView.newActivity.map((event) => event.type), ["knowledge_visibility_changed", "item_granted"]);
+  assert.deepEqual(firstView.newActivity.map((event) => event.kind), ["knowledge_summary_opened", "item_received"]);
   db.markPlayerActivitySeen("token-a-hash", firstView.newActivity[0].id);
   assert.equal(db.getPlayerState("token-a-hash").newActivity.length, 0);
   assert.equal(db.getPlayerState("token-a-hash").inventory.length, 1);
@@ -393,7 +393,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.throws(() => db.updatePersonalNote("token-c-hash", note.id, "Changed"), /not found/);
   assert.equal(db.getPlayerState("token-b-hash").newActivity.length, 0);
   db.grantInventoryItem(mira.id, item.id, 1);
-  assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.type), ["item_granted"]);
+  assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.kind), ["item_received"]);
 
   const exported = db.exportCampaign(campaign.id);
   assert.equal(exported.version, 8);
@@ -1557,7 +1557,7 @@ test("Player Knowledge projection exposes only permitted summaries and deduplica
 
   const miraState = db.getPlayerState("mira-old-hash");
   const miraKnowledge = new Map(miraState.knowledge.map((entry) => [entry.id, entry]));
-  assert.equal(miraState.recentActivity.some((event) => event.type === "knowledge_fact_revealed"), false);
+  assert.equal(miraState.recentActivity.some((event) => event.kind === "knowledge_facts_revealed"), true);
   assert.deepEqual(miraKnowledge.get(partySummary.id), {
     id: partySummary.id, category: "place", title: "Known square", summary: "A summary available to the party.", summaryVisible: true, facts: []
   });
@@ -1638,6 +1638,108 @@ test("Player Knowledge projection exposes only permitted summaries and deduplica
   assert.equal(outsideProjection.facts[0].sessionId, null);
   assert.equal(outsideProjection.facts[0].sessionName, null);
   assert.equal(outsideProjection.facts[0].body, "OUTSIDE_SESSION_FACT");
+});
+
+test("Player activity projection is safe, audience-scoped, and uses the existing read marker", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Activity projection");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const rowan = db.createCharacter(campaign.id, "Rowan");
+  const session = db.createSession(campaign.id, "Active chapter");
+  db.activateSession(session.id);
+  const miraPlayer = db.submitPlayerRequest(session.id, "Mira player", "activity-mira-hash");
+  db.approvePlayer(miraPlayer.id, { characterId: mira.id });
+  const rowanPlayer = db.submitPlayerRequest(session.id, "Rowan player", "activity-rowan-hash");
+  db.approvePlayer(rowanPlayer.id, { characterId: rowan.id });
+  db.submitPlayerRequest(session.id, "Waiting", "activity-pending-hash");
+  const rejected = db.submitPlayerRequest(session.id, "Declined", "activity-rejected-hash");
+  db.rejectPlayer(rejected.id);
+
+  const item = db.createCatalogItem(campaign.id, "Old key");
+  db.grantInventoryItem(mira.id, item.id, 2);
+  const sharedSummary = db.createKnowledge(campaign.id, "place", "Shared place", "Shared short summary.");
+  db.setKnowledgeVisibility(sharedSummary.id, "party");
+  const miraSummary = db.createKnowledge(campaign.id, "character", "Mira's contact", "Mira-only short summary.");
+  db.setKnowledgeVisibility(miraSummary.id, "character", mira.id);
+  db.setKnowledgeVisibility(miraSummary.id, "party");
+  const rowanSummary = db.createKnowledge(campaign.id, "character", "Rowan's contact", "ROWAN_ONLY_SUMMARY_SECRET");
+  db.setKnowledgeVisibility(rowanSummary.id, "character", rowan.id);
+
+  const sharedEntry = db.createKnowledge(campaign.id, "event", "Shared discovery", "SHARED_HIDDEN_SUMMARY");
+  const sharedFact = db.createKnowledgeFact(campaign.id, sharedEntry.id, "SHARED_FACT_BODY");
+  db.revealKnowledgeFactToParty(campaign.id, sharedEntry.id, sharedFact.id);
+  const miraEntry = db.createKnowledge(campaign.id, "fact", "Mira's clue", "MIRA_HIDDEN_SUMMARY");
+  const miraFact = db.createKnowledgeFact(campaign.id, miraEntry.id, "MIRA_FACT_BODY_SECRET");
+  const miraOtherFact = db.createKnowledgeFact(campaign.id, miraEntry.id, "MIRA_OTHER_FACT_BODY_SECRET");
+  db.revealKnowledgeFactToCharacter(campaign.id, miraEntry.id, miraFact.id, mira.id);
+  db.revealKnowledgeFactToCharacter(campaign.id, miraEntry.id, miraOtherFact.id, mira.id);
+  db.revokeKnowledgeFactReveal(campaign.id, miraEntry.id, miraFact.id, "character", mira.id);
+  const rowanEntry = db.createKnowledge(campaign.id, "creature", "Rowan's secret", "ROWAN_FACT_SUMMARY_SECRET");
+  const rowanFact = db.createKnowledgeFact(campaign.id, rowanEntry.id, "ROWAN_FACT_BODY_SECRET");
+  db.revealKnowledgeFactToCharacter(campaign.id, rowanEntry.id, rowanFact.id, rowan.id);
+  const revokedEntry = db.createKnowledge(campaign.id, "fact", "Revoked secret title", "REVOKED_HIDDEN_SUMMARY");
+  const revokedFact = db.createKnowledgeFact(campaign.id, revokedEntry.id, "REVOKED_FACT_BODY_SECRET");
+  db.revealKnowledgeFactToCharacter(campaign.id, revokedEntry.id, revokedFact.id, mira.id);
+  db.revokeKnowledgeFactReveal(campaign.id, revokedEntry.id, revokedFact.id, "character", mira.id);
+
+  const state = db.getPlayerState("activity-mira-hash");
+  const hasEvent = (events, kind, entryId) => events.some((event) => event.kind === kind && event.knowledgeEntryId === entryId);
+  assert.ok(state.recentActivity.some((event) => event.kind === "item_received" && event.itemName === "Old key" && event.quantity === 2));
+  assert.ok(hasEvent(state.recentActivity, "knowledge_summary_opened", sharedSummary.id));
+  assert.ok(hasEvent(state.recentActivity, "knowledge_summary_opened", miraSummary.id));
+  assert.equal(hasEvent(state.recentActivity, "knowledge_summary_opened", rowanSummary.id), false);
+  assert.ok(state.recentActivity.filter((event) => event.kind === "knowledge_summary_opened").every((event) => event.sessionName === "Active chapter"));
+  const sharedFactEvent = state.recentActivity.find((event) => event.kind === "knowledge_facts_revealed" && event.knowledgeEntryId === sharedEntry.id);
+  assert.ok(sharedFactEvent);
+  assert.equal(sharedFactEvent.sessionId, session.id);
+  assert.equal(sharedFactEvent.sessionName, "Active chapter");
+  assert.ok(hasEvent(state.recentActivity, "knowledge_facts_revealed", miraEntry.id));
+  assert.deepEqual(state.knowledge.find((entry) => entry.id === miraEntry.id).facts.map((fact) => fact.id), [miraOtherFact.id],
+    "an entry remains safe when another Fact grant survives a revoke");
+  assert.equal(hasEvent(state.recentActivity, "knowledge_facts_revealed", rowanEntry.id), false);
+  assert.equal(hasEvent(state.recentActivity, "knowledge_facts_revealed", revokedEntry.id), false);
+  assert.equal(state.knowledge.some((entry) => entry.id === revokedEntry.id), false);
+
+  const serializedActivity = JSON.stringify({ recentActivity: state.recentActivity, newActivity: state.newActivity });
+  for (const secret of ["SHARED_HIDDEN_SUMMARY", "MIRA_HIDDEN_SUMMARY", "MIRA_FACT_BODY_SECRET", "MIRA_OTHER_FACT_BODY_SECRET", "ROWAN_ONLY_SUMMARY_SECRET",
+    "ROWAN_FACT_SUMMARY_SECRET", "ROWAN_FACT_BODY_SECRET", "REVOKED_HIDDEN_SUMMARY", "REVOKED_FACT_BODY_SECRET"]) {
+    assert.equal(serializedActivity.includes(secret), false, `Player activity leaked ${secret}`);
+  }
+  for (const key of ["details", "type", "audience", "characterId", "playerId", "catalogItemId", "visibility", "previousVisibility", "operationId", "factCount", "scope"]) {
+    assert.equal(serializedActivity.includes(`\"${key}\"`), false, `Player activity leaked ${key}`);
+  }
+  for (const token of ["activity-pending-hash", "activity-rejected-hash"]) {
+    assert.deepEqual(db.getPlayerState(token).recentActivity, []);
+    assert.deepEqual(db.getPlayerState(token).newActivity, []);
+  }
+  const hiddenEventId = db.listCampaignActivity(campaign.id).find((event) => event.type === "knowledge_created" && event.knowledgeEntryId === revokedEntry.id).id;
+  assert.throws(() => db.markPlayerActivitySeen("activity-mira-hash", hiddenEventId), /not visible/);
+
+  const rowanState = db.getPlayerState("activity-rowan-hash");
+  assert.ok(hasEvent(rowanState.recentActivity, "knowledge_facts_revealed", sharedEntry.id));
+  assert.equal(hasEvent(rowanState.recentActivity, "knowledge_facts_revealed", miraEntry.id), false);
+  assert.ok(hasEvent(rowanState.recentActivity, "knowledge_summary_opened", miraSummary.id),
+    "switching a summary from one Character to party opens it to other Characters");
+
+  const groupedEntry = db.createKnowledge(campaign.id, "fact", "Mira's multi-part clue", "HIDDEN_GROUP_SUMMARY");
+  const groupedFacts = ["A", "B", "C"].map((suffix) => db.createKnowledgeFact(campaign.id, groupedEntry.id, `GROUP_FACT_${suffix}_SECRET`));
+  db.revealKnowledgeFactToCharacter(campaign.id, groupedEntry.id, groupedFacts[0].id, mira.id);
+  db.revealKnowledgeFactToCharacter(campaign.id, groupedEntry.id, groupedFacts[1].id, mira.id);
+  const beforeSeen = db.getPlayerState("activity-mira-hash");
+  const grouped = beforeSeen.newActivity.filter((event) => event.kind === "knowledge_facts_revealed" && event.knowledgeEntryId === groupedEntry.id);
+  assert.equal(grouped.length, 2);
+  const representative = beforeSeen.newActivity[0];
+  assert.equal(representative.kind, "knowledge_facts_revealed");
+  assert.equal(representative.knowledgeEntryId, groupedEntry.id);
+  const seenMarker = db.markPlayerActivitySeen("activity-mira-hash", representative.id);
+  assert.equal(seenMarker.id, representative.id);
+  assert.equal(db.getPlayerState("activity-mira-hash").newActivity.some((event) => event.knowledgeEntryId === groupedEntry.id), false);
+  db.revealKnowledgeFactToCharacter(campaign.id, groupedEntry.id, groupedFacts[2].id, mira.id);
+  const afterSeen = db.getPlayerState("activity-mira-hash").newActivity.filter((event) => event.kind === "knowledge_facts_revealed" && event.knowledgeEntryId === groupedEntry.id);
+  assert.equal(afterSeen.length, 1);
+  assert.equal(afterSeen[0].knowledgeTitle, "Mira's multi-part clue");
+  assert.equal(db.listCampaignActivity(campaign.id).some((event) => event.type === "knowledge_fact_access_revoked"), true);
+  assert.equal(db.getPlayerState("activity-mira-hash").recentActivity.some((event) => "type" in event || "details" in event), false);
 });
 
 test("Knowledge Fact export v8 remaps references, omits secrets, and imports invalid references atomically", (t) => {

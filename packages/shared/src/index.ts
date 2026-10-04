@@ -125,9 +125,21 @@ export interface PlayerState {
   inventory: InventoryItem[];
   knowledge: PlayerKnowledgeEntry[];
   notes: PersonalNote[];
-  recentActivity: CampaignActivity[];
-  newActivity: CampaignActivity[];
+  recentActivity: PlayerActivityEvent[];
+  newActivity: PlayerActivityEvent[];
 }
+
+interface PlayerActivityEventBase {
+  id: EntityId;
+  createdAt: string;
+  sessionId: EntityId | null;
+  sessionName: string | null;
+}
+
+export type PlayerActivityEvent =
+  | (PlayerActivityEventBase & { kind: "item_received"; itemName: string; quantity: number })
+  | (PlayerActivityEventBase & { kind: "knowledge_summary_opened"; knowledgeEntryId: EntityId; knowledgeTitle: string })
+  | (PlayerActivityEventBase & { kind: "knowledge_facts_revealed"; knowledgeEntryId: EntityId; knowledgeTitle: string });
 
 export interface PlayerKnowledgeEntry {
   id: EntityId;

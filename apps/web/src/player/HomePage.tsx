@@ -1,11 +1,6 @@
-import { ArrowRight, BookOpen, Check, Package, Pin, Sparkles } from "lucide-react";
-import type { CampaignActivity, PlayerState } from "@progdm/shared";
-import { characterInitials, homeActivityDigest, personalNoteDisplayTitle, pinnedHomeNotes } from "./model";
-
-function activityLabel(event: CampaignActivity) {
-  if (event.type === "item_granted") return `Получен предмет «${event.details.itemName ?? "Предмет"}»`;
-  return `Открыто знание «${event.details.knowledgeTitle ?? "Новая запись"}»`;
-}
+import { ArrowRight, Check, Pin, Sparkles } from "lucide-react";
+import type { PlayerState } from "@progdm/shared";
+import { characterInitials, homeActivityDigest, homeActivityIcon, homeActivityLabel, personalNoteDisplayTitle, pinnedHomeNotes } from "./model";
 
 export function HomePage({ player, busy, onProfile, onJournal, onPinnedNotes, onMarkSeen }: {
   player: PlayerState;
@@ -34,12 +29,15 @@ export function HomePage({ player, busy, onProfile, onJournal, onPinnedNotes, on
     <section className="prod-section" aria-labelledby="prod-home-new">
       <div className="prod-section-heading"><h1 id="prod-home-new"><Sparkles aria-hidden="true" />Новое</h1>{activity.length > 0 && <span className="prod-count">{activity.length}</span>}</div>
       {activity.length > 0 ? <>
-        <ul className="prod-activity-list">{activity.map((event) => <li key={event.id}>
-          <span className="prod-row-icon" aria-hidden="true">{event.type === "item_granted" ? <Package /> : <BookOpen />}</span>
-          <span>{activityLabel(event)}</span>
-        </li>)}</ul>
+        <ul className="prod-activity-list">{activity.map((event) => {
+          const Icon = homeActivityIcon(event);
+          return <li key={event.id}>
+            <span className="prod-row-icon" aria-hidden="true"><Icon /></span>
+            <span>{homeActivityLabel(event)}</span>
+          </li>;
+        })}</ul>
         <div className="prod-actions">
-          <button className="prod-secondary" type="button" onClick={onJournal}>Весь журнал</button>
+          <button className="prod-secondary" type="button" onClick={onJournal}>Открыть журнал →</button>
           {latest && <button className="prod-primary" type="button" disabled={busy || !player.canEdit} onClick={() => onMarkSeen(latest.id)}><Check aria-hidden="true" />Отметить просмотренным</button>}
         </div>
       </> : <p className="prod-empty">Пока ничего нового.</p>}

@@ -264,6 +264,8 @@
 .prod-legacy-page .player-simple-list li > svg { flex: 0 0 auto; width: 18px; height: 18px; color: var(--player-accent); }
 .prod-legacy-page .player-simple-list li > .muted { margin-left: auto; color: var(--player-secondary); font-size: 12px; }
 .prod-legacy-page .player-simple-list time { flex: 0 0 100%; color: var(--player-muted); font-size: 12px; }
+.prod-legacy-page .player-journal-event { display: grid; gap: 3px; min-width: 0; }
+.prod-legacy-page .player-journal-event small { color: var(--player-secondary); font-size: 12px; }
 .prod-legacy-page .player-journal-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin: 14px 0; border-bottom: 1px solid var(--player-divider); }
 .prod-legacy-page .player-journal-tabs button { min-height: 44px; border-radius: 0; color: var(--player-secondary); }
 .prod-legacy-page .player-journal-tabs button.selected { color: var(--player-accent); border-bottom: 2px solid var(--player-accent); font-weight: 700; }
