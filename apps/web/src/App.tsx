@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Archive, ArrowDown, ArrowUp, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Pencil, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, ScrollText, Trash2, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeFact, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
+import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeFact, KnowledgeFactReveal, KnowledgeFactRevealAudience, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
-import { approvalTarget, LatestRequest, mergeProfileDraft } from "./sync";
+import { approvalTarget, LatestRequest, mergeProfileDraft, PendingOperationIds } from "./sync";
 
 const tokenKey = "progdm.dmToken";
 const campaignKey = "progdm.campaign";
@@ -60,6 +60,7 @@ function initialToken() {
 class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
+class AmbiguousRevealFailure extends Error {}
 async function request<T>(token: string, path: string, body?: unknown, timeoutMs = 10000, method?: string): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -130,6 +131,7 @@ function DmWorkspace() {
   const overviewRequests = useRef(new LatestRequest());
   const historyRequests = useRef(new LatestRequest());
   const knowledgeFactRequests = useRef(new LatestRequest());
+  const pendingRevealOperations = useRef(new PendingOperationIds());
   const profileBase = useRef<Character | null>(null);
   const [backupId, setBackupId] = useState("");
   const [health, setHealth] = useState<DataHealth | null>(null);
@@ -163,12 +165,15 @@ function DmWorkspace() {
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
   const [knowledgeTargetId, setKnowledgeTargetId] = useState("");
   const [knowledgeFacts, setKnowledgeFacts] = useState<KnowledgeFact[]>([]);
+  const [knowledgeFactReveals, setKnowledgeFactReveals] = useState<KnowledgeFactReveal[]>([]);
   const [knowledgeFactsLoading, setKnowledgeFactsLoading] = useState(false);
   const [knowledgeFactsError, setKnowledgeFactsError] = useState("");
   const [knowledgeFactsReload, setKnowledgeFactsReload] = useState(0);
   const [newKnowledgeFact, setNewKnowledgeFact] = useState("");
   const [editingKnowledgeFact, setEditingKnowledgeFact] = useState<{ id: string; body: string } | null>(null);
   const [deletingKnowledgeFact, setDeletingKnowledgeFact] = useState<KnowledgeFact | null>(null);
+  const [revokingKnowledgeFact, setRevokingKnowledgeFact] = useState<{ fact: KnowledgeFact; reveal: KnowledgeFactReveal } | null>(null);
+  const [knowledgeRevealCharacterId, setKnowledgeRevealCharacterId] = useState("");
   const [joinAddress, setJoinAddress] = useState("");
   const [manualJoinAddress, setManualJoinAddress] = useState("");
   const [copied, setCopied] = useState(false);
@@ -276,6 +281,7 @@ function DmWorkspace() {
     const live = current?.session.status === "active" && current.campaign.id === selectedId;
     setWorkspaceMode(live ? "live" : "prepare");
     setSection(live ? "players" : "sessions");
+    if (!live) setRevokingKnowledgeFact(null);
   }, [current?.session.id, selectedId]);
   const campaignPlayers = current?.campaign.id === selectedId
     ? (state?.players ?? []).filter((player) => player.sessionId === current.session.id)
@@ -294,6 +300,11 @@ function DmWorkspace() {
   const campaignKnowledge = state?.knowledge.filter((entry) => entry.campaignId === selectedId) ?? [];
   const filteredKnowledge = campaignKnowledge.filter((entry) => entry.title.toLocaleLowerCase("ru").includes(knowledgeSearch.trim().toLocaleLowerCase("ru")));
   const selectedKnowledge = filteredKnowledge.find((entry) => entry.id === selectedKnowledgeId) ?? filteredKnowledge[0];
+  const liveRevealCharacters = [...new Map(grantablePlayers.flatMap((player) => {
+    const character = campaignCharacters.find((item) => item.id === player.characterId);
+    return character && !character.archivedAt ? [[character.id, character] as const] : [];
+  })).values()];
+  const liveRevealCharacterIds = liveRevealCharacters.map((character) => character.id).join("|");
   const selectedPlayer = grantablePlayers.find((player) => player.characterId === characterOverview?.character.id);
   const addresses = state?.networkAddresses ?? [];
   const selectedAddress = addresses.find((entry) => entry.address === joinAddress)?.address ??
@@ -307,19 +318,30 @@ function DmWorkspace() {
     : "";
   const addressKey = addresses.map((entry) => entry.address).join("|");
   useEffect(() => {
+    if (!liveRevealCharacters.some((character) => character.id === knowledgeRevealCharacterId)) {
+      setKnowledgeRevealCharacterId(liveRevealCharacters[0]?.id ?? "");
+    }
+  }, [selectedId, current?.session.id, liveRevealCharacterIds]);
+  useEffect(() => {
     const entryId = selectedKnowledge?.id;
     if (section !== "knowledge" || !selectedId || !entryId || !token) {
       knowledgeFactRequests.current.invalidate();
-      setKnowledgeFacts([]); setKnowledgeFactsLoading(false); setKnowledgeFactsError("");
+      setKnowledgeFacts([]); setKnowledgeFactReveals([]); setKnowledgeFactsLoading(false); setKnowledgeFactsError("");
       return;
     }
     const campaignId = selectedId;
     const ticket = knowledgeFactRequests.current.begin();
-    setKnowledgeFacts([]); setKnowledgeFactsLoading(true); setKnowledgeFactsError("");
+    setKnowledgeFacts([]); setKnowledgeFactReveals([]); setKnowledgeFactsLoading(true); setKnowledgeFactsError("");
     setEditingKnowledgeFact(null); setDeletingKnowledgeFact(null); setNewKnowledgeFact("");
-    void request<{ facts: KnowledgeFact[] }>(token,
-      `/api/dm/campaigns/${campaignId}/knowledge/${entryId}/facts`).then((result) => {
-      if (knowledgeFactRequests.current.isCurrent(ticket)) setKnowledgeFacts(result.facts);
+    setRevokingKnowledgeFact(null);
+    void Promise.all([
+      request<{ facts: KnowledgeFact[] }>(token, `/api/dm/campaigns/${campaignId}/knowledge/${entryId}/facts`),
+      request<{ reveals: KnowledgeFactReveal[] }>(token, `/api/dm/campaigns/${campaignId}/knowledge/${entryId}/facts/reveals`)
+    ]).then(([facts, reveals]) => {
+      if (knowledgeFactRequests.current.isCurrent(ticket)) {
+        setKnowledgeFacts(facts.facts);
+        setKnowledgeFactReveals(reveals.reveals);
+      }
     }).catch((failure: Error) => {
       if (knowledgeFactRequests.current.isCurrent(ticket)) setKnowledgeFactsError(failure.message);
     }).finally(() => {
@@ -346,7 +368,7 @@ function DmWorkspace() {
         setToken(""); storeValue(tokenKey, ""); setState(null);
       }
       setError(failure instanceof Error ? failure.message : "Не удалось сохранить изменения.");
-      if (!(failure instanceof ApiError)) setPhase("error");
+      if (!(failure instanceof ApiError) && !(failure instanceof AmbiguousRevealFailure)) setPhase("error");
       if (failure instanceof ApiError && failure.status === 409) {
         setConfirmation(null);
         try { await refresh(); } catch { setPhase("error"); }
@@ -495,6 +517,69 @@ function DmWorkspace() {
       });
       setKnowledgeTitle(""); setKnowledgeDescription("");
       setNotice("Запись добавлена и пока скрыта от игроков.");
+    });
+  }
+  function revealNextFact(audience: KnowledgeFactRevealAudience, characterId?: string) {
+    const entry = selectedKnowledge;
+    if (!selected || !entry || workspaceMode !== "live" || knowledgeFacts.length === 0) return;
+    const targetId = audience === "character" ? characterId : undefined;
+    if (audience === "character" && !targetId) return;
+    const operationKey = JSON.stringify([selected.id, entry.id, audience, targetId ?? null]);
+    const operationId = pendingRevealOperations.current.getOrCreate(operationKey);
+    void mutate(async () => {
+      try {
+        const { result } = await request<{ result: { fact: KnowledgeFact } | null }>(token,
+          `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts/reveal-next`, {
+            audience, ...(audience === "character" ? { characterId: targetId } : {}), operationId
+          });
+        pendingRevealOperations.current.complete(operationKey, operationId);
+        setKnowledgeFactsReload((value) => value + 1);
+        setNotice(result ? `Факт открыт ${audience === "party" ? "группе" : "персонажу"}.` : "Все факты для выбранного получателя уже открыты.");
+      } catch (failure) {
+        if (failure instanceof ApiError && failure.status < 500) {
+          pendingRevealOperations.current.complete(operationKey, operationId);
+          throw failure;
+        }
+        if (failure instanceof ApiError) throw failure;
+        throw new AmbiguousRevealFailure("Не удалось подтвердить раскрытие. Нажмите действие ещё раз: повтор использует тот же запрос и не откроет следующий факт случайно.");
+      }
+    });
+  }
+  function revealSelectedFact(fact: KnowledgeFact, audience: KnowledgeFactRevealAudience, characterId?: string) {
+    const entry = selectedKnowledge;
+    if (!selected || !entry || workspaceMode !== "live") return;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts/${fact.id}/reveal`, {
+        audience, ...(audience === "character" ? { characterId } : {})
+      });
+      setKnowledgeFactsReload((value) => value + 1);
+      setNotice(`Факт открыт ${audience === "party" ? "группе" : "выбранному персонажу"}.`);
+    });
+  }
+  function revealAllFacts(audience: KnowledgeFactRevealAudience, characterId?: string) {
+    const entry = selectedKnowledge;
+    if (!selected || !entry || workspaceMode !== "live" || !knowledgeFacts.length) return;
+    void mutate(async () => {
+      const { result } = await request<{ result: { createdCount: number } }>(token,
+        `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts/reveal-all`, {
+          audience, ...(audience === "character" ? { characterId } : {})
+        });
+      setKnowledgeFactsReload((value) => value + 1);
+      setNotice(result.createdCount ? `Открыто фактов: ${result.createdCount}.` : "Новых закрытых фактов для этого получателя нет.");
+    });
+  }
+  function revokeKnowledgeFactAccess() {
+    const entry = selectedKnowledge;
+    const target = revokingKnowledgeFact;
+    if (!selected || !entry || !target) return;
+    void mutate(async () => {
+      const { revoked } = await request<{ revoked: boolean }>(token,
+        `/api/dm/campaigns/${selected.id}/knowledge/${entry.id}/facts/${target.fact.id}/revoke`, {
+          audience: target.reveal.audience,
+          ...(target.reveal.audience === "character" ? { characterId: target.reveal.characterId } : {})
+        });
+      setRevokingKnowledgeFact(null); setKnowledgeFactsReload((value) => value + 1);
+      setNotice(revoked ? "Доступ к факту отозван. История события сохранена." : "Этот доступ уже отозван.");
     });
   }
   function createKnowledgeFact(event: FormEvent) {
@@ -949,7 +1034,11 @@ function DmWorkspace() {
               {selectedKnowledge && (() => {
                 const entry = selectedKnowledge;
                 const targetMissing = !campaignCharacters.some((character) => character.id === knowledgeTargetId);
+                const partyRevealedIds = new Set(knowledgeFactReveals.filter((reveal) => reveal.audience === "party").map((reveal) => reveal.knowledgeFactId));
+                const nextPartyFact = knowledgeFacts.find((fact) => !partyRevealedIds.has(fact.id));
+                const partyRevealedCount = knowledgeFacts.filter((fact) => partyRevealedIds.has(fact.id)).length;
                 return <div className="knowledge-detail">
+                  <p className="eyebrow knowledge-summary-label">Краткое описание · управление доступом</p>
                   <div className="knowledge-entry-copy">
                     <div className="knowledge-entry-heading"><span className="knowledge-category">{knowledgeCategories[entry.category]}</span>
                       <h3>{entry.title}</h3></div>
@@ -959,9 +1048,9 @@ function DmWorkspace() {
                     </span>
                   </div>
                   <div className="knowledge-quick-actions">
-                    <button className="secondary" disabled={locked || entry.visibility === "party"} onClick={() => saveKnowledgeVisibility(entry, { visibility: "party", characterId: "" })}><Eye />Открыть партии</button>
-                    {characterOverview?.character.campaignId === selectedId && <button className="secondary" disabled={locked || (entry.visibility === "character" && entry.visibleToCharacterId === characterOverview.character.id)} onClick={() => saveKnowledgeVisibility(entry, { visibility: "character", characterId: characterOverview.character.id })}><Eye />Открыть {characterOverview.character.name}</button>}
-                    <button className="secondary" disabled={locked || entry.visibility === "hidden"} onClick={() => saveKnowledgeVisibility(entry, { visibility: "hidden", characterId: "" })}><EyeOff />Скрыть</button>
+                    <button className="secondary" disabled={locked || entry.visibility === "party"} onClick={() => saveKnowledgeVisibility(entry, { visibility: "party", characterId: "" })}><Eye />Открыть описание партии</button>
+                    {characterOverview?.character.campaignId === selectedId && <button className="secondary" disabled={locked || (entry.visibility === "character" && entry.visibleToCharacterId === characterOverview.character.id)} onClick={() => saveKnowledgeVisibility(entry, { visibility: "character", characterId: characterOverview.character.id })}><Eye />Открыть описание: {characterOverview.character.name}</button>}
+                    <button className="secondary" disabled={locked || entry.visibility === "hidden"} onClick={() => saveKnowledgeVisibility(entry, { visibility: "hidden", characterId: "" })}><EyeOff />Скрыть описание</button>
                   </div>
                   <form className="knowledge-controls" onSubmit={(event) => { event.preventDefault(); saveKnowledgeVisibility(entry, { visibility: "character", characterId: knowledgeTargetId }); }}>
                     <label htmlFor={"knowledge-character-" + entry.id}>Конкретному персонажу</label>
@@ -972,10 +1061,25 @@ function DmWorkspace() {
                     <button className="secondary" disabled={locked || targetMissing || (entry.visibility === "character" && entry.visibleToCharacterId === knowledgeTargetId)}><Eye />Открыть персонажу</button>
                   </form>
                   <section className="knowledge-facts" aria-labelledby="knowledge-facts-title">
-                    <div className="section-heading"><h3 id="knowledge-facts-title">Факты</h3><span className="count">{knowledgeFacts.length}</span></div>
-                    <p className="muted knowledge-facts-hint">Факты подготавливаются здесь; доступ к ним открывается отдельно.</p>
+                    <div className="section-heading"><h3 id="knowledge-facts-title">Факты · раскрытие во время игры</h3><span className="count">{knowledgeFacts.length}</span></div>
+                    <p className="muted knowledge-facts-hint">Факты открываются отдельно и не меняют доступ к краткому описанию.</p>
+                    {workspaceMode === "live" && knowledgeFacts.length > 0 && <div className="knowledge-live-reveal">
+                      <p className="knowledge-reveal-progress">{partyRevealedCount} / {knowledgeFacts.length} открыто группе</p>
+                      {nextPartyFact ? <p className="knowledge-next-preview"><span>Следующий факт</span>{nextPartyFact.body}</p> : <p className="muted">Все факты уже открыты группе.</p>}
+                      <button className="primary" disabled={locked || !nextPartyFact || knowledgeFactsLoading}
+                        onClick={() => revealNextFact("party")}><Eye />Открыть группе</button>
+                    </div>}
                     {knowledgeFactsLoading ? <p className="muted">Загружаем факты…</p> : knowledgeFactsError ? <p className="message error" role="alert">{knowledgeFactsError}</p> : knowledgeFacts.length ? <ol className="knowledge-fact-list">
                       {knowledgeFacts.map((fact, index) => <li className="knowledge-fact-row" key={fact.id}>
+                        {(() => {
+                          const grants = knowledgeFactReveals.filter((reveal) => reveal.knowledgeFactId === fact.id);
+                          const nameForReveal = (reveal: KnowledgeFactReveal) => campaignCharacters.find((character) => character.id === reveal.characterId)?.name ?? "Персонаж";
+                          return <div className="knowledge-fact-status" aria-label="Кому открыт факт">
+                            {grants.some((reveal) => reveal.audience === "party") && <span>Группе</span>}
+                            {grants.filter((reveal) => reveal.audience === "character").map((reveal) => <span key={reveal.id}>{nameForReveal(reveal)}</span>)}
+                            {!grants.length && <span className="muted">Скрыт</span>}
+                          </div>;
+                        })()}
                         {workspaceMode === "prepare" && editingKnowledgeFact?.id === fact.id ? <form className="knowledge-fact-editor" onSubmit={saveKnowledgeFact}>
                           <label htmlFor={`knowledge-fact-edit-${fact.id}`}>Текст факта</label>
                           <textarea id={`knowledge-fact-edit-${fact.id}`} value={editingKnowledgeFact.body} maxLength={2000} required disabled={locked}
@@ -990,6 +1094,24 @@ function DmWorkspace() {
                             <button className="icon-button" type="button" title="Изменить факт" aria-label="Изменить факт" disabled={locked} onClick={() => setEditingKnowledgeFact({ id: fact.id, body: fact.body })}><Pencil /></button>
                             <button className="icon-button" type="button" title="Удалить факт" aria-label="Удалить факт" disabled={locked} onClick={() => setDeletingKnowledgeFact(fact)}><Trash2 /></button>
                           </div>}
+                          {workspaceMode === "live" && <details className="knowledge-fact-live-menu">
+                            <summary>Действия</summary>
+                            {(() => {
+                              const grants = knowledgeFactReveals.filter((reveal) => reveal.knowledgeFactId === fact.id);
+                              const partyGrant = grants.some((reveal) => reveal.audience === "party");
+                              const characterGrant = knowledgeRevealCharacterId
+                                ? grants.find((reveal) => reveal.audience === "character" && reveal.characterId === knowledgeRevealCharacterId)
+                                : undefined;
+                              return <div className="knowledge-fact-live-actions">
+                                <button type="button" className="secondary" disabled={locked || partyGrant || knowledgeFactsLoading}
+                                  onClick={() => revealSelectedFact(fact, "party")}>{partyGrant ? "Уже открыто группе" : "Открыть этот факт группе"}</button>
+                                <button type="button" className="secondary" disabled={locked || !knowledgeRevealCharacterId || Boolean(characterGrant) || knowledgeFactsLoading}
+                                  onClick={() => revealSelectedFact(fact, "character", knowledgeRevealCharacterId)}>{characterGrant ? "Уже открыто персонажу" : "Открыть выбранному персонажу"}</button>
+                                {grants.map((reveal) => <button type="button" className="text-action" key={reveal.id} disabled={locked}
+                                  onClick={() => setRevokingKnowledgeFact({ fact, reveal })}>Отозвать доступ: {reveal.audience === "party" ? "группе" : campaignCharacters.find((character) => character.id === reveal.characterId)?.name ?? "персонажу"}</button>)}
+                              </div>;
+                            })()}
+                          </details>}
                         </>}
                       </li>)}
                     </ol> : !knowledgeFactsLoading && <p className="muted">Для этой записи фактов пока нет.</p>}
@@ -999,6 +1121,27 @@ function DmWorkspace() {
                         onChange={(event) => setNewKnowledgeFact(event.target.value)} rows={3} placeholder="Отдельное сведение, которое можно будет открыть позже" />
                       <button className="secondary" disabled={locked || knowledgeFactsLoading || !newKnowledgeFact.trim()}><Plus />Добавить факт</button>
                     </form>}
+                    {workspaceMode === "live" && knowledgeFacts.length > 0 && <details className="knowledge-reveal-more">
+                      <summary>Дополнительно</summary>
+                      <div className="knowledge-reveal-more-content">
+                        <button type="button" className="secondary" disabled={locked || !nextPartyFact || knowledgeFactsLoading}
+                          onClick={() => revealAllFacts("party")}>Открыть все факты группе</button>
+                        {liveRevealCharacters.length ? <>
+                          <div className="field"><label htmlFor="knowledge-reveal-character">Персонаж текущей сессии</label>
+                            <select id="knowledge-reveal-character" value={knowledgeRevealCharacterId} disabled={locked || knowledgeFactsLoading}
+                              onChange={(event) => setKnowledgeRevealCharacterId(event.target.value)}>
+                              {liveRevealCharacters.map((character) => <option key={character.id} value={character.id}>{character.name}</option>)}
+                            </select>
+                          </div>
+                          <div className="knowledge-reveal-more-actions">
+                            <button type="button" className="secondary" disabled={locked || !knowledgeRevealCharacterId || knowledgeFactsLoading}
+                              onClick={() => revealNextFact("character", knowledgeRevealCharacterId)}>Открыть следующий персонажу</button>
+                            <button type="button" className="secondary" disabled={locked || !knowledgeRevealCharacterId || knowledgeFactsLoading}
+                              onClick={() => revealAllFacts("character", knowledgeRevealCharacterId)}>Открыть все персонажу</button>
+                          </div>
+                        </> : <p className="muted">В активной сессии пока нет принятых игроков с назначенными персонажами.</p>}
+                      </div>
+                    </details>}
                   </section>
                 </div>;
               })()}
@@ -1033,6 +1176,11 @@ function DmWorkspace() {
       <p className="confirmation-copy">Факт исчезнет из текущих знаний. История уже совершённых раскрытий сохранится.</p>
       <div className="dialog-actions"><button className="secondary" autoFocus disabled={busy} onClick={() => setDeletingKnowledgeFact(null)}>Отмена</button>
         <button className="destructive" disabled={locked} onClick={deleteKnowledgeFact}>{busy ? "Удаление…" : "Удалить"}</button></div>
+    </Modal>}
+    {revokingKnowledgeFact && <Modal title="Отозвать доступ?" busy={busy} close={() => setRevokingKnowledgeFact(null)}>
+      <p className="confirmation-copy">Это исправит текущий доступ к факту. Уже совершённое раскрытие останется в истории.</p>
+      <div className="dialog-actions"><button className="secondary" autoFocus disabled={busy} onClick={() => setRevokingKnowledgeFact(null)}>Отмена</button>
+        <button className="destructive" disabled={locked} onClick={revokeKnowledgeFactAccess}>{busy ? "Сохранение…" : "Отозвать доступ"}</button></div>
     </Modal>}
   </div>;
 }

@@ -1470,6 +1470,11 @@ test("knowledge Facts have independent party and Character grants, stable next r
   assert.equal(nextParty.reveal.sessionId, session.id);
   assert.equal(db.revealNextKnowledgeFact(campaign.id, entry.id, "party", undefined, "next-party-once").fact.id, first.id);
   assert.equal(db.listCampaignActivity(campaign.id).length, beforeNext + 1);
+  assert.throws(() => db.revealNextKnowledgeFact(campaign.id, entry.id, "character", mira.id, "next-party-once"), /operation ID was already used/);
+  const currentReveals = db.listKnowledgeFactReveals(campaign.id, entry.id);
+  assert.equal(currentReveals.some((reveal) => reveal.audience === "party" && reveal.knowledgeFactId === first.id), true);
+  assert.equal(currentReveals.every((reveal) => !("operationId" in reveal)), true);
+  assert.throws(() => db.listKnowledgeFactReveals(otherCampaign.id, entry.id), /not in this campaign/);
   const beforeMiraNext = db.listCampaignActivity(campaign.id).length;
   const nextMira = db.revealNextKnowledgeFact(campaign.id, entry.id, "character", mira.id, "next-mira-once");
   assert.equal(nextMira.fact.id, first.id);

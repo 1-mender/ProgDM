@@ -1362,6 +1362,20 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .where(and(eq(schema.knowledgeFacts.campaignId, campaignId), eq(schema.knowledgeFacts.knowledgeEntryId, entryId)))
         .orderBy(asc(schema.knowledgeFacts.position), asc(schema.knowledgeFacts.id)).all();
     },
+    listKnowledgeFactReveals(campaignId: string, entryId: string): KnowledgeFactReveal[] {
+      const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+        .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+      if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+      return db.select({
+        id: schema.knowledgeFactReveals.id, campaignId: schema.knowledgeFactReveals.campaignId,
+        knowledgeFactId: schema.knowledgeFactReveals.knowledgeFactId, audience: schema.knowledgeFactReveals.audience,
+        characterId: schema.knowledgeFactReveals.characterId, sessionId: schema.knowledgeFactReveals.sessionId,
+        createdAt: schema.knowledgeFactReveals.createdAt
+      }).from(schema.knowledgeFactReveals)
+        .innerJoin(schema.knowledgeFacts, eq(schema.knowledgeFactReveals.knowledgeFactId, schema.knowledgeFacts.id))
+        .where(and(eq(schema.knowledgeFactReveals.campaignId, campaignId), eq(schema.knowledgeFacts.knowledgeEntryId, entryId)))
+        .orderBy(asc(schema.knowledgeFactReveals.createdAt), asc(schema.knowledgeFactReveals.id)).all();
+    },
     createKnowledgeFact(campaignId: string, entryId: string, body: string): KnowledgeFact {
       return db.transaction(() => {
         const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)

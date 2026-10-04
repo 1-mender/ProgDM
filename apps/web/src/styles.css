@@ -299,16 +299,33 @@ dialog::backdrop { background: #20252a66; }
 .knowledge-quick-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
 .knowledge-quick-actions button { min-height: 38px; padding: 6px 9px; font-size: 12px; }
 .knowledge-detail .knowledge-controls { max-width: 380px; margin-top: 18px; }
+.knowledge-summary-label { margin: 20px 0 8px; }
 .knowledge-facts { margin-top: 24px; padding-top: 18px; border-top: 1px solid #dce0e3; }
 .knowledge-facts > .section-heading { min-height: 30px; margin-bottom: 4px; }
 .knowledge-facts > .section-heading h3 { margin: 0; font-size: 15px; }
 .knowledge-facts-hint { margin: 0 0 12px; }
+.knowledge-live-reveal { max-width: 620px; margin: 14px 0 18px; padding: 14px 16px; border-left: 3px solid #286f63; background: #edf3f0; }
+.knowledge-reveal-progress { margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.knowledge-next-preview { display: grid; gap: 4px; margin: 0 0 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.knowledge-next-preview span { color: #727780; font-size: 12px; }
+.knowledge-live-reveal > button { min-height: 44px; }
 .knowledge-fact-list { list-style: none; padding: 0; margin: 0; }
-.knowledge-fact-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid #e4e7e9; }
-.knowledge-fact-row > p { flex: 1; min-width: 0; margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.knowledge-fact-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px 12px; padding: 12px 0; border-bottom: 1px solid #e4e7e9; }
+.knowledge-fact-row > p { grid-column: 1; min-width: 0; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.knowledge-fact-status { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; min-height: 20px; }
+.knowledge-fact-status > span { color: #286f63; font-size: 11px; line-height: 1.4; }
 .knowledge-fact-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .knowledge-fact-actions .icon-button { width: 36px; height: 36px; }
 .knowledge-fact-actions .icon-button svg { width: 16px; height: 16px; }
+.knowledge-fact-live-menu { grid-column: 2; grid-row: 2; align-self: start; color: #535961; font-size: 12px; }
+.knowledge-fact-live-menu > summary, .knowledge-reveal-more > summary { min-height: 36px; padding: 8px 4px; color: #286f63; font-weight: 600; cursor: pointer; }
+.knowledge-fact-live-actions { display: grid; justify-items: stretch; gap: 6px; min-width: min(260px, 70vw); padding: 8px; border: 1px solid #dce0e3; background: #fff; }
+.knowledge-fact-live-actions button { justify-content: flex-start; min-height: 38px; text-align: left; }
+.text-action { justify-content: flex-start; border-color: transparent; color: #8b3737; font-size: 12px; }
+.knowledge-reveal-more { max-width: 620px; margin-top: 16px; border-top: 1px solid #e4e7e9; }
+.knowledge-reveal-more-content { display: grid; justify-items: start; gap: 12px; padding: 8px 0 4px; }
+.knowledge-reveal-more-content > .field { width: min(100%, 380px); }
+.knowledge-reveal-more-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .knowledge-fact-editor, .knowledge-fact-create { display: grid; gap: 8px; width: 100%; }
 .knowledge-fact-editor label, .knowledge-fact-create label { margin: 0; font-weight: 550; }
 .knowledge-fact-editor textarea, .knowledge-fact-create textarea { min-height: 76px; }
@@ -367,8 +384,10 @@ dialog::backdrop { background: #20252a66; }
   .knowledge-controls button { width: 100%; }
   .knowledge-workspace { grid-template-columns: minmax(0, 1fr); }
   .knowledge-index { max-height: 210px; border-right: 0; border-bottom: 1px solid #e4e7e9; }
-  .knowledge-fact-row { flex-direction: column; gap: 6px; }
-  .knowledge-fact-actions { align-self: flex-end; }
+  .knowledge-fact-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .knowledge-fact-live-menu { grid-column: 2; }
+  .knowledge-reveal-more-actions { display: grid; width: 100%; }
+  .knowledge-reveal-more-actions > button { width: 100%; }
   .knowledge-fact-create > button { width: 100%; }
   .item-grant-form { grid-template-columns: minmax(0, 1fr) 90px; }
   .item-grant-form .field:first-child { grid-column: 1 / -1; }

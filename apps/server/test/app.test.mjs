@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -584,6 +584,95 @@ test("DM prepares Knowledge Facts through campaign-scoped APIs without changing 
   assert.equal(afterDelete.knowledge[0].description, "An entry summary stays independent.");
   assert.equal((await app.inject({ method: "DELETE", url: `${base}/${first.id}`, headers })).statusCode, 404);
   assert.equal((await post(app, `${base}/reveal`, { factId: second.id })).statusCode, 404);
+});
+
+test("DM Knowledge Fact reveal APIs preserve independent audiences, retry identity, and correction history", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Progressive facts");
+  const foreignCampaign = database.createCampaign("Foreign campaign");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const rowan = database.createCharacter(campaign.id, "Rowan");
+  const archived = database.createCharacter(campaign.id, "Archived");
+  const foreign = database.createCharacter(foreignCampaign.id, "Nora");
+  database.archiveCharacter(archived.id);
+  const session = database.createSession(campaign.id, "Live session");
+  database.activateSession(session.id);
+  for (const [name, character, token] of [["Mira player", mira, "M".repeat(43)], ["Rowan player", rowan, "R".repeat(43)]]) {
+    await post(app, `/api/join/${session.joinToken}/request`, { displayName: name, playerToken: token });
+    const player = database.listPlayersByCampaign(campaign.id).find((entry) => entry.displayName === name);
+    database.approvePlayer(player.id, { characterId: character.id });
+  }
+  const entry = database.createKnowledge(campaign.id, "fact", "The sealed room", "Summary remains hidden.");
+  const facts = ["First fragment", "Second fragment", "Third fragment"].map((body) => database.createKnowledgeFact(campaign.id, entry.id, body));
+  const base = `/api/dm/campaigns/${campaign.id}/knowledge/${entry.id}/facts`;
+  const revealsUrl = `${base}/reveals`;
+  const noAuth = await app.inject({ method: "GET", url: revealsUrl });
+  assert.equal(noAuth.statusCode, 401);
+  assert.deepEqual((await get(app, revealsUrl)).json().reveals, []);
+  assert.equal((await get(app, `/api/dm/campaigns/${foreignCampaign.id}/knowledge/${entry.id}/facts/reveals`)).statusCode, 404);
+
+  const selectedWithSession = await post(app, `${base}/${facts[2].id}/reveal`, { audience: "party", sessionId: session.id });
+  assert.equal(selectedWithSession.statusCode, 400);
+  const selectedParty = await post(app, `${base}/${facts[2].id}/reveal`, { audience: "party" });
+  assert.equal(selectedParty.statusCode, 200);
+  assert.equal(selectedParty.json().result.created, true);
+  assert.equal(selectedParty.json().result.reveal.sessionId, session.id);
+  assert.equal("operationId" in selectedParty.json().result.reveal, false);
+  assert.equal((await post(app, `${base}/${facts[2].id}/reveal`, { audience: "party" })).json().result.created, false);
+  assert.equal((await post(app, `${base}/${facts[1].id}/reveal`, { audience: "character", characterId: rowan.id })).json().result.created, true);
+  assert.equal((await post(app, `${base}/${facts[0].id}/reveal`, { audience: "character", characterId: archived.id })).statusCode, 409);
+  assert.equal((await post(app, `${base}/${facts[0].id}/reveal`, { audience: "character", characterId: foreign.id })).statusCode, 409);
+  assert.equal((await post(app, `${base}/${database.createKnowledgeFact(foreignCampaign.id,
+    database.createKnowledge(foreignCampaign.id, "fact", "Foreign entry", "Summary").id, "Foreign fact.").id}/reveal`, { audience: "party" })).statusCode, 404);
+
+  const operationId = randomUUID();
+  const nextUrl = `${base}/reveal-next`;
+  const invalidNext = await post(app, nextUrl, { audience: "party", operationId, sessionId: session.id });
+  assert.equal(invalidNext.statusCode, 400);
+  assert.equal((await post(app, nextUrl, { audience: "party", operationId: "not-a-uuid" })).statusCode, 400);
+  const activityBeforeNext = database.listCampaignActivity(campaign.id).filter((event) => event.type === "knowledge_fact_revealed").length;
+  const nextParty = await post(app, nextUrl, { audience: "party", operationId });
+  assert.equal(nextParty.statusCode, 200);
+  assert.equal(nextParty.json().result.fact.id, facts[0].id);
+  assert.equal(nextParty.json().result.reveal.sessionId, session.id);
+  assert.equal("operationId" in nextParty.json().result.reveal, false);
+  const retryParty = await post(app, nextUrl, { audience: "party", operationId });
+  assert.equal(retryParty.json().result.fact.id, facts[0].id);
+  assert.equal(retryParty.json().result.created, false);
+  assert.equal((await post(app, nextUrl, { audience: "character", characterId: mira.id, operationId })).statusCode, 409);
+  assert.equal(database.listCampaignActivity(campaign.id).filter((event) => event.type === "knowledge_fact_revealed").length, activityBeforeNext + 1);
+
+  const nextMira = await post(app, nextUrl, { audience: "character", characterId: mira.id, operationId: randomUUID() });
+  assert.equal(nextMira.json().result.fact.id, facts[0].id);
+  const nextMiraAgain = await post(app, nextUrl, { audience: "character", characterId: mira.id, operationId: randomUUID() });
+  assert.equal(nextMiraAgain.json().result.fact.id, facts[1].id);
+  const beforeAll = database.listCampaignActivity(campaign.id).filter((event) => event.type === "knowledge_fact_revealed").length;
+  const allParty = await post(app, `${base}/reveal-all`, { audience: "party" });
+  assert.equal(allParty.json().result.createdCount, 1);
+  assert.equal((await post(app, `${base}/reveal-all`, { audience: "party" })).json().result.createdCount, 0);
+  assert.equal(database.listCampaignActivity(campaign.id).filter((event) => event.type === "knowledge_fact_revealed").length, beforeAll + 1);
+  const allMira = await post(app, `${base}/reveal-all`, { audience: "character", characterId: mira.id });
+  assert.equal(allMira.json().result.createdCount, 1);
+  assert.equal((await post(app, `${base}/reveal-all`, { audience: "character", characterId: mira.id, sessionId: session.id })).statusCode, 400);
+  assert.equal(database.listKnowledgeByCampaign(campaign.id).find((item) => item.id === entry.id).visibility, "hidden");
+
+  const current = await get(app, revealsUrl);
+  assert.equal(current.statusCode, 200);
+  assert.equal(current.body.includes("operationId"), false);
+  assert.equal(current.body.includes("M".repeat(43)), false);
+  assert.equal(current.json().reveals.every((reveal) => reveal.sessionId === session.id), true);
+  const playerRead = await app.inject({ method: "POST", url: "/api/player/knowledge-facts/reveal", headers: { authorization: `Bearer ${"M".repeat(43)}` }, payload: {} });
+  assert.equal(playerRead.statusCode, 404);
+
+  const eventsBeforeRevoke = database.listCampaignActivity(campaign.id).filter((event) => event.type === "knowledge_fact_revealed");
+  assert.equal(eventsBeforeRevoke.every((event) => !JSON.stringify(event.details).includes("fragment")), true);
+  const revokeUrl = `${base}/${facts[2].id}/revoke`;
+  assert.equal((await post(app, revokeUrl, { audience: "party" })).json().revoked, true);
+  assert.equal((await post(app, revokeUrl, { audience: "party" })).json().revoked, false);
+  const afterRevoke = database.listCampaignActivity(campaign.id).filter((event) =>
+    event.type === "knowledge_fact_revealed" || event.type === "knowledge_fact_access_revoked");
+  assert.equal(afterRevoke.some((event) => eventsBeforeRevoke.some((old) => old.id === event.id)), true);
+  assert.equal(afterRevoke.filter((event) => event.type === "knowledge_fact_access_revoked").length, 1);
 });
 
 test("invalid names, malformed JSON, unknown records and transitions are rejected", async (t) => {

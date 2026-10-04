@@ -5,7 +5,7 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/sync.ts", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
-const { LatestRequest, loadJoinSnapshot, joinName, mergeProfileDraft, approvalTarget } =
+const { LatestRequest, PendingOperationIds, loadJoinSnapshot, joinName, mergeProfileDraft, approvalTarget } =
   await import("data:text/javascript;base64," + Buffer.from(compiled).toString("base64"));
 
 test("pending and rejected players recheck invitations on every refresh", async () => {
@@ -46,6 +46,19 @@ test("late responses cannot replace a newer selection or reopen a closed context
   assert.equal(await result, false);
   requests.invalidate();
   assert.equal(requests.isCurrent(latest), false);
+});
+
+test("an ambiguous reveal retry reuses its operation ID until confirmed", () => {
+  let next = 0;
+  const operations = new PendingOperationIds(() => `operation-${++next}`);
+  const key = JSON.stringify(["campaign", "entry", "party", null]);
+  const firstAttempt = operations.getOrCreate(key);
+  assert.equal(operations.getOrCreate(key), firstAttempt);
+  assert.equal(operations.getOrCreate(JSON.stringify(["campaign", "entry", "character", "mira"])), "operation-2");
+  operations.complete(key, firstAttempt);
+  assert.equal(operations.getOrCreate(key), "operation-3");
+  operations.complete(key, firstAttempt);
+  assert.equal(operations.getOrCreate(key), "operation-3");
 });
 
 test("overview refresh updates untouched fields but preserves unsaved DM edits", () => {

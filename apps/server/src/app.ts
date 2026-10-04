@@ -5,7 +5,7 @@ import { isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
 import { openDatabase, type GameDatabase } from "@progdm/database";
 import { isDmAuthorized, loadDmToken } from "./dm-auth.js";
-import type { KnowledgeCategory, KnowledgeVisibility, NetworkAddress, PersonalNoteMarker } from "@progdm/shared";
+import type { KnowledgeCategory, KnowledgeFactRevealAudience, KnowledgeVisibility, NetworkAddress, PersonalNoteMarker } from "@progdm/shared";
 
 export function requestLogFields(request: { method: string; url: string }) {
   return { method: request.method, url: request.url.replace(/(\/(?:api\/)?join\/)[^/?]+/g, "$1[redacted]") };
@@ -478,6 +478,34 @@ export function createApp(options: {
     const knowledgeFactBody = { type: "object", additionalProperties: false, required: ["body"], properties: {
       body: { type: "string", maxLength: 2000, pattern: "\\S" }
     } };
+    const knowledgeFactRevealParams = { type: "object", required: ["campaignId", "entryId", "factId"], properties: {
+      campaignId: { type: "string", format: "uuid" }, entryId: { type: "string", format: "uuid" }, factId: { type: "string", format: "uuid" }
+    } };
+    const revealAudienceBody = { oneOf: [
+      { type: "object", additionalProperties: false, required: ["audience"], properties: { audience: { const: "party" } } },
+      { type: "object", additionalProperties: false, required: ["audience", "characterId"], properties: {
+        audience: { const: "character" }, characterId: { type: "string", format: "uuid" }
+      } }
+    ] };
+    const revealNextBody = { oneOf: [
+      { type: "object", additionalProperties: false, required: ["audience", "operationId"], properties: {
+        audience: { const: "party" }, operationId: { type: "string", format: "uuid" }
+      } },
+      { type: "object", additionalProperties: false, required: ["audience", "characterId", "operationId"], properties: {
+        audience: { const: "character" }, characterId: { type: "string", format: "uuid" }, operationId: { type: "string", format: "uuid" }
+      } }
+    ] };
+    const knowledgeFactRouteError = (error: unknown, reply: { code: (status: number) => { send: (body: object) => unknown } }) => {
+      const message = error instanceof Error ? error.message : "";
+      if (message === "Knowledge entry is not in this campaign.") return reply.code(404).send({ message: "Запись не найдена в этой кампании." });
+      if (message === "Knowledge fact not found in this entry.") return reply.code(404).send({ message: "Факт не найден в этой записи кампании." });
+      if (message === "A character must be selected.") return reply.code(400).send({ message: "Выберите персонажа." });
+      if (message === "Character is not in this campaign.") return reply.code(409).send({ message: "Персонаж не относится к этой кампании." });
+      if (message === "Archived characters cannot receive new knowledge facts.") return reply.code(409).send({ message: "Архивному персонажу нельзя открыть новые факты." });
+      if (message === "Knowledge fact audience is invalid.") return reply.code(400).send({ message: "Выберите допустимого получателя факта." });
+      if (message === "Knowledge reveal operation ID was already used.") return reply.code(409).send({ message: "Этот запрос раскрытия уже использован для другого действия." });
+      return null;
+    };
     dm.get<{ Params: { campaignId: string; entryId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts", {
       schema: { params: knowledgeFactParams }
     }, async (request, reply) => {
@@ -532,6 +560,70 @@ export function createApp(options: {
       catch (error) {
         const message = error instanceof Error ? error.message : "";
         if (message === "Knowledge entry is not in this campaign." || message === "Knowledge fact not found in this entry.") return reply.code(404).send({ message: "Факт не найден в этой записи кампании." });
+        throw error;
+      }
+    });
+    dm.get<{ Params: { campaignId: string; entryId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/reveals", {
+      schema: { params: knowledgeFactParams }
+    }, async (request, reply) => {
+      try { return { reveals: database.listKnowledgeFactReveals(request.params.campaignId, request.params.entryId) }; }
+      catch (error) {
+        const mapped = knowledgeFactRouteError(error, reply);
+        if (mapped) return mapped;
+        throw error;
+      }
+    });
+    dm.post<{ Params: { campaignId: string; entryId: string; factId: string }; Body: { audience: "party" } | { audience: "character"; characterId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/:factId/reveal", {
+      schema: { params: knowledgeFactRevealParams, body: revealAudienceBody }
+    }, async (request, reply) => {
+      try {
+        const result = request.body.audience === "party"
+          ? database.revealKnowledgeFactToParty(request.params.campaignId, request.params.entryId, request.params.factId)
+          : database.revealKnowledgeFactToCharacter(request.params.campaignId, request.params.entryId, request.params.factId, request.body.characterId);
+        return { result };
+      } catch (error) {
+        const mapped = knowledgeFactRouteError(error, reply);
+        if (mapped) return mapped;
+        throw error;
+      }
+    });
+    dm.post<{ Params: { campaignId: string; entryId: string }; Body: { audience: "party"; operationId: string } | { audience: "character"; characterId: string; operationId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/reveal-next", {
+      schema: { params: knowledgeFactParams, body: revealNextBody }
+    }, async (request, reply) => {
+      try {
+        const { audience, operationId } = request.body;
+        const result = database.revealNextKnowledgeFact(request.params.campaignId, request.params.entryId, audience,
+          audience === "character" ? request.body.characterId : undefined, operationId);
+        return { result };
+      } catch (error) {
+        const mapped = knowledgeFactRouteError(error, reply);
+        if (mapped) return mapped;
+        throw error;
+      }
+    });
+    dm.post<{ Params: { campaignId: string; entryId: string }; Body: { audience: "party" } | { audience: "character"; characterId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/reveal-all", {
+      schema: { params: knowledgeFactParams, body: revealAudienceBody }
+    }, async (request, reply) => {
+      try {
+        const result = database.revealAllKnowledgeFacts(request.params.campaignId, request.params.entryId, request.body.audience,
+          request.body.audience === "character" ? request.body.characterId : undefined);
+        return { result };
+      } catch (error) {
+        const mapped = knowledgeFactRouteError(error, reply);
+        if (mapped) return mapped;
+        throw error;
+      }
+    });
+    dm.post<{ Params: { campaignId: string; entryId: string; factId: string }; Body: { audience: "party" } | { audience: "character"; characterId: string } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/:factId/revoke", {
+      schema: { params: knowledgeFactRevealParams, body: revealAudienceBody }
+    }, async (request, reply) => {
+      try {
+        const revoked = database.revokeKnowledgeFactReveal(request.params.campaignId, request.params.entryId, request.params.factId,
+          request.body.audience, request.body.audience === "character" ? request.body.characterId : undefined);
+        return { revoked };
+      } catch (error) {
+        const mapped = knowledgeFactRouteError(error, reply);
+        if (mapped) return mapped;
         throw error;
       }
     });
