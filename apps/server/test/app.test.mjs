@@ -80,6 +80,58 @@ test("pending, rejected and historical tokens cannot write private character dat
   assert.deepEqual(state.notes, []);
 });
 
+test("player Knowledge API serializes only visible summaries and granted Facts", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Player projection");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const rowan = database.createCharacter(campaign.id, "Rowan");
+  const session = database.createSession(campaign.id, "Session Four");
+  database.activateSession(session.id);
+  const token = "P".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira player", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  database.approvePlayer(player.id, { characterId: mira.id });
+
+  const partySummary = database.createKnowledge(campaign.id, "place", "Public place", "The public description.");
+  database.setKnowledgeVisibility(partySummary.id, "party");
+  const hiddenEntry = database.createKnowledge(campaign.id, "fact", "Fact-only entry", "API_HIDDEN_SUMMARY");
+  const visibleFact = database.createKnowledgeFact(campaign.id, hiddenEntry.id, "API_VISIBLE_FACT");
+  const hiddenFact = database.createKnowledgeFact(campaign.id, hiddenEntry.id, "API_UNREVEALED_FACT");
+  database.revealKnowledgeFactToParty(campaign.id, hiddenEntry.id, visibleFact.id);
+  const otherCharacterEntry = database.createKnowledge(campaign.id, "fact", "Other character entry", "OTHER_CHARACTER_SUMMARY");
+  const otherCharacterFact = database.createKnowledgeFact(campaign.id, otherCharacterEntry.id, "OTHER_CHARACTER_FACT");
+  database.revealKnowledgeFactToCharacter(campaign.id, otherCharacterEntry.id, otherCharacterFact.id, rowan.id);
+
+  const response = await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(response.statusCode, 200);
+  const serialized = response.body;
+  const state = response.json();
+  assert.deepEqual(state.knowledge.map(({ id }) => id), [partySummary.id, hiddenEntry.id]);
+  assert.equal(state.knowledge[0].summary, "The public description.");
+  assert.equal(state.knowledge[1].title, "Fact-only entry");
+  assert.equal(state.knowledge[1].category, "fact");
+  assert.equal(state.knowledge[1].summary, null);
+  assert.equal(state.knowledge[1].summaryVisible, false);
+  assert.deepEqual(state.knowledge[1].facts.map(({ body }) => body), ["API_VISIBLE_FACT"]);
+  for (const secret of ["API_HIDDEN_SUMMARY", "API_UNREVEALED_FACT", "OTHER_CHARACTER_SUMMARY", "OTHER_CHARACTER_FACT", player.tokenHash]) {
+    assert.equal(serialized.includes(secret), false, `Player API leaked ${secret}`);
+  }
+  for (const key of ["visibility", "visibleToCharacterId", "audience", "characterId", "operationId"]) {
+    assert.equal(JSON.stringify(state.knowledge).includes(`\"${key}\"`), false, `Player Knowledge API leaked ${key}`);
+  }
+  assert.equal(state.knowledge[1].facts[0].sessionId, session.id);
+  assert.equal(state.knowledge[1].facts[0].sessionName, "Session Four");
+  assert.equal(state.knowledge[1].facts[0].revealedAt.length > 0, true);
+  assert.equal((await app.inject({ method: "POST", url: `/api/player/knowledge-facts/${visibleFact.id}/reveal`,
+    headers: { authorization: `Bearer ${token}` }, payload: {} })).statusCode, 404);
+
+  database.endSession(session.id);
+  const historical = await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(historical.statusCode, 200);
+  assert.equal(historical.json().canEdit, false);
+  assert.equal(historical.json().knowledge.find(({ id }) => id === hiddenEntry.id).facts[0].body, "API_VISIBLE_FACT");
+});
+
 test("public and player validation and unexpected errors are sanitized", async (t) => {
   const { app, database } = fixture(t);
   const invalid = await app.inject({ method: "GET", url: "/api/join/invalid" });

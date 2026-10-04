@@ -1517,6 +1517,129 @@ test("knowledge Facts have independent party and Character grants, stable next r
   assert.equal(noSession.reveal.sessionId, null);
 });
 
+test("Player Knowledge projection exposes only permitted summaries and deduplicated revealed facts", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Projection campaign");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const rowan = db.createCharacter(campaign.id, "Rowan");
+  const future = db.createCharacter(campaign.id, "Future character");
+  const firstSession = db.createSession(campaign.id, "Session One");
+  db.activateSession(firstSession.id);
+  const miraOld = db.submitPlayerRequest(firstSession.id, "Mira old", "mira-old-hash");
+  db.approvePlayer(miraOld.id, { characterId: mira.id });
+  const rowanOld = db.submitPlayerRequest(firstSession.id, "Rowan old", "rowan-old-hash");
+  db.approvePlayer(rowanOld.id, { characterId: rowan.id });
+  const pending = db.submitPlayerRequest(firstSession.id, "Pending", "pending-hash");
+  const rejected = db.submitPlayerRequest(firstSession.id, "Rejected", "rejected-hash");
+  db.rejectPlayer(rejected.id);
+
+  const partySummary = db.createKnowledge(campaign.id, "place", "Known square", "A summary available to the party.");
+  db.setKnowledgeVisibility(partySummary.id, "party");
+  const miraSummary = db.createKnowledge(campaign.id, "character", "Mira contact", "Mira-only summary.");
+  db.setKnowledgeVisibility(miraSummary.id, "character", mira.id);
+  const rowanSummary = db.createKnowledge(campaign.id, "character", "Rowan contact", "ROWAN_SUMMARY_SECRET");
+  db.setKnowledgeVisibility(rowanSummary.id, "character", rowan.id);
+  const hiddenWithoutGrants = db.createKnowledge(campaign.id, "fact", "Unopened record", "HIDDEN_SUMMARY_WITHOUT_GRANTS");
+  const partyFactEntry = db.createKnowledge(campaign.id, "event", "Shared discovery", "HIDDEN_PARTY_FACT_SUMMARY");
+  const sharedFact = db.createKnowledgeFact(campaign.id, partyFactEntry.id, "PARTY_FACT_VISIBLE");
+  const unrevealedPartyFact = db.createKnowledgeFact(campaign.id, partyFactEntry.id, "UNREVEALED_PARTY_FACT_SECRET");
+  const characterFactEntry = db.createKnowledge(campaign.id, "creature", "Mira's clue", "HIDDEN_CHARACTER_FACT_SUMMARY");
+  const miraFact = db.createKnowledgeFact(campaign.id, characterFactEntry.id, "MIRA_FACT_VISIBLE");
+  const rowanFact = db.createKnowledgeFact(campaign.id, characterFactEntry.id, "ROWAN_FACT_SECRET");
+  const sharedAndPersonalEntry = db.createKnowledge(campaign.id, "item", "Two paths to one fact", "DOUBLE_GRANT_SUMMARY_SECRET");
+  const doubleFact = db.createKnowledgeFact(campaign.id, sharedAndPersonalEntry.id, "DOUBLE_GRANT_FACT");
+
+  db.revealKnowledgeFactToParty(campaign.id, partyFactEntry.id, sharedFact.id);
+  db.revealKnowledgeFactToCharacter(campaign.id, characterFactEntry.id, miraFact.id, mira.id);
+  db.revealKnowledgeFactToCharacter(campaign.id, characterFactEntry.id, rowanFact.id, rowan.id);
+  const firstPartyGrant = db.revealKnowledgeFactToParty(campaign.id, sharedAndPersonalEntry.id, doubleFact.id);
+  assert.equal(firstPartyGrant.reveal.sessionId, firstSession.id);
+
+  const miraState = db.getPlayerState("mira-old-hash");
+  const miraKnowledge = new Map(miraState.knowledge.map((entry) => [entry.id, entry]));
+  assert.equal(miraState.recentActivity.some((event) => event.type === "knowledge_fact_revealed"), false);
+  assert.deepEqual(miraKnowledge.get(partySummary.id), {
+    id: partySummary.id, category: "place", title: "Known square", summary: "A summary available to the party.", summaryVisible: true, facts: []
+  });
+  assert.equal(miraKnowledge.get(miraSummary.id).summary, "Mira-only summary.");
+  assert.equal(miraKnowledge.has(rowanSummary.id), false);
+  assert.equal(miraKnowledge.has(hiddenWithoutGrants.id), false);
+  assert.equal(miraKnowledge.get(partyFactEntry.id).summary, null);
+  assert.equal(miraKnowledge.get(partyFactEntry.id).summaryVisible, false);
+  assert.deepEqual(miraKnowledge.get(partyFactEntry.id).facts.map((fact) => fact.body), ["PARTY_FACT_VISIBLE"]);
+  assert.deepEqual(miraKnowledge.get(characterFactEntry.id).facts.map((fact) => fact.body), ["MIRA_FACT_VISIBLE"]);
+  assert.deepEqual(miraKnowledge.get(sharedAndPersonalEntry.id).facts.map((fact) => fact.id), [doubleFact.id]);
+  const firstMetadata = miraKnowledge.get(sharedAndPersonalEntry.id).facts[0];
+  assert.equal(firstMetadata.sessionId, firstSession.id);
+  assert.equal(firstMetadata.sessionName, "Session One");
+  assert.equal(firstMetadata.revealedAt, firstPartyGrant.reveal.createdAt);
+  assert.equal(miraState.knowledge.some((entry) => entry.facts.some((fact) => fact.id === unrevealedPartyFact.id)), false);
+  const serializedMira = JSON.stringify(miraState);
+  for (const secret of ["ROWAN_SUMMARY_SECRET", "HIDDEN_SUMMARY_WITHOUT_GRANTS", "HIDDEN_PARTY_FACT_SUMMARY",
+    "HIDDEN_CHARACTER_FACT_SUMMARY", "DOUBLE_GRANT_SUMMARY_SECRET", "UNREVEALED_PARTY_FACT_SECRET", "ROWAN_FACT_SECRET"]) {
+    assert.equal(serializedMira.includes(secret), false, `PlayerState leaked ${secret}`);
+  }
+  for (const internal of ["audience", "operationId", "visibleToCharacterId", "visibility"]) {
+    assert.equal(JSON.stringify(miraState.knowledge).includes(`\"${internal}\"`), false, `Knowledge projection leaked ${internal}`);
+  }
+  for (const internal of ["audience", "characterId", "operationId"]) {
+    assert.equal(JSON.stringify(miraState.knowledge).includes(`\"${internal}\"`), false, `Knowledge projection leaked ${internal}`);
+  }
+  assert.equal(JSON.stringify(miraKnowledge.get(partyFactEntry.id)).includes("HIDDEN_PARTY_FACT_SUMMARY"), false);
+
+  const rowanState = db.getPlayerState("rowan-old-hash");
+  const rowanKnowledge = new Map(rowanState.knowledge.map((entry) => [entry.id, entry]));
+  assert.deepEqual(rowanKnowledge.get(partyFactEntry.id).facts.map((fact) => fact.id), [sharedFact.id]);
+  assert.deepEqual(rowanKnowledge.get(characterFactEntry.id).facts.map((fact) => fact.body), ["ROWAN_FACT_SECRET"]);
+  assert.equal(rowanKnowledge.get(sharedAndPersonalEntry.id).facts.length, 1);
+  assert.deepEqual(db.getPlayerState("pending-hash").knowledge, []);
+  assert.deepEqual(db.getPlayerState("rejected-hash").knowledge, []);
+
+  db.endSession(firstSession.id);
+  const historical = db.getPlayerState("mira-old-hash");
+  assert.equal(historical.canEdit, false);
+  assert.equal(historical.knowledge.some((entry) => entry.facts.some((fact) => fact.id === miraFact.id)), true);
+  assert.equal(historical.knowledge.some((entry) => entry.facts.some((fact) => fact.id === rowanFact.id)), false);
+
+  const secondSession = db.createSession(campaign.id, "Session Two");
+  db.activateSession(secondSession.id);
+  const miraNew = db.submitPlayerRequest(secondSession.id, "Mira new", "mira-new-hash");
+  db.approvePlayer(miraNew.id, { characterId: mira.id });
+  const futurePlayer = db.submitPlayerRequest(secondSession.id, "Future player", "future-player-hash");
+  db.approvePlayer(futurePlayer.id, { characterId: future.id });
+  const personalDuplicate = db.revealKnowledgeFactToCharacter(campaign.id, sharedAndPersonalEntry.id, doubleFact.id, mira.id);
+  assert.equal(personalDuplicate.reveal.sessionId, secondSession.id);
+  const miraNewState = db.getPlayerState("mira-new-hash");
+  const deduplicatedFact = miraNewState.knowledge.find((entry) => entry.id === sharedAndPersonalEntry.id).facts;
+  assert.equal(deduplicatedFact.length, 1);
+  const earliestGrant = [firstPartyGrant.reveal, personalDuplicate.reveal]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
+  const expectedSessionName = earliestGrant.sessionId === firstSession.id ? "Session One" : "Session Two";
+  assert.equal(deduplicatedFact[0].revealedAt, earliestGrant.createdAt);
+  assert.equal(deduplicatedFact[0].sessionId, earliestGrant.sessionId);
+  assert.equal(deduplicatedFact[0].sessionName, expectedSessionName);
+  const futureState = db.getPlayerState("future-player-hash");
+  assert.equal(futureState.knowledge.find((entry) => entry.id === partyFactEntry.id).facts[0].body, "PARTY_FACT_VISIBLE");
+  assert.equal(futureState.knowledge.some((entry) => entry.facts.some((fact) => fact.id === miraFact.id)), false);
+  assert.equal(futureState.knowledge.find((entry) => entry.id === sharedAndPersonalEntry.id).facts[0].id, doubleFact.id);
+
+  assert.equal(db.revokeKnowledgeFactReveal(campaign.id, sharedAndPersonalEntry.id, doubleFact.id, "character", mira.id), true);
+  assert.equal(db.getPlayerState("mira-new-hash").knowledge.find((entry) => entry.id === sharedAndPersonalEntry.id).facts.length, 1);
+  assert.equal(db.revokeKnowledgeFactReveal(campaign.id, sharedAndPersonalEntry.id, doubleFact.id, "party"), true);
+  assert.equal(db.getPlayerState("mira-new-hash").knowledge.some((entry) => entry.id === sharedAndPersonalEntry.id), false);
+
+  db.endSession(secondSession.id);
+  const outsideSessionEntry = db.createKnowledge(campaign.id, "fact", "Between sessions", "OUTSIDE_SESSION_SUMMARY_SECRET");
+  const outsideSessionFact = db.createKnowledgeFact(campaign.id, outsideSessionEntry.id, "OUTSIDE_SESSION_FACT");
+  const outsideReveal = db.revealKnowledgeFactToCharacter(campaign.id, outsideSessionEntry.id, outsideSessionFact.id, mira.id);
+  assert.equal(outsideReveal.reveal.sessionId, null);
+  const outsideProjection = db.getPlayerState("mira-new-hash").knowledge.find((entry) => entry.id === outsideSessionEntry.id);
+  assert.equal(outsideProjection.summary, null);
+  assert.equal(outsideProjection.facts[0].sessionId, null);
+  assert.equal(outsideProjection.facts[0].sessionName, null);
+  assert.equal(outsideProjection.facts[0].body, "OUTSIDE_SESSION_FACT");
+});
+
 test("Knowledge Fact export v8 remaps references, omits secrets, and imports invalid references atomically", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Export Facts");

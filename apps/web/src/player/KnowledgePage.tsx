@@ -22,14 +22,25 @@ export function KnowledgePage({ player }: { player: PlayerState }) {
   const categories = categoryOrder;
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("ru");
-    return player.knowledge.filter((entry) => (category === "all" || entry.category === category) &&
-      (!normalized || `${entry.title} ${KNOWLEDGE_CATEGORY_LABELS[entry.category]} ${entry.description}`.toLocaleLowerCase("ru").includes(normalized)));
+    return player.knowledge.filter((entry) => {
+      if (category !== "all" && entry.category !== category) return false;
+      const searchable = [entry.title, KNOWLEDGE_CATEGORY_LABELS[entry.category],
+        ...(entry.summaryVisible && entry.summary !== null ? [entry.summary] : []),
+        ...entry.facts.map((fact) => fact.body)].join(" ").toLocaleLowerCase("ru");
+      return !normalized || searchable.includes(normalized);
+    });
   }, [category, player.knowledge, query]);
 
   if (selected) return <article className="prod-page prod-knowledge-detail">
     <button className="prod-back" type="button" onClick={() => setSelectedId(null)}><ChevronLeft aria-hidden="true" />Знания</button>
     <header><h1>{selected.title}</h1><span className="prod-category-label">{KNOWLEDGE_CATEGORY_LABELS[selected.category]}</span></header>
-    <section><h2>Описание</h2><p>{selected.description}</p></section>
+    {selected.summaryVisible && selected.summary !== null && <section><h2>Кратко</h2><p>{selected.summary}</p></section>}
+    {selected.facts.length > 0 && <section className="prod-knowledge-facts"><h2>Что известно</h2><ul>
+      {selected.facts.map((fact) => <li key={fact.id}>
+        <p>{fact.body}</p>
+        <small><time dateTime={fact.revealedAt}>{fact.sessionName ? `Открыто: ${fact.sessionName}` : fact.sessionId ? "Открыто ранее" : "Открыто вне сессии"}</time></small>
+      </li>)}
+    </ul></section>}
   </article>;
 
   return <div className="prod-page prod-knowledge">

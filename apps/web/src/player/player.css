@@ -249,6 +249,11 @@
 .prod-category-label { color: var(--player-secondary); font-size: 13px; }
 .prod-knowledge-detail section h2 { margin-bottom: 7px; }
 .prod-knowledge-detail section p { margin: 0; font-size: 15px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prod-knowledge-facts ul { list-style: none; margin: 0; padding: 0; }
+.prod-knowledge-facts li { display: grid; gap: 5px; padding: 12px 0; border-bottom: 1px solid var(--player-divider); }
+.prod-knowledge-facts li:first-child { padding-top: 2px; }
+.prod-knowledge-facts li:last-child { border-bottom: 0; }
+.prod-knowledge-detail .prod-knowledge-facts li small { color: var(--player-muted); font-size: 12px; }
 
 .prod-legacy-page > h1,
 .prod-settings-heading h1 { margin: 0 0 16px; font: 400 27px/1.18 Georgia, serif; }

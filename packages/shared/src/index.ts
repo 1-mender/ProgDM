@@ -123,10 +123,28 @@ export interface PlayerState {
   profile: (Pick<Character, "shortDescription" | "archetype" | "origin" | "personalGoal" | "traits" | "appearance" | "quote"> & { profileFields: CharacterProfileFieldValue[] }) | null;
   canEdit: boolean;
   inventory: InventoryItem[];
-  knowledge: KnowledgeEntry[];
+  knowledge: PlayerKnowledgeEntry[];
   notes: PersonalNote[];
   recentActivity: CampaignActivity[];
   newActivity: CampaignActivity[];
+}
+
+export interface PlayerKnowledgeEntry {
+  id: EntityId;
+  category: KnowledgeCategory;
+  title: string;
+  summary: string | null;
+  summaryVisible: boolean;
+  facts: PlayerKnowledgeFact[];
+}
+
+export interface PlayerKnowledgeFact {
+  id: EntityId;
+  body: string;
+  position: number;
+  revealedAt: string;
+  sessionId: EntityId | null;
+  sessionName: string | null;
 }
 
 export type KnowledgeCategory = "character" | "place" | "creature" | "item" | "event" | "fact";

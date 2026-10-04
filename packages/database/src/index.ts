@@ -7,7 +7,7 @@ import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -1046,8 +1046,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           eq(schema.characters.campaignId, schema.sessions.campaignId), eq(schema.players.status, "approved")))
         .where(eq(schema.players.tokenHash, tokenHash)).get();
       if (!player) return null;
-      const knowledge = player.status === "approved"
-        ? db.select().from(schema.knowledgeEntries)
+      const summaryRows = player.status === "approved"
+        ? db.select({
+          id: schema.knowledgeEntries.id, category: schema.knowledgeEntries.category, title: schema.knowledgeEntries.title,
+          summary: schema.knowledgeEntries.description, createdAt: schema.knowledgeEntries.createdAt
+        }).from(schema.knowledgeEntries)
           .where(and(
             eq(schema.knowledgeEntries.campaignId, player.campaignId),
             or(
@@ -1058,16 +1061,76 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
               )
             )
           ))
-          .orderBy(asc(schema.knowledgeEntries.createdAt), asc(schema.knowledgeEntries.title)).all()
+          .orderBy(asc(schema.knowledgeEntries.createdAt), asc(schema.knowledgeEntries.title), asc(schema.knowledgeEntries.id)).all()
         : [];
+      const projectedEntries = new Map<string, {
+        createdAt: string;
+        title: string;
+        entry: PlayerKnowledgeEntry;
+        facts: Map<string, PlayerKnowledgeEntry["facts"][number]>;
+      }>();
+      for (const row of summaryRows) {
+        projectedEntries.set(row.id, {
+          createdAt: row.createdAt,
+          title: row.title,
+          entry: { id: row.id, category: row.category, title: row.title, summary: row.summary, summaryVisible: true, facts: [] },
+          facts: new Map()
+        });
+      }
+      if (player.status === "approved" && player.characterId) {
+        const factRows = client.prepare(`SELECT
+          e.id AS entryId, e.category AS category, e.title AS title, e.created_at AS entryCreatedAt,
+          CASE WHEN e.visibility = 'party' OR (e.visibility = 'character' AND e.visible_to_character_id = ?)
+            THEN e.description ELSE NULL END AS summary,
+          CASE WHEN e.visibility = 'party' OR (e.visibility = 'character' AND e.visible_to_character_id = ?) THEN 1 ELSE 0 END AS summaryVisible,
+          f.id AS factId, f.body AS body, f.position AS position,
+          r.created_at AS revealedAt, r.session_id AS sessionId, s.name AS sessionName
+          FROM knowledge_entries e
+          JOIN knowledge_facts f ON f.knowledge_entry_id = e.id AND f.campaign_id = e.campaign_id
+          JOIN knowledge_fact_reveals r ON r.knowledge_fact_id = f.id AND r.campaign_id = e.campaign_id
+          LEFT JOIN sessions s ON s.id = r.session_id AND s.campaign_id = r.campaign_id
+          WHERE e.campaign_id = ? AND (r.audience = 'party' OR (r.audience = 'character' AND r.character_id = ?))
+          ORDER BY e.created_at ASC, e.title ASC, e.id ASC, f.position ASC, f.id ASC, r.created_at ASC, r.id ASC`)
+          .all(player.characterId, player.characterId, player.campaignId, player.characterId) as {
+            entryId: string; category: KnowledgeCategory; title: string; entryCreatedAt: string;
+            summary: string | null; summaryVisible: number; factId: string; body: string; position: number;
+            revealedAt: string; sessionId: string | null; sessionName: string | null;
+          }[];
+        for (const row of factRows) {
+          let projected = projectedEntries.get(row.entryId);
+          if (!projected) {
+            projected = {
+              createdAt: row.entryCreatedAt,
+              title: row.title,
+              entry: { id: row.entryId, category: row.category, title: row.title, summary: row.summary,
+                summaryVisible: row.summaryVisible === 1, facts: [] },
+              facts: new Map()
+            };
+            projectedEntries.set(row.entryId, projected);
+          }
+          if (!projected.facts.has(row.factId)) {
+            projected.facts.set(row.factId, {
+              id: row.factId, body: row.body, position: row.position, revealedAt: row.revealedAt,
+              sessionId: row.sessionId, sessionName: row.sessionName
+            });
+          }
+        }
+      }
+      const compareText = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+      const knowledge = [...projectedEntries.values()]
+        .sort((left, right) => compareText(left.createdAt, right.createdAt) || compareText(left.title, right.title) || compareText(left.entry.id, right.entry.id))
+        .map(({ entry, facts }) => ({
+          ...entry,
+          facts: [...facts.values()].sort((left, right) => left.position - right.position || compareText(left.id, right.id))
+        }));
       const active = activePlayerCharacter(tokenHash);
-      const visibleKnowledge = new Map(knowledge.map((entry) => [entry.id, entry]));
+      const visibleSummaryIds = new Set(summaryRows.map((entry) => entry.id));
       const relevant = active ? activityRows(db.select().from(schema.campaignActivity)
         .where(eq(schema.campaignActivity.campaignId, active.campaignId))
         .orderBy(desc(schema.campaignActivity.createdAt), desc(schema.campaignActivity.id)).all())
         .filter((event) => event.type === "item_granted" && event.characterId === active.characterId ||
           event.type === "knowledge_visibility_changed" && !!event.knowledgeEntryId &&
-          !!visibleKnowledge.get(event.knowledgeEntryId) &&
+          visibleSummaryIds.has(event.knowledgeEntryId) &&
           (event.details.visibility === "party" || event.details.visibility === "character" && event.characterId === active.characterId))
         .slice(0, 20) : [];
       const marker = active ? db.select().from(schema.characterReadState)

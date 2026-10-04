@@ -70,7 +70,9 @@ test("Knowledge filters all six universal categories and maps player labels", ()
   }
   assert.match(knowledge, /categoryOrder: KnowledgeCategory\[\] = \["character", "place", "creature", "item", "event", "fact"\]/);
   assert.match(knowledge, /categoryIcons/);
-  assert.match(knowledge, /KNOWLEDGE_CATEGORY_LABELS\[entry\.category\].*entry\.description/);
+  assert.match(knowledge, /KNOWLEDGE_CATEGORY_LABELS\[entry\.category\]/);
+  assert.match(knowledge, /entry\.summaryVisible && entry\.summary !== null/);
+  assert.match(knowledge, /entry\.facts\.map\(\(fact\) => fact\.body\)/);
   assert.match(knowledge, /player\.knowledge\.filter/);
   assert.match(knowledge, /player\.knowledge\.find/);
   assert.equal(knowledge.includes("visual-lab"), false);
