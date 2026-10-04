@@ -129,7 +129,7 @@ export interface PlayerState {
   newActivity: CampaignActivity[];
 }
 
-export type KnowledgeCategory = "npc" | "monster" | "note" | "quest";
+export type KnowledgeCategory = "character" | "place" | "creature" | "item" | "event" | "fact";
 export type KnowledgeVisibility = "hidden" | "character" | "party";
 
 export interface KnowledgeEntry {

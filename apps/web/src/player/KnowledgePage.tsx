@@ -1,9 +1,17 @@
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Lightbulb, MapPin, Package, PawPrint, Search, UserRound, X, type LucideIcon } from "lucide-react";
 import type { KnowledgeCategory, PlayerState } from "@progdm/shared";
 import { KNOWLEDGE_CATEGORY_LABELS, knowledgeCountLabel } from "./model";
 
-const categoryOrder: KnowledgeCategory[] = ["npc", "monster", "note", "quest"];
+const categoryOrder: KnowledgeCategory[] = ["character", "place", "creature", "item", "event", "fact"];
+const categoryIcons: Record<KnowledgeCategory, LucideIcon> = {
+  character: UserRound,
+  place: MapPin,
+  creature: PawPrint,
+  item: Package,
+  event: CalendarDays,
+  fact: Lightbulb
+};
 
 export function KnowledgePage({ player }: { player: PlayerState }) {
   const [category, setCategory] = useState<KnowledgeCategory | "all">("all");
@@ -11,7 +19,7 @@ export function KnowledgePage({ player }: { player: PlayerState }) {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = player.knowledge.find((entry) => entry.id === selectedId);
-  const categories = categoryOrder.filter((value) => player.knowledge.some((entry) => entry.category === value));
+  const categories = categoryOrder;
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("ru");
     return player.knowledge.filter((entry) => (category === "all" || entry.category === category) &&
@@ -36,8 +44,15 @@ export function KnowledgePage({ player }: { player: PlayerState }) {
       <button type="button" aria-pressed={category === "all"} className={category === "all" ? "is-selected" : ""} onClick={() => setCategory("all")}>Все</button>
       {categories.map((value) => <button type="button" key={value} aria-pressed={category === value} className={category === value ? "is-selected" : ""} onClick={() => setCategory(value)}>{KNOWLEDGE_CATEGORY_LABELS[value]}</button>)}
     </div>
-    {filtered.length ? <ul className="prod-knowledge-list">{filtered.map((entry) => <li key={entry.id}>
-      <button type="button" onClick={() => setSelectedId(entry.id)}><span><strong>{entry.title}</strong><small>{KNOWLEDGE_CATEGORY_LABELS[entry.category]}</small></span><ChevronRight aria-hidden="true" /></button>
-    </li>)}</ul> : <p className="prod-empty">{player.knowledge.length ? "Записей не найдено." : "Пока нет открытых записей."}</p>}
+    {filtered.length ? <ul className="prod-knowledge-list">{filtered.map((entry) => {
+      const CategoryIcon = categoryIcons[entry.category];
+      return <li key={entry.id}>
+        <button type="button" onClick={() => setSelectedId(entry.id)}>
+          <CategoryIcon aria-hidden="true" />
+          <span><strong>{entry.title}</strong><small>{KNOWLEDGE_CATEGORY_LABELS[entry.category]}</small></span>
+          <ChevronRight aria-hidden="true" />
+        </button>
+      </li>;
+    })}</ul> : <p className="prod-empty">{player.knowledge.length ? "Записей не найдено." : "Пока нет открытых записей."}</p>}
   </div>;
 }

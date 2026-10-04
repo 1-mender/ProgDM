@@ -265,7 +265,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7] }
       } } }
     }, async (request, reply) => {
       try {
@@ -451,7 +451,7 @@ export function createApp(options: {
           body: {
             type: "object", additionalProperties: false, required: ["category", "title", "description"],
             properties: {
-              category: { type: "string", enum: ["npc", "monster", "note", "quest"] },
+              category: { type: "string", enum: ["character", "place", "creature", "item", "event", "fact"] },
               title: { type: "string", minLength: 1, maxLength: 120, pattern: "\\S" },
               description: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S" }
             }

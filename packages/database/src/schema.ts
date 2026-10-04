@@ -149,7 +149,7 @@ export const inventoryItems = sqliteTable("inventory_items", {
 export const knowledgeEntries = sqliteTable("knowledge_entries", {
   id: text("id").primaryKey(),
   campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
-  category: text("category", { enum: ["npc", "monster", "note", "quest"] }).notNull(),
+  category: text("category", { enum: ["character", "place", "creature", "item", "event", "fact"] }).notNull(),
   title: text("title").notNull(),
   description: text("description").notNull(),
   visibility: text("visibility", { enum: ["hidden", "character", "party"] }).notNull().default("hidden"),
@@ -158,7 +158,7 @@ export const knowledgeEntries = sqliteTable("knowledge_entries", {
 }, (table) => [
   index("knowledge_entries_campaign_id_idx").on(table.campaignId),
   index("knowledge_entries_visible_character_idx").on(table.visibleToCharacterId),
-  check("knowledge_category_valid", sql`${table.category} in ('npc', 'monster', 'note', 'quest')`),
+  check("knowledge_category_valid", sql`${table.category} in ('character', 'place', 'creature', 'item', 'event', 'fact')`),
   check("knowledge_visibility_valid", sql`${table.visibility} in ('hidden', 'character', 'party')`),
   check("knowledge_visibility_target_valid", sql`(${table.visibility} = 'character' and ${table.visibleToCharacterId} is not null) or (${table.visibility} != 'character' and ${table.visibleToCharacterId} is null)`),
   check("knowledge_title_valid", sql`length(trim(${table.title})) between 1 and 120`),

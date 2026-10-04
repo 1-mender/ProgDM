@@ -12,10 +12,12 @@ export const PLAYER_NAVIGATION: { id: Exclude<PlayerView, "settings">; label: st
 ];
 
 export const KNOWLEDGE_CATEGORY_LABELS: Record<KnowledgeCategory, string> = {
-  npc: "Персонаж мира",
-  monster: "Существо",
-  note: "Заметка",
-  quest: "Событие"
+  character: "Персонажи",
+  place: "Места",
+  creature: "Существа",
+  item: "Предметы",
+  event: "События",
+  fact: "Факты"
 };
 
 export const PERSONAL_NOTE_MARKER_LABELS: Record<PersonalNoteMarker, string> = {

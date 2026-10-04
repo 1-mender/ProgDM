@@ -64,10 +64,13 @@ test("Profile renders campaign fields read-only and omits empty values", () => {
   assert.equal(profile.includes("setProfileField"), false);
 });
 
-test("Knowledge is filtered from the production-visible snapshot and maps only legacy categories", () => {
-  for (const [value, label] of [["npc", "Персонаж мира"], ["monster", "Существо"], ["note", "Заметка"], ["quest", "Событие"]]) {
+test("Knowledge filters all six universal categories and maps player labels", () => {
+  for (const [value, label] of [["character", "Персонажи"], ["place", "Места"], ["creature", "Существа"], ["item", "Предметы"], ["event", "События"], ["fact", "Факты"]]) {
     assert.equal(model.KNOWLEDGE_CATEGORY_LABELS[value], label);
   }
+  assert.match(knowledge, /categoryOrder: KnowledgeCategory\[\] = \["character", "place", "creature", "item", "event", "fact"\]/);
+  assert.match(knowledge, /categoryIcons/);
+  assert.match(knowledge, /KNOWLEDGE_CATEGORY_LABELS\[entry\.category\].*entry\.description/);
   assert.match(knowledge, /player\.knowledge\.filter/);
   assert.match(knowledge, /player\.knowledge\.find/);
   assert.equal(knowledge.includes("visual-lab"), false);

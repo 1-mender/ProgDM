@@ -465,6 +465,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }
       const domainQueries = [
         ["Назначения персонажей", "SELECT count(*) AS count FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id JOIN characters c ON c.id=a.character_id WHERE p.session_id!=a.session_id OR c.campaign_id!=s.campaign_id"],
+        ["Категории знаний", "SELECT count(*) AS count FROM knowledge_entries WHERE category NOT IN ('character', 'place', 'creature', 'item', 'event', 'fact')"],
         ["Личные знания", "SELECT count(*) AS count FROM knowledge_entries k JOIN characters c ON c.id=k.visible_to_character_id WHERE c.campaign_id!=k.campaign_id"],
         ["Инвентарь", "SELECT count(*) AS count FROM inventory_items i JOIN characters c ON c.id=i.character_id JOIN catalog_items ci ON ci.id=i.catalog_item_id WHERE c.campaign_id!=ci.campaign_id"],
         ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id WHERE p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
@@ -643,7 +644,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
         .map((entry) => ({ ...entry }));
       return {
-        format: "progdm-campaign", version: 6, exportedAt: new Date().toISOString(), campaign,
+        format: "progdm-campaign", version: 7, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, profileFields, profileFieldValues, personalNotes, catalogItems, inventoryItems, knowledge,
         activity: activityRows(db.select().from(schema.campaignActivity)
           .where(eq(schema.campaignActivity.campaignId, id))
@@ -652,7 +653,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
@@ -790,9 +791,17 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           }).run();
         }
         for (const row of knowledge) {
-          const category = transferString(row, "category");
+          const sourceCategory = transferString(row, "category");
+          const legacyCategoryMap: Record<string, KnowledgeCategory> = {
+            npc: "character", monster: "creature", note: "fact", quest: "event"
+          };
+          const category = archiveVersion < 7
+            ? legacyCategoryMap[sourceCategory]
+            : sourceCategory as KnowledgeCategory;
           const sourceVisibility = transferString(row, "visibility");
-          if (!["npc", "monster", "note", "quest"].includes(category) || !["hidden", "character", "party", "player"].includes(sourceVisibility)) throw new Error("Campaign file is invalid.");
+          if (!category || !["character", "place", "creature", "item", "event", "fact"].includes(category) ||
+              !["hidden", "character", "party", "player"].includes(sourceVisibility) ||
+              (archiveVersion >= 7 && sourceVisibility === "player")) throw new Error("Campaign file is invalid.");
           let visibility: KnowledgeVisibility = sourceVisibility === "player" ? "hidden" : sourceVisibility as KnowledgeVisibility;
           let visibleToCharacterId: string | null = null;
           if (sourceVisibility === "character") {

@@ -9,7 +9,7 @@ const tokenKey = "progdm.dmToken";
 const campaignKey = "progdm.campaign";
 const statusLabels = { planned: "Запланирована", active: "Идёт сейчас", ended: "Завершена" };
 const knowledgeCategories: Record<KnowledgeCategory, string> = {
-  npc: "Персонаж мира", monster: "Монстр", note: "Заметка или факт", quest: "Квест"
+  character: "Персонаж", place: "Место", creature: "Существо", item: "Предмет", event: "Событие", fact: "Факт"
 };
 const activityLabels: Record<ActivityType, string> = {
   campaign_created: "Кампания создана", campaign_imported: "Кампания импортирована", backup_restored: "Копия восстановлена",
@@ -156,7 +156,7 @@ function DmWorkspace() {
   const [selectedKnowledgeId, setSelectedKnowledgeId] = useState("");
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [fullActivity, setFullActivity] = useState<CampaignActivity[] | null>(null);
-  const [knowledgeCategory, setKnowledgeCategory] = useState<KnowledgeCategory>("note");
+  const [knowledgeCategory, setKnowledgeCategory] = useState<KnowledgeCategory>("fact");
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
   const [knowledgeTargetId, setKnowledgeTargetId] = useState("");

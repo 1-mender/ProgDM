@@ -443,9 +443,9 @@ test("character knowledge follows its character across sessions without leaking 
   const campaign = database.createCampaign("Knowledge campaign");
   const mira = database.createCharacter(campaign.id, "Mira");
   const secondCharacter = database.createCharacter(campaign.id, "Rowan");
-  const personal = database.createKnowledge(campaign.id, "note", "Mira's clue", "Only Mira knows this.");
-  const party = database.createKnowledge(campaign.id, "quest", "Shared lead", "Everyone knows this.");
-  const hidden = database.createKnowledge(campaign.id, "monster", "Unrevealed", "Keep this from players.");
+  const personal = database.createKnowledge(campaign.id, "fact", "Mira's clue", "Only Mira knows this.");
+  const party = database.createKnowledge(campaign.id, "event", "Shared lead", "Everyone knows this.");
+  const hidden = database.createKnowledge(campaign.id, "creature", "Unrevealed", "Keep this from players.");
 
   const firstSession = database.createSession(campaign.id, "Session 1");
   database.activateSession(firstSession.id);
@@ -490,6 +490,47 @@ test("character knowledge follows its character across sessions without leaking 
   assert.deepEqual(historicalPlayerState.knowledge.map((entry) => entry.id).sort(), [personal.id, party.id].sort());
 });
 
+test("DM accepts only universal knowledge categories and players cannot create or change knowledge", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Universal categories");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const otherCampaign = database.createCampaign("Other campaign");
+  const foreignCharacter = database.createCharacter(otherCampaign.id, "Nora");
+  const categories = ["character", "place", "creature", "item", "event", "fact"];
+  const created = [];
+  for (const [index, category] of categories.entries()) {
+    const response = await post(app, `/api/dm/campaigns/${campaign.id}/knowledge`, {
+      category, title: `Запись ${index}`, description: `Описание ${index}`
+    });
+    assert.equal(response.statusCode, 201);
+    created.push(response.json().entry);
+  }
+  assert.deepEqual(created.map(({ category }) => category), categories);
+  assert.equal((await post(app, `/api/dm/knowledge/${created[0].id}/visibility`, {
+    visibility: "character", characterId: foreignCharacter.id
+  })).statusCode, 409);
+  for (const category of ["npc", "monster", "note", "quest"]) {
+    const legacy = await post(app, `/api/dm/campaigns/${campaign.id}/knowledge`, {
+      category, title: "Старый тип", description: "Не должен приниматься"
+    });
+    assert.equal(legacy.statusCode, 400);
+  }
+
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const token = "U".repeat(43);
+  const request = await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Игрок", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  await post(app, `/api/dm/players/${player.id}/approve`, { characterId: character.id });
+  const playerCreate = await app.inject({ method: "POST", url: "/api/player/knowledge", headers: { authorization: `Bearer ${token}` }, payload: {
+    category: "fact", title: "Подмена", description: "Игрок не может создать знание"
+  } });
+  const playerVisibility = await app.inject({ method: "POST", url: `/api/player/knowledge/${created[0].id}/visibility`, headers: { authorization: `Bearer ${token}` }, payload: { visibility: "party" } });
+  assert.equal(playerCreate.statusCode, 404);
+  assert.equal(playerVisibility.statusCode, 404);
+  assert.equal(database.listKnowledgeByCampaign(campaign.id).length, 6);
+});
+
 test("invalid names, malformed JSON, unknown records and transitions are rejected", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Campaign");
@@ -520,7 +561,7 @@ test("campaign export and import are authenticated and omit player and invitatio
   const player = database.submitPlayerRequest(session.id, "Player", "b".repeat(64));
   database.approvePlayer(player.id, { characterId: character.id });
   database.grantInventoryItem(character.id, catalogItem.id, 1);
-  const personalKnowledge = database.createKnowledge(campaign.id, "note", "Personal clue", "Known to Mira.");
+  const personalKnowledge = database.createKnowledge(campaign.id, "fact", "Personal clue", "Known to Mira.");
   database.setKnowledgeVisibility(personalKnowledge.id, "character", character.id);
 
   const exported = await get(app, "/api/dm/campaigns/" + campaign.id + "/export");
@@ -529,7 +570,7 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(exported.body.includes(session.joinToken), false);
   assert.equal(exported.body.includes("b".repeat(64)), false);
   const archive = exported.json();
-  assert.equal(archive.version, 6);
+  assert.equal(archive.version, 7);
   assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
 
   const imported = await post(app, "/api/dm/campaigns/import", archive);

@@ -73,7 +73,7 @@ test("backup migration hashes remain compatible across LF and CRLF checkouts", a
   } finally { db.close(); }
 });
 
-test("legacy campaign formats v1 through v5 import with profile defaults and ID remapping", (t) => {
+test("legacy campaign formats v1 through v6 import with profile defaults and ID remapping", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Legacy");
   const mira = db.createCharacter(campaign.id, "Mira");
@@ -82,12 +82,13 @@ test("legacy campaign formats v1 through v5 import with profile defaults and ID 
   const player = db.submitPlayerRequest(session.id, "A", "secret-hash");
   db.approvePlayer(player.id, { characterId: mira.id });
   db.createPersonalNote("secret-hash", "Legacy note body");
-  const clue = db.createKnowledge(campaign.id, "note", "Clue", "Personal knowledge");
+  const clue = db.createKnowledge(campaign.id, "fact", "Clue", "Personal knowledge");
   db.setKnowledgeVisibility(clue.id, "character", mira.id);
   const current = db.exportCampaign(campaign.id);
-  for (const version of [1, 2, 3, 4, 5]) {
+  for (const version of [1, 2, 3, 4, 5, 6]) {
     const legacy = structuredClone(current);
     legacy.version = version;
+    legacy.knowledge[0].category = "note";
     for (const character of legacy.characters) {
       if (version < 5) {
         delete character.traits;
@@ -110,10 +111,13 @@ test("legacy campaign formats v1 through v5 import with profile defaults and ID 
       legacy.knowledge[0].visibleToPlayerId = player.id;
       delete legacy.knowledge[0].visibleToCharacterId;
     }
-    delete legacy.profileFields;
-    delete legacy.profileFieldValues;
+    if (version < 6) {
+      delete legacy.profileFields;
+      delete legacy.profileFieldValues;
+    }
     const imported = db.importCampaign(legacy);
     const exported = db.exportCampaign(imported.id);
+    assert.equal(exported.knowledge[0].category, "fact");
     assert.equal(exported.sessions[0].status, "ended");
     assert.equal(exported.knowledge[0].visibility, "character");
     assert.equal(exported.knowledge[0].visibleToCharacterId, exported.characters[0].id);
@@ -259,7 +263,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.throws(() => db.archiveCharacter(mira.id), /active character/);
   assert.equal(db.listCampaignActivity(campaign.id).some((event) => event.type === "character_archived"), false);
   db.grantInventoryItem(mira.id, item.id, 2);
-  const knowledge = db.createKnowledge(campaign.id, "note", "Secret door", "Behind the library");
+  const knowledge = db.createKnowledge(campaign.id, "fact", "Secret door", "Behind the library");
   db.setKnowledgeVisibility(knowledge.id, "character", mira.id);
   assert.equal(db.getPlayerState("private-player-hash").knowledge.some((entry) => entry.id === knowledge.id), true);
   db.endSession(first.id);
@@ -278,7 +282,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 6);
+  assert.equal(archive.version, 7);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -335,7 +339,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(JSON.stringify(noteEvent).includes(note.body), false);
   assert.equal(JSON.stringify(noteEvent).includes(note.title), false);
   db.grantInventoryItem(mira.id, item.id, 1);
-  const clue = db.createKnowledge(campaign.id, "note", "Door", "Behind the library");
+  const clue = db.createKnowledge(campaign.id, "fact", "Door", "Behind the library");
   db.setKnowledgeVisibility(clue.id, "character", mira.id);
   const firstView = db.getPlayerState("token-a-hash");
   assert.equal(firstView.profile.personalGoal, "Find the map");
@@ -389,7 +393,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.type), ["item_granted"]);
 
   const exported = db.exportCampaign(campaign.id);
-  assert.equal(exported.version, 6);
+  assert.equal(exported.version, 7);
   assert.deepEqual({ traits: exported.characters[0].traits, appearance: exported.characters[0].appearance, quote: exported.characters[0].quote }, {
     traits: ["Observant", "Careful"], appearance: "A weathered coat", quote: "Not yet."
   });
@@ -412,6 +416,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   });
   const legacyV3 = structuredClone(exported);
   legacyV3.version = 3;
+  legacyV3.knowledge[0].category = "note";
   for (const row of legacyV3.personalNotes) for (const key of ["title", "marker", "pinned"]) delete row[key];
   const v3Import = db.importCampaign(legacyV3);
   const v3Mira = db.listCharactersByCampaign(v3Import.id).find((row) => row.name === "Mira");
@@ -420,6 +425,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   });
   const legacyExport = structuredClone(exported);
   legacyExport.version = 2;
+  legacyExport.knowledge[0].category = "note";
   delete legacyExport.personalNotes;
   for (const character of legacyExport.characters) {
     for (const key of ["shortDescription", "archetype", "origin", "personalGoal", "dmNotes"]) delete character[key];
@@ -429,6 +435,56 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.equal(legacyMira.personalGoal, "");
   assert.deepEqual(db.listPersonalNotesByCharacter(legacyMira.id), []);
   assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("campaign archive v7 round-trips six categories and rejects unknown categories atomically", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Knowledge taxonomy");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const categories = ["character", "place", "creature", "item", "event", "fact"];
+  const entries = categories.map((category, index) => db.createKnowledge(campaign.id, category, `Entry ${index}`, `Description ${index}`));
+  db.setKnowledgeVisibility(entries[0].id, "character", mira.id);
+  db.setKnowledgeVisibility(entries[1].id, "party");
+  const archive = db.exportCampaign(campaign.id);
+  assert.equal(archive.version, 7);
+  assert.deepEqual(archive.knowledge.map(({ category }) => category), categories);
+
+  const imported = db.importCampaign(archive);
+  const importedArchive = db.exportCampaign(imported.id);
+  assert.deepEqual(importedArchive.knowledge.map(({ category }) => category), categories);
+  assert.notEqual(importedArchive.knowledge[0].id, entries[0].id);
+  assert.equal(importedArchive.knowledge[0].visibility, "character");
+  assert.equal(importedArchive.knowledge[0].visibleToCharacterId, importedArchive.characters[0].id);
+  assert.equal(importedArchive.knowledge[1].visibility, "party");
+  assert.equal(importedArchive.knowledge[1].visibleToCharacterId, null);
+
+  for (const invalidCategory of ["npc", "unknown"]) {
+    const invalid = structuredClone(archive);
+    invalid.knowledge[0].category = invalidCategory;
+    assert.throws(() => db.importCampaign(invalid), /Campaign file is invalid/);
+  }
+  assert.equal(db.listCampaigns().length, 2);
+});
+
+test("campaign archive v1-v6 deterministically maps every legacy knowledge category", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Legacy taxonomy");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const source = db.exportCampaign(campaign.id);
+  source.version = 6;
+  source.knowledge = ["npc", "monster", "note", "quest"].map((category, index) => ({
+    id: `legacy-${index}`, campaignId: campaign.id, category,
+    title: `Entry ${index}`, description: `Description ${index}`,
+    visibility: index === 1 ? "party" : index === 2 ? "character" : "hidden",
+    visibleToCharacterId: index === 2 ? mira.id : null,
+    createdAt: "2026-01-01T00:00:00.000Z"
+  }));
+  const imported = db.importCampaign(source);
+  const knowledge = db.exportCampaign(imported.id).knowledge;
+  assert.deepEqual(knowledge.map(({ category }) => category), ["character", "creature", "fact", "event"]);
+  assert.deepEqual(knowledge.map(({ visibility }) => visibility), ["hidden", "party", "character", "hidden"]);
+  assert.equal(knowledge[2].visibleToCharacterId, db.listCharactersByCampaign(imported.id)[0].id);
+  assert.equal(new Set(knowledge.map(({ id }) => id)).size, 4);
 });
 
 test("backup restores profile, notes and character read marker", async (t) => {
@@ -476,7 +532,7 @@ test("health check reports cross-campaign knowledge and backup restores activity
   try {
   const campaign = db.createCampaign("Original");
   const mira = db.createCharacter(campaign.id, "Mira");
-  const knowledge = db.createKnowledge(campaign.id, "note", "Clue", "Old letter");
+  const knowledge = db.createKnowledge(campaign.id, "fact", "Clue", "Old letter");
   db.setKnowledgeVisibility(knowledge.id, "character", mira.id);
   db.archiveCharacter(mira.id);
   assert.equal(db.checkDataHealth().ok, true);
@@ -726,7 +782,7 @@ test("campaign export and import preserve history and inventory without copying 
   const player = database.submitPlayerRequest(session.id, "Player", "a".repeat(64));
   database.approvePlayer(player.id, { characterId: character.id });
   database.grantInventoryItem(character.id, item.id, 2);
-  const entry = database.createKnowledge(campaign.id, "npc", "Keeper", "Knows the old road.");
+  const entry = database.createKnowledge(campaign.id, "character", "Keeper", "Knows the old road.");
   database.setKnowledgeVisibility(entry.id, "character", character.id);
 
   const archive = database.exportCampaign(campaign.id);
@@ -1092,7 +1148,7 @@ test("campaign profile fields validate, order, retain character values, export a
   assert.deepEqual(db.getPlayerState("new-profile-field-token").profile.profileFields.map((field) => field.value), ["Вейр", "Орден Серого Пламени"]);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 6);
+  assert.equal(archive.version, 7);
   assert.deepEqual(archive.profileFields.map(({ label, position }) => [label, position]), [["Родина", 0], ["Орден хранителей", 1]]);
   assert.equal(JSON.stringify(archive).includes("profile-field-token"), false);
   const imported = db.importCampaign(archive);
@@ -1163,5 +1219,108 @@ test("backup restore preserves campaign profile definitions, values and order", 
     assert.deepEqual(db.getCharacterOverview(character.id).profileFields.map(({ value }) => value), ["Вейр", "Серое пламя"]);
     assert.deepEqual(readFileSync(db.backupFile(backup.id)), backupBytes);
     assert.equal(db.checkDataHealth().ok, true);
+  } finally { db.close(); }
+});
+
+test("restoring an 0011 backup maps knowledge categories and preserves dependent references", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const backups = join(root, "backups");
+  const uploads = join(root, "uploads");
+  const oldMigrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-0011-"));
+  const backupName = "progdm-backup-00000000-0000-4000-8000-000000000333.db";
+  mkdirSync(backups, { recursive: true });
+  mkdirSync(join(backups, "progdm-backup-00000000-0000-4000-8000-000000000333-uploads"), { recursive: true });
+  for (const category of ["monsters", "characters", "items"]) {
+    mkdirSync(join(backups, "progdm-backup-00000000-0000-4000-8000-000000000333-uploads", category), { recursive: true });
+  }
+  mkdirSync(dirname(file), { recursive: true });
+  t.after(() => {
+    assert.equal(dirname(oldMigrationFolder), resolve(tmpdir()));
+    rmSync(oldMigrationFolder, { recursive: true, force: true });
+  });
+
+  const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
+  const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
+  const versionElevenEntries = journal.entries.filter((entry) => entry.idx <= 11);
+  mkdirSync(join(oldMigrationFolder, "meta"));
+  writeFileSync(join(oldMigrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: versionElevenEntries }));
+  for (const entry of versionElevenEntries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(oldMigrationFolder, entry.tag + ".sql"));
+
+  const rows = [
+    ["00000000-0000-4000-8000-000000000311", "npc", "character", "character", "00000000-0000-4000-8000-000000000302"],
+    ["00000000-0000-4000-8000-000000000312", "monster", "creature", "party", null],
+    ["00000000-0000-4000-8000-000000000313", "note", "fact", "hidden", null],
+    ["00000000-0000-4000-8000-000000000314", "quest", "event", "party", null]
+  ];
+  const legacy = new SQLite(file);
+  legacy.pragma("foreign_keys = ON");
+  try {
+    migrate(drizzle(legacy), { migrationsFolder: oldMigrationFolder });
+    legacy.prepare("INSERT INTO campaigns (id, name, created_at) VALUES (?, ?, ?)")
+      .run("00000000-0000-4000-8000-000000000301", "Legacy categories", "2026-06-01T00:00:00.000Z");
+    legacy.prepare("INSERT INTO characters (id, campaign_id, name, created_at) VALUES (?, ?, ?, ?)")
+      .run("00000000-0000-4000-8000-000000000302", "00000000-0000-4000-8000-000000000301", "Mira", "2026-06-01T00:00:00.000Z");
+    const insertKnowledge = legacy.prepare(`INSERT INTO knowledge_entries
+      (id, campaign_id, category, title, description, visibility, visible_to_character_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const [id, oldCategory, , visibility, target] of rows) {
+      insertKnowledge.run(id, "00000000-0000-4000-8000-000000000301", oldCategory, `Title ${oldCategory}`,
+        `Description ${oldCategory}`, visibility, target, "2026-06-01T00:00:00.000Z");
+    }
+    legacy.prepare(`INSERT INTO campaign_activity
+      (id, campaign_id, knowledge_entry_id, type, created_at, payload) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run("00000000-0000-4000-8000-000000000321", "00000000-0000-4000-8000-000000000301", rows[0][0],
+        "knowledge_created", "2026-06-01T00:00:00.000Z", "{}");
+    legacy.prepare(`INSERT INTO knowledge_migration_issues
+      (knowledge_entry_id, legacy_player_id, reason, created_at) VALUES (?, ?, ?, ?)`)
+      .run(rows[2][0], "legacy-player", "missing_assignment", "2026-06-01T00:00:00.000Z");
+    await legacy.backup(join(backups, backupName));
+  } finally { legacy.close(); }
+  const backupPath = join(backups, backupName);
+  const originalHash = createHash("sha256").update(readFileSync(backupPath)).digest("hex");
+
+  const database = openDatabase({ file, backupsDirectory: backups, uploadsDirectory: uploads });
+  try {
+    await database.restoreBackup(backupName);
+    const raw = new SQLite(file, { readonly: true });
+    try {
+      assert.deepEqual(raw.prepare("SELECT id, category, title, description, visibility, visible_to_character_id, created_at FROM knowledge_entries ORDER BY id")
+        .all().map(({ id, category, title, description, visibility, visible_to_character_id, created_at }) =>
+          [id, category, title, description, visibility, visible_to_character_id, created_at]),
+      rows.map(([id, oldCategory, category, visibility, target]) => [id, category, `Title ${oldCategory}`, `Description ${oldCategory}`, visibility, target, "2026-06-01T00:00:00.000Z"]));
+      assert.equal(raw.prepare("SELECT knowledge_entry_id FROM campaign_activity WHERE id=?").get("00000000-0000-4000-8000-000000000321").knowledge_entry_id, rows[0][0]);
+      assert.equal(raw.prepare("SELECT knowledge_entry_id FROM knowledge_migration_issues").get().knowledge_entry_id, rows[2][0]);
+      assert.deepEqual(raw.pragma("foreign_key_check"), []);
+    } finally { raw.close(); }
+    assert.equal(database.checkDataHealth().ok, true, JSON.stringify(database.checkDataHealth()));
+    assert.equal(createHash("sha256").update(readFileSync(backupPath)).digest("hex"), originalHash);
+    const originalBackup = new SQLite(backupPath, { readonly: true });
+    try {
+      assert.deepEqual(originalBackup.prepare("SELECT category FROM knowledge_entries ORDER BY id").all().map(({ category }) => category),
+        ["npc", "monster", "note", "quest"]);
+      assert.equal(originalBackup.prepare("SELECT count(*) AS count FROM campaign_activity").get().count, 1);
+      assert.equal(originalBackup.prepare("SELECT count(*) AS count FROM knowledge_migration_issues").get().count, 1);
+    } finally { originalBackup.close(); }
+  } finally { database.close(); }
+});
+
+test("Data Health reports a legacy knowledge category without repairing it", (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Invalid category");
+    const entry = db.createKnowledge(campaign.id, "fact", "Clue", "Description");
+    const raw = new SQLite(db.file);
+    try {
+      raw.pragma("ignore_check_constraints = ON");
+      raw.prepare("UPDATE knowledge_entries SET category='note' WHERE id=?").run(entry.id);
+      raw.pragma("ignore_check_constraints = OFF");
+      const health = db.checkDataHealth();
+      assert.equal(health.ok, false);
+      assert.match(health.checks.find(({ name }) => name === "Категории знаний").message, /несогласованных записей/);
+      assert.equal(raw.prepare("SELECT category FROM knowledge_entries WHERE id=?").get(entry.id).category, "note");
+    } finally { raw.close(); }
   } finally { db.close(); }
 });

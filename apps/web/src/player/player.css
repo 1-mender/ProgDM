@@ -235,7 +235,7 @@
 .prod-player .prod-categories button.is-selected { color: var(--player-accent); font-weight: 700; }
 .prod-player .prod-categories button.is-selected::after { position: absolute; right: 10px; bottom: 2px; left: 10px; height: 2px; background: var(--player-accent); content: ""; }
 .prod-knowledge-list li { border-bottom: 1px solid var(--player-divider); }
-.prod-player .prod-knowledge-list button { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 10px; width: 100%; min-height: 62px; padding: 9px 2px; text-align: left; border: 0; border-radius: 0; background: transparent; }
+.prod-player .prod-knowledge-list button { display: grid; grid-template-columns: 20px minmax(0, 1fr) 20px; align-items: center; gap: 10px; width: 100%; min-height: 62px; padding: 9px 2px; text-align: left; border: 0; border-radius: 0; background: transparent; }
 .prod-player .prod-knowledge-list button:hover { background: #e8dfcf; }
 .prod-knowledge-list button > span { min-width: 0; display: grid; gap: 1px; }
 .prod-knowledge-list strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
