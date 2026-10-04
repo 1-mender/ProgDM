@@ -5,7 +5,7 @@ import { isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
 import { openDatabase, type GameDatabase } from "@progdm/database";
 import { isDmAuthorized, loadDmToken } from "./dm-auth.js";
-import type { KnowledgeCategory, KnowledgeFactRevealAudience, KnowledgeVisibility, NetworkAddress, PersonalNoteMarker } from "@progdm/shared";
+import type { EquipmentSlot, InventoryCategory, InventoryRarity, KnowledgeCategory, KnowledgeFactRevealAudience, KnowledgeVisibility, NetworkAddress, PersonalNoteMarker } from "@progdm/shared";
 
 export function requestLogFields(request: { method: string; url: string }) {
   return { method: request.method, url: request.url.replace(/(\/(?:api\/)?join\/)[^/?]+/g, "$1[redacted]") };
@@ -97,7 +97,6 @@ export function createApp(options: {
         const message = error instanceof Error ? error.message : "";
         if (message === "Active character access required.") return reply.code(403).send({ message: "Изменять данные может только игрок активной сессии с назначенным персонажем." });
         if (message === "Personal note not found." || message === "Activity is not visible to this player.") return reply.code(404).send({ message: "Запись недоступна." });
-        if (/constraint|UNIQUE/i.test(message) || message === "A player with this name already requested access.") return reply.code(409).send({ message: "Это имя уже занято в сессии." });
         throw error;
       }
     };
@@ -118,8 +117,15 @@ export function createApp(options: {
         displayName: { type: "string", minLength: 1, maxLength: 60, pattern: "\\S" }
       } } }
     }, async (request, reply) => activeAction(request, reply, (hash) => {
-      const player = database.updatePlayerDisplayName(hash, request.body.displayName)!;
-      return { player: { id: player.id, sessionId: player.sessionId, displayName: player.displayName, status: player.status } };
+      try {
+        const player = database.updatePlayerDisplayName(hash, request.body.displayName)!;
+        return { player: { id: player.id, sessionId: player.sessionId, displayName: player.displayName, status: player.status } };
+      } catch (error) {
+        if (error instanceof Error && error.message === "A player with this name already requested access.") {
+          return reply.code(409).send({ message: "Это имя уже занято в сессии." });
+        }
+        throw error;
+      }
     }));
     const noteProperties = {
       title: { type: "string", maxLength: 120 },
@@ -389,6 +395,45 @@ export function createApp(options: {
       async (request) => ({ activity: database.listCharacterActivity(request.params.id) }));
     dm.get<{ Params: { id: string } }>("/api/dm/characters/:id/overview", { schema: { params: idParams } },
       async (request, reply) => database.getCharacterOverview(request.params.id) ?? reply.code(404).send({ message: "Персонаж не найден." }));
+    const catalogMetadataProperties = {
+      description: { type: "string", maxLength: 2000 },
+      category: { type: "string", enum: ["key", "document", "tool", "consumable", "equipment", "artifact", "special"] },
+      rarity: { anyOf: [{ type: "string", enum: ["common", "uncommon", "rare", "unique"] }, { type: "null" }] },
+      equipmentSlot: { anyOf: [{ type: "string", enum: ["primary", "secondary", "armor", "accessory", "tool", "special"] }, { type: "null" }] },
+      transferAllowed: { type: "boolean" },
+      discardAllowed: { type: "boolean" }
+    };
+    dm.patch<{ Params: { id: string }; Body: Partial<{
+      description: string; category: InventoryCategory; rarity: InventoryRarity | null; equipmentSlot: EquipmentSlot | null;
+      transferAllowed: boolean; discardAllowed: boolean
+    }> }>("/api/dm/catalog-items/:id", {
+      schema: { params: idParams, body: { type: "object", additionalProperties: false, minProperties: 1, properties: catalogMetadataProperties } }
+    }, async (request, reply) => {
+      try { return { item: database.updateCatalogItemMetadata(request.params.id, request.body) }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Catalog item not found.") return reply.code(404).send({ message: "Предмет не найден." });
+        if (message === "Catalog equipment slot conflicts with equipped inventory items.") return reply.code(409).send({ message: "Нельзя изменить ячейку: этот предмет уже экипирован." });
+        if (/Catalog item description is invalid|Catalog item category is invalid|Catalog item rarity is invalid|Equipment slot is invalid|Catalog item .* flag is invalid/.test(message)) {
+          return reply.code(400).send({ message: "Проверьте описание, категорию, редкость, ячейку и доступность действий." });
+        }
+        throw error;
+      }
+    });
+    dm.patch<{ Params: { id: string }; Body: { inventoryCapacity: number } }>("/api/dm/characters/:id/inventory-capacity", {
+      schema: { params: idParams, body: { type: "object", additionalProperties: false, required: ["inventoryCapacity"], properties: {
+        inventoryCapacity: { type: "integer", minimum: 0 }
+      } } }
+    }, async (request, reply) => {
+      try { return { character: database.updateCharacterInventoryCapacity(request.params.id, request.body.inventoryCapacity) }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Character not found.") return reply.code(404).send({ message: "Персонаж не найден." });
+        if (message === "Inventory capacity cannot be lower than used bag slots.") return reply.code(409).send({ message: "Вместимость не может быть меньше числа занятых ячеек сумки." });
+        if (message === "Inventory capacity must be a non-negative integer.") return reply.code(400).send({ message: "Вместимость должна быть целым числом не меньше нуля." });
+        throw error;
+      }
+    });
     for (const action of ["archive", "restore"] as const) {
       dm.post<{ Params: { id: string } }>(`/api/dm/characters/:id/${action}`, { schema: { params: idParams } }, async (request, reply) => {
         try {
@@ -414,12 +459,8 @@ export function createApp(options: {
         return reply.code(201).send({ item: database.grantInventoryItem(request.params.id, request.body.catalogItemId, request.body.quantity) });
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
-        if (message === "Character is not assigned to an approved player.") {
-          return reply.code(409).send({ message: "У этого персонажа нет принятого игрока." });
-        }
-        if (message === "Character is not in the active session.") {
-          return reply.code(409).send({ message: "Выдавать предметы можно персонажам текущей активной сессии." });
-        }
+        if (message === "Character not found.") return reply.code(404).send({ message: "Персонаж не найден." });
+        if (message === "Archived character cannot receive inventory items.") return reply.code(409).send({ message: "Нельзя выдать предмет архивному персонажу." });
         if (message === "Item quantity limit exceeded.") {
           return reply.code(409).send({ message: "В инвентаре нельзя хранить больше 9999 предметов одного вида." });
         }

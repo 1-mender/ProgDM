@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Archive, ArrowDown, ArrowUp, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Pencil, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, ScrollText, Trash2, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeFact, KnowledgeFactReveal, KnowledgeFactRevealAudience, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
+import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, EquipmentSlot, InventoryCategory, InventoryItem, InventoryRarity, KnowledgeCategory, KnowledgeEntry, KnowledgeFact, KnowledgeFactReveal, KnowledgeFactRevealAudience, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
 import { approvalTarget, LatestRequest, mergeProfileDraft, PendingOperationIds } from "./sync";
 
@@ -10,6 +10,16 @@ const campaignKey = "progdm.campaign";
 const statusLabels = { planned: "Запланирована", active: "Идёт сейчас", ended: "Завершена" };
 const knowledgeCategories: Record<KnowledgeCategory, string> = {
   character: "Персонаж", place: "Место", creature: "Существо", item: "Предмет", event: "Событие", fact: "Факт"
+};
+const inventoryCategories: Record<InventoryCategory, string> = {
+  key: "Ключевой предмет", document: "Документ", tool: "Инструмент", consumable: "Расходник",
+  equipment: "Экипировка", artifact: "Артефакт", special: "Особое"
+};
+const inventoryRarities: Record<InventoryRarity, string> = {
+  common: "Обычный", uncommon: "Необычный", rare: "Редкий", unique: "Уникальный"
+};
+const equipmentSlots: Record<EquipmentSlot, string> = {
+  primary: "Основное", secondary: "Вторичное", armor: "Защита", accessory: "Аксессуар", tool: "Инструмент", special: "Особое"
 };
 const activityLabels: Record<ActivityType, string> = {
   campaign_created: "Кампания создана", campaign_imported: "Кампания импортирована", backup_restored: "Копия восстановлена",
@@ -497,15 +507,42 @@ function DmWorkspace() {
       setNotice("Предмет добавлен в справочник.");
     });
   }
+  function saveCatalogMetadata(event: FormEvent<HTMLFormElement>, itemId: string) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    void mutate(async () => {
+      await request(token, `/api/dm/catalog-items/${itemId}`, {
+        description: String(values.get("description") ?? ""),
+        category: String(values.get("category")) as InventoryCategory,
+        rarity: String(values.get("rarity") ?? "") || null,
+        equipmentSlot: String(values.get("equipmentSlot") ?? "") || null,
+        transferAllowed: values.get("transferAllowed") === "on",
+        discardAllowed: values.get("discardAllowed") === "on"
+      }, 10000, "PATCH");
+      setNotice("Параметры предмета сохранены.");
+    });
+  }
+  function saveInventoryCapacity(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!characterOverview) return;
+    const inventoryCapacity = Number(new FormData(event.currentTarget).get("inventoryCapacity"));
+    void mutate(async () => {
+      await request(token, `/api/dm/characters/${characterOverview.character.id}/inventory-capacity`, { inventoryCapacity }, 10000, "PATCH");
+      await refreshOverview(true);
+      setNotice("Вместимость сумки обновлена.");
+    });
+  }
   function grantItem(event: FormEvent) {
     event.preventDefault();
-    if (!selectedPlayer?.characterId || !selectedCatalogItem) return;
+    const character = characterOverview?.character;
+    if (!character || character.archivedAt || !selectedCatalogItem) return;
     void mutate(async () => {
-      await request(token, "/api/dm/characters/" + selectedPlayer.characterId + "/items", {
+      await request(token, "/api/dm/characters/" + character.id + "/items", {
         catalogItemId: selectedCatalogItem.id, quantity: Number(itemQuantity)
       });
       await refreshOverview();
-      setNotice("Предмет выдан игроку.");
+      setNotice("Предмет выдан персонажу.");
     });
   }
   function createKnowledge(event: FormEvent) {
@@ -862,7 +899,26 @@ function DmWorkspace() {
               <div className="field"><label htmlFor="catalog-item-name">Название предмета</label><input id="catalog-item-name" value={catalogItemName} maxLength={120} required disabled={locked} onChange={(event) => setCatalogItemName(event.target.value)} placeholder="Например, старинный ключ" /></div>
               <button className="secondary" disabled={locked || !catalogItemName.trim()}><Plus />Добавить в справочник</button>
             </form>
-            {campaignItemCatalog.length > 0 && <ul className="character-list">{campaignItemCatalog.map((item) => <li key={item.id}><PackagePlus size={16} /><span>{item.name}</span></li>)}</ul>}
+            {campaignItemCatalog.length > 0 && <ul className="character-list catalog-item-list">{campaignItemCatalog.map((item) => <li key={item.id}>
+              <details className="catalog-item-editor" key={item.id + JSON.stringify([item.description, item.category, item.rarity, item.equipmentSlot, item.transferAllowed, item.discardAllowed])}>
+                <summary><PackagePlus size={16} /><span>{item.name}</span></summary>
+                <form className="character-profile-form" onSubmit={(event) => saveCatalogMetadata(event, item.id)}>
+                  <label htmlFor={`catalog-description-${item.id}`}>Описание<textarea id={`catalog-description-${item.id}`} name="description" defaultValue={item.description} maxLength={2000} rows={2} disabled={locked} /></label>
+                  <label htmlFor={`catalog-category-${item.id}`}>Категория<select id={`catalog-category-${item.id}`} name="category" defaultValue={item.category} disabled={locked}>
+                    {Object.entries(inventoryCategories).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select></label>
+                  <label htmlFor={`catalog-rarity-${item.id}`}>Редкость<select id={`catalog-rarity-${item.id}`} name="rarity" defaultValue={item.rarity ?? ""} disabled={locked}>
+                    <option value="">Не задана</option>{Object.entries(inventoryRarities).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select></label>
+                  <label htmlFor={`catalog-equipment-slot-${item.id}`}>Ячейка экипировки<select id={`catalog-equipment-slot-${item.id}`} name="equipmentSlot" defaultValue={item.equipmentSlot ?? ""} disabled={locked}>
+                    <option value="">Не экипируется</option>{Object.entries(equipmentSlots).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select></label>
+                  <label className="catalog-permission"><input type="checkbox" name="transferAllowed" defaultChecked={item.transferAllowed} disabled={locked} />Передачу разрешить</label>
+                  <label className="catalog-permission"><input type="checkbox" name="discardAllowed" defaultChecked={item.discardAllowed} disabled={locked} />Выбрасывание разрешить</label>
+                  <button className="secondary" disabled={locked}>Сохранить параметры</button>
+                </form>
+              </details>
+            </li>)}</ul>}
           </section>}
           {section === "characters" &&
           <section className="character-tools">
@@ -943,6 +999,13 @@ function DmWorkspace() {
             <div className="section-heading"><h2 id="character-overview-title">{characterOverview.character.name}{characterOverview.character.archivedAt ? " · В архиве" : ""}</h2>
               <button className="icon-button" title="Закрыть профиль" aria-label="Закрыть профиль" onClick={() => { closeCharacter(); showSection(workspaceMode === "live" ? "players" : "characters"); }}><X /></button></div>
             <p className="muted">{characterOverview.player ? `Сейчас играет: ${characterOverview.player.displayName}` : "Сейчас не назначен"}</p>
+            <form className="inventory-capacity-form" key={`${characterOverview.character.id}-${characterOverview.character.inventoryCapacity}`} onSubmit={saveInventoryCapacity}>
+              <label htmlFor="character-inventory-capacity">Вместимость сумки</label>
+              <input id="character-inventory-capacity" name="inventoryCapacity" type="number" min={0} step={1} required
+                defaultValue={characterOverview.character.inventoryCapacity} disabled={locked} />
+              <span>слотов</span>
+              <button className="secondary" disabled={locked}>Сохранить</button>
+            </form>
             <div className="character-profile-readout">
               <p><strong>Архетип:</strong> {characterOverview.character.archetype || "Не указан"}</p>
               <p><strong>Происхождение:</strong> {characterOverview.character.origin || "Не указано"}</p>
@@ -955,11 +1018,11 @@ function DmWorkspace() {
               <p><strong>Заметки ведущего:</strong> {characterOverview.character.dmNotes || "Нет"}</p>
             </div>
             <div className="character-overview-actions">
-              {selectedPlayer && <button className="secondary" aria-expanded={grantOpen} onClick={() => setGrantOpen(!grantOpen)}><PackagePlus />Выдать предмет</button>}
+              {!characterOverview.character.archivedAt && <button className="secondary" aria-expanded={grantOpen} onClick={() => setGrantOpen(!grantOpen)}><PackagePlus />Выдать предмет</button>}
               <button className="secondary" onClick={() => { setKnowledgeTargetId(characterOverview.character.id); showSection("knowledge"); }}><Eye />Открыть знание</button>
               <button className="secondary" disabled={locked || (!characterOverview.character.archivedAt && !!characterOverview.player)} onClick={() => changeCharacterArchive(characterOverview.character)}>{characterOverview.character.archivedAt ? <RotateCcw /> : <Archive />}{characterOverview.character.archivedAt ? "Вернуть" : "Архивировать"}</button>
             </div>
-            {grantOpen && selectedPlayer && <form className="item-grant-form contextual-grant" onSubmit={grantItem}>
+            {grantOpen && !characterOverview.character.archivedAt && <form className="item-grant-form contextual-grant" onSubmit={grantItem}>
               <div className="field"><label htmlFor="catalog-item">Предмет для {characterOverview.character.name}</label>
                 {campaignItemCatalog.length ? <select id="catalog-item" value={selectedCatalogItem?.id ?? ""} disabled={locked} onChange={(event) => setCatalogItemId(event.target.value)}>{campaignItemCatalog.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
                   : <button type="button" className="text-link" onClick={() => { setWorkspaceMode("prepare"); showSection("catalog"); }}>Открыть справочник предметов</button>}

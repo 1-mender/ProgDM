@@ -1,6 +1,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
+.pnpm-store/
+logs/
 .env
 .env.*
 

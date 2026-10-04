@@ -6,6 +6,7 @@ import ts from "typescript";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const joinPage = read("../src/JoinPage.tsx");
+const dmWorkspace = read("../src/App.tsx");
 const workspace = read("../src/player/PlayerWorkspace.tsx");
 const shell = read("../src/player/PlayerShell.tsx");
 const home = read("../src/player/HomePage.tsx");
@@ -19,6 +20,13 @@ const compiledModel = ts.transpileModule(modelSource, {
 const modelModule = { exports: {} };
 new Function("require", "module", "exports", compiledModel)(createRequire(import.meta.url), modelModule, modelModule.exports);
 const model = modelModule.exports;
+const apiSource = read("../src/player/api.ts");
+const compiledApi = ts.transpileModule(apiSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
+}).outputText;
+const apiModule = { exports: {} };
+new Function("require", "module", "exports", compiledApi)(createRequire(import.meta.url), apiModule, apiModule.exports);
+const playerApi = apiModule.exports;
 
 test("approved join state uses the production workspace and keeps join states in JoinPage", () => {
   assert.match(joinPage, /import \{ PlayerWorkspace as ProductionPlayerWorkspace \} from "\.\/player\/PlayerWorkspace"/);
@@ -27,6 +35,51 @@ test("approved join state uses the production workspace and keeps join states in
   assert.match(joinPage, /player\?\.status === "rejected"/);
   assert.match(joinPage, /loadJoinSnapshot/);
   assert.match(joinPage, /setInterval\(\(\) => \{ if \(!submitting\.current\) void refresh\(\); \}, 3000\)/);
+});
+
+test("Player HTTP timeout releases polling and mutation state, then a retry succeeds", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (_input, init) => {
+    calls++;
+    if (calls === 1) return new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    });
+    return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  };
+  try {
+    await assert.rejects(playerApi.playerRequest("/api/player/me", {}, 5), (error) => {
+      assert.equal(error.message, "Нет связи с сервером. Попробуйте ещё раз.");
+      assert.equal(error instanceof playerApi.PlayerNetworkError, true);
+      return true;
+    });
+    assert.deepEqual(await playerApi.playerRequest("/api/player/me", {}, 100), { ok: true });
+    assert.equal(calls, 2);
+    assert.match(joinPage, /finally \{ inFlight = false; \}/);
+    assert.match(workspace, /finally \{\s*setBusy\(false\);\s*\}/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Player HTTP validation errors stay API errors instead of network failures", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Недопустимые данные." }), { status: 400 });
+  try {
+    await assert.rejects(playerApi.playerRequest("/api/player/profile", {}, 100), (error) => {
+      assert.equal(error instanceof playerApi.PlayerApiError, true);
+      assert.equal(error.status, 400);
+      assert.equal(error.message, "Недопустимые данные.");
+      assert.equal(error instanceof playerApi.PlayerNetworkError, false);
+      return true;
+    });
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Player API uses one finite timeout boundary for invitation, join and state requests", () => {
+  assert.match(joinPage, /playerRequest<PlayerState>\("\/api\/player\/me"/);
+  assert.match(joinPage, /playerRequest<JoinInfo>\("\/api\/join\/"/);
+  assert.match(joinPage, /playerRequest\("\/api\/join\/" \+ encodeURIComponent\(invite\) \+ "\/request"/);
+  assert.match(apiSource, /timeoutMs = 10000/);
+  assert.match(apiSource, /fetch\(path, \{ \.\.\.init, signal: controller\.signal \}\)/);
 });
 
 test("production shell has stable five-section order and exposes settings separately", () => {
@@ -155,6 +208,22 @@ test("Personal Notes uses live API state, production metadata labels and an edit
   assert.match(personalNotes, /maxLength=\{2000\}/);
   assert.equal(personalNotes.includes("localStorage"), false);
   assert.equal(personalNotes.includes("checkbox/checkmark"), false);
+});
+
+test("unused Quest types stay out of the shared production contract", () => {
+  const sharedSource = read("../../../packages/shared/src/index.ts");
+  assert.doesNotMatch(sharedSource, /\bQuestStatus\b|\binterface Quest\b|\btype Quest\b/);
+});
+
+test("DM workspace exposes only the compact catalog metadata and Character bag capacity controls", () => {
+  assert.ok(dmWorkspace.includes("/api/dm/catalog-items/${itemId}"));
+  for (const field of ["description", "category", "rarity", "equipmentSlot", "transferAllowed", "discardAllowed"]) {
+    assert.ok(dmWorkspace.includes(`name="${field}"`), `catalog editor exposes ${field}`);
+  }
+  assert.ok(dmWorkspace.includes("/api/dm/characters/${characterOverview.character.id}/inventory-capacity"));
+  assert.match(dmWorkspace, /name="inventoryCapacity"/);
+  assert.match(dmWorkspace, /!characterOverview\.character\.archivedAt && <button className="secondary" aria-expanded=\{grantOpen\}/);
+  assert.equal(dmWorkspace.includes("/api/player/inventory"), false);
 });
 
 test("untitled notes use a short body preview without mutating their stored title", () => {

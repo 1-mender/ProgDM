@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { BookOpen, Check, CircleHelp, Clock3, RefreshCw } from "lucide-react";
 import type { JoinInfo, PlayerState } from "@progdm/shared";
 import { joinName, loadJoinSnapshot } from "./sync";
+import { PlayerApiError, playerRequest } from "./player/api";
 import { PlayerWorkspace as ProductionPlayerWorkspace } from "./player/PlayerWorkspace";
 
 const statusCopy = { rejected: "Нужно повторно попросить ведущего" };
-type ApiFailure = Error & { status?: number };
 
 function playerKey(invite: string) { return "progdm.playerToken:" + invite; }
 function makeToken() {
@@ -13,20 +13,11 @@ function makeToken() {
   return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))
     .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
-async function readResponse<T>(response: Response): Promise<T> {
-  const body = await response.json().catch(() => ({})) as { message?: string };
-  if (!response.ok) {
-    const error = new Error(body.message ?? "Не удалось выполнить запрос.") as ApiFailure;
-    error.status = response.status;
-    throw error;
-  }
-  return body as T;
-}
 async function getPlayerState(credential: string) {
-  return readResponse<PlayerState>(await fetch("/api/player/me", {
+  return playerRequest<PlayerState>("/api/player/me", {
     headers: { Authorization: "Bearer " + credential },
     cache: "no-store"
-  }));
+  });
 }
 
 export function JoinPage({ invite }: { invite: string }) {
@@ -55,7 +46,7 @@ export function JoinPage({ invite }: { invite: string }) {
       const sequence = ++requestSequence.current;
       try {
         const snapshot = await loadJoinSnapshot(credential, getPlayerState, async () =>
-          readResponse<JoinInfo>(await fetch("/api/join/" + encodeURIComponent(invite), { cache: "no-store" })));
+          playerRequest<JoinInfo>("/api/join/" + encodeURIComponent(invite), { cache: "no-store" }));
         if (disposed || sequence !== requestSequence.current) return;
         if (snapshot.information) setInformation(snapshot.information);
         setPlayer(snapshot.player);
@@ -63,15 +54,15 @@ export function JoinPage({ invite }: { invite: string }) {
         setLoading(false); setError("");
       } catch (failure) {
         if (disposed || sequence !== requestSequence.current) return;
-        if (failure instanceof Error && (failure as ApiFailure).status === 401 && credential) {
+        if (failure instanceof PlayerApiError && failure.status === 401 && credential) {
           try { localStorage.removeItem(playerKey(invite)); } catch { /* Storage may be disabled. */ }
           setCredential("");
           setPlayer(null);
-        } else if ((failure as ApiFailure).status === 404) {
+        } else if (failure instanceof PlayerApiError && failure.status === 404) {
           setUnavailable(true);
           setError(failure instanceof Error ? failure.message : "Ссылка недействительна.");
         } else {
-          setError(failure instanceof Error ? failure.message : "Нет связи с приложением.");
+          setError(failure instanceof PlayerApiError ? failure.message : "Нет связи с сервером. Попробуйте ещё раз.");
         }
         setLoading(false);
       } finally { inFlight = false; }
@@ -99,19 +90,19 @@ export function JoinPage({ invite }: { invite: string }) {
     }
     void (async () => {
       try {
-        await readResponse(await fetch("/api/join/" + encodeURIComponent(invite) + "/request", {
+        await playerRequest("/api/join/" + encodeURIComponent(invite) + "/request", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ displayName: displayName.trim(), playerToken: key }),
           cache: "no-store"
-        }));
+        });
         setCredential(key);
         const sequence = ++requestSequence.current;
         const current = await getPlayerState(key);
         if (sequence === requestSequence.current) setPlayer(current);
       } catch (failure) {
         setError(failure instanceof Error ? failure.message : "Не удалось отправить заявку.");
-        if ((failure as ApiFailure).status === 404) setUnavailable(true);
+        if (failure instanceof PlayerApiError && failure.status === 404) setUnavailable(true);
       } finally { submitting.current = false; setBusy(false); }
     })();
   }

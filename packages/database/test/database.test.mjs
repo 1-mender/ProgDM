@@ -2254,3 +2254,41 @@ test("restore migrates a real pre-0014 backup, derives safe capacity, preserves 
     } finally { original.close(); }
   } finally { db.close(); }
 });
+
+test("DM inventory grant belongs to persistent Character and records an optional active Session", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Prepared campaign");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const item = db.createCatalogItem(campaign.id, "Key");
+  const otherCampaign = db.createCampaign("Other campaign");
+  const foreignItem = db.createCatalogItem(otherCampaign.id, "Foreign key");
+
+  db.updateCharacterInventoryCapacity(character.id, 1);
+  const prepGrant = db.grantInventoryItem(character.id, item.id, 1);
+  assert.equal(prepGrant.quantity, 1, "grant succeeds before any Session or Player exists");
+  assert.equal(db.listCampaignActivity(campaign.id).find((event) => event.type === "item_granted").sessionId, null);
+  assert.throws(() => db.grantInventoryItem(character.id, foreignItem.id, 1), /unavailable for this campaign/);
+  assert.equal(db.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").length, 1);
+
+  const map = db.createCatalogItem(campaign.id, "Map");
+  assert.throws(() => db.grantInventoryItem(character.id, map.id, 1), /capacity is full/);
+  assert.equal(db.listCharacterInventory(character.id).length, 1);
+  assert.equal(db.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").length, 1,
+    "capacity failure rolls back inventory and activity together");
+  assert.equal(db.grantInventoryItem(character.id, item.id, 2).quantity, 3,
+    "merge of the existing catalog stack succeeds when its bag slot is occupied");
+
+  const archived = db.createCharacter(campaign.id, "Old character");
+  db.archiveCharacter(archived.id);
+  const activityBeforeArchivedGrant = db.listCampaignActivity(campaign.id).length;
+  assert.throws(() => db.grantInventoryItem(archived.id, item.id, 1), /Archived character/);
+  assert.equal(db.listCampaignActivity(campaign.id).length, activityBeforeArchivedGrant);
+
+  const session = db.createSession(campaign.id, "Current session");
+  db.activateSession(session.id);
+  const liveGrant = db.grantInventoryItem(character.id, item.id, 1);
+  assert.equal(liveGrant.quantity, 4);
+  const events = db.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted");
+  assert.equal(events.length, 3);
+  assert.equal(events.at(-1).sessionId, session.id);
+});

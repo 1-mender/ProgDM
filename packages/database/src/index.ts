@@ -1248,8 +1248,9 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const safeEntries = new Map(knowledge.map((entry) => [entry.id, entry]));
         const sessionNames = new Map(db.select({ id: schema.sessions.id, name: schema.sessions.name }).from(schema.sessions)
           .where(eq(schema.sessions.campaignId, active.campaignId)).all().map((session) => [session.id, session.name]));
+        const playerProjectionTypes: ActivityType[] = ["knowledge_created", "knowledge_visibility_changed", "item_granted", "knowledge_fact_revealed"];
         const campaignEvents = activityRows(db.select().from(schema.campaignActivity)
-          .where(eq(schema.campaignActivity.campaignId, active.campaignId))
+          .where(and(eq(schema.campaignActivity.campaignId, active.campaignId), inArray(schema.campaignActivity.type, playerProjectionTypes)))
           .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all());
         const summaryStates = new Map<string, { visibility: KnowledgeVisibility; characterId: string | null | undefined }>();
         const canSeeSummary = (state: { visibility: KnowledgeVisibility; characterId: string | null | undefined }) => {
@@ -1930,24 +1931,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           id: schema.characters.id,
           campaignId: schema.characters.campaignId,
           inventoryCapacity: schema.characters.inventoryCapacity,
-          sessionId: schema.sessions.id
-        }).from(schema.characters)
-          .innerJoin(schema.sessionCharacterAssignments, eq(schema.characters.id, schema.sessionCharacterAssignments.characterId))
-          .innerJoin(schema.players, and(
-            eq(schema.sessionCharacterAssignments.playerId, schema.players.id),
-            eq(schema.sessionCharacterAssignments.sessionId, schema.players.sessionId)
-          ))
-          .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
-          .where(and(
-            eq(schema.characters.id, characterId),
-            eq(schema.players.status, "approved"),
-            eq(schema.sessions.status, "active"),
-            eq(schema.sessions.campaignId, schema.characters.campaignId)
-          )).get();
-        if (!character) throw new Error("Character is not in the active session.");
+          archivedAt: schema.characters.archivedAt
+        }).from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+        if (!character) throw new Error("Character not found.");
+        if (character.archivedAt) throw new Error("Archived character cannot receive inventory items.");
         const catalogItem = db.select().from(schema.catalogItems)
           .where(and(eq(schema.catalogItems.id, catalogItemId), eq(schema.catalogItems.campaignId, character.campaignId))).get();
         if (!catalogItem) throw new Error("Catalog item is unavailable for this campaign.");
+        const sessionId = activeSessionId(character.campaignId);
         const existing = db.select().from(schema.inventoryItems).where(and(
           eq(schema.inventoryItems.characterId, characterId), eq(schema.inventoryItems.catalogItemId, catalogItemId),
           isNull(schema.inventoryItems.equippedSlot)
@@ -1957,7 +1948,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           const item = db.update(schema.inventoryItems)
             .set({ quantity: existing.quantity + quantity })
             .where(eq(schema.inventoryItems.id, existing.id)).returning().get();
-          appendActivity({ campaignId: character.campaignId, sessionId: character.sessionId, characterId, catalogItemId, type: "item_granted", details: { itemName: catalogItem.name, quantity, totalQuantity: item.quantity } });
+          appendActivity({ campaignId: character.campaignId, sessionId, characterId, catalogItemId, type: "item_granted", details: { itemName: catalogItem.name, quantity, totalQuantity: item.quantity } });
           return item;
         }
         const usedSlots = client.prepare("SELECT count(*) AS count FROM inventory_items WHERE character_id=? AND equipped_slot IS NULL")
@@ -1966,7 +1957,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const item = db.insert(schema.inventoryItems).values({
           id: randomUUID(), characterId, catalogItemId, name: catalogItem.name, quantity, createdAt: new Date().toISOString()
         }).returning().get();
-        appendActivity({ campaignId: character.campaignId, sessionId: character.sessionId, characterId, catalogItemId, type: "item_granted", details: { itemName: catalogItem.name, quantity, totalQuantity: item.quantity } });
+        appendActivity({ campaignId: character.campaignId, sessionId, characterId, catalogItemId, type: "item_granted", details: { itemName: catalogItem.name, quantity, totalQuantity: item.quantity } });
         return item;
       });
     },

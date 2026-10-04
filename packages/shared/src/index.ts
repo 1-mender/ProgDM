@@ -1,12 +1,5 @@
 export type EntityId = string;
 
-export type QuestStatus =
-  | "Hidden"
-  | "Available"
-  | "Active"
-  | "Completed"
-  | "Failed";
-
 export type SessionStatus = "planned" | "active" | "ended";
 
 export interface Campaign {
@@ -207,13 +200,6 @@ export interface KnowledgeFactReveal {
   characterId: EntityId | null;
   sessionId: EntityId | null;
   createdAt: string;
-}
-
-export interface Quest {
-  id: EntityId;
-  campaignId: EntityId;
-  title: string;
-  status: QuestStatus;
 }
 
 export interface InventoryItem {

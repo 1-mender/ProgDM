@@ -20,6 +20,7 @@ function fixture(t) {
 }
 function get(app, url) { return app.inject({ method: "GET", url, headers }); }
 function post(app, url, payload = {}) { return app.inject({ method: "POST", url, headers, payload }); }
+function patch(app, url, payload = {}) { return app.inject({ method: "PATCH", url, headers, payload }); }
 
 test("request logs redact invitation secrets and omit authorization headers", () => {
   const token = "Z".repeat(43);
@@ -61,6 +62,92 @@ test("full-bag grants return a conflict and Phase 4A adds no player inventory mu
     const response = await app.inject({ method: "POST", url: `/api/player/inventory/${item.id}/${action}`,
       headers: { authorization: "Bearer capacity-api-token" }, payload: {} });
     assert.equal(response.statusCode, 404, `${action} remains out of scope for this phase`);
+  }
+});
+
+test("DM inventory grants target persistent non-archived characters in preparation and live sessions", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Inventory prep");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const item = database.createCatalogItem(campaign.id, "Key");
+  const secondCharacter = database.createCharacter(campaign.id, "Rowan");
+
+  const prepGrant = await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: item.id, quantity: 1 });
+  assert.equal(prepGrant.statusCode, 201);
+  assert.equal(database.getCharacterOverview(character.id).inventory.length, 1);
+  assert.equal(database.listCampaignActivity(campaign.id).find((event) => event.type === "item_granted").sessionId, null);
+  assert.equal((await post(app, `/api/dm/characters/${secondCharacter.id}/items`, { catalogItemId: item.id, quantity: 1 })).statusCode, 201,
+    "a prepared character needs no Player assignment");
+
+  const session = database.createSession(campaign.id, "Live");
+  database.activateSession(session.id);
+  const liveGrant = await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: item.id, quantity: 2 });
+  assert.equal(liveGrant.statusCode, 201);
+  assert.equal(database.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").at(-1).sessionId, session.id);
+
+  database.updateCharacterInventoryCapacity(character.id, 1);
+  const foreignCampaign = database.createCampaign("Other");
+  const foreignItem = database.createCatalogItem(foreignCampaign.id, "Foreign");
+  const eventsBeforeFailures = database.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").length;
+  assert.equal((await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: item.id, quantity: 1 })).statusCode, 201,
+    "same-catalog merge remains allowed when bag slots are full");
+  const activityBeforeRejectedCapacity = database.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").length;
+  const newItem = database.createCatalogItem(campaign.id, "Map");
+  assert.equal((await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: newItem.id, quantity: 1 })).statusCode, 409);
+  assert.equal(database.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").length, activityBeforeRejectedCapacity);
+  assert.equal((await post(app, `/api/dm/characters/${character.id}/items`, { catalogItemId: foreignItem.id, quantity: 1 })).statusCode, 409);
+  const archived = database.createCharacter(campaign.id, "Archived");
+  database.archiveCharacter(archived.id);
+  assert.equal((await post(app, `/api/dm/characters/${archived.id}/items`, { catalogItemId: item.id, quantity: 1 })).statusCode, 409);
+  assert.equal(database.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").length, activityBeforeRejectedCapacity);
+  assert.ok(eventsBeforeFailures < activityBeforeRejectedCapacity);
+});
+
+test("DM inventory foundation endpoints enforce auth, strict metadata and capacity conflicts", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Metadata");
+  const character = database.createCharacter(campaign.id, "Mira");
+  const catalog = database.createCatalogItem(campaign.id, "Lamp");
+  const metadataPath = `/api/dm/catalog-items/${catalog.id}`;
+  const capacityPath = `/api/dm/characters/${character.id}/inventory-capacity`;
+  for (const [url, payload] of [[metadataPath, { category: "tool" }], [capacityPath, { inventoryCapacity: 8 }]]) {
+    const denied = await app.inject({ method: "PATCH", url, payload });
+    assert.equal(denied.statusCode, 401);
+  }
+  const metadata = await patch(app, metadataPath, {
+    description: "Small brass lamp", category: "tool", rarity: "uncommon", equipmentSlot: "tool",
+    transferAllowed: false, discardAllowed: true
+  });
+  assert.equal(metadata.statusCode, 200);
+  assert.deepEqual({ description: metadata.json().item.description, category: metadata.json().item.category,
+    rarity: metadata.json().item.rarity, equipmentSlot: metadata.json().item.equipmentSlot,
+    transferAllowed: metadata.json().item.transferAllowed, discardAllowed: metadata.json().item.discardAllowed }, {
+    description: "Small brass lamp", category: "tool", rarity: "uncommon", equipmentSlot: "tool",
+    transferAllowed: false, discardAllowed: true
+  });
+  assert.equal((await patch(app, metadataPath, { description: "x", unexpected: true })).statusCode, 400);
+  assert.equal((await patch(app, metadataPath, { rarity: "legendary" })).statusCode, 400);
+  assert.equal((await patch(app, metadataPath, {})).statusCode, 400);
+  assert.equal((await patch(app, "/api/dm/catalog-items/00000000-0000-4000-8000-000000000099", { description: "x" })).statusCode, 404);
+
+  const equipped = database.grantInventoryItem(character.id, catalog.id, 1);
+  database.equipInventoryItem(character.id, equipped.id);
+  const conflict = await patch(app, metadataPath, { equipmentSlot: "armor" });
+  assert.equal(conflict.statusCode, 409);
+  assert.equal(database.listCatalogItemsByCampaign(campaign.id)[0].equipmentSlot, "tool");
+
+  assert.equal((await patch(app, capacityPath, { inventoryCapacity: 12 })).statusCode, 200);
+  assert.equal((await patch(app, capacityPath, { inventoryCapacity: 1, extra: true })).statusCode, 400);
+  assert.equal((await patch(app, capacityPath, { inventoryCapacity: -1 })).statusCode, 400);
+  const bagItem = database.createCatalogItem(campaign.id, "Notebook");
+  database.grantInventoryItem(character.id, bagItem.id, 1);
+  const capacityConflict = await patch(app, capacityPath, { inventoryCapacity: 0 });
+  assert.equal(capacityConflict.statusCode, 409);
+  assert.equal((await patch(app, "/api/dm/characters/00000000-0000-4000-8000-000000000099/inventory-capacity", { inventoryCapacity: 1 })).statusCode, 404);
+
+  for (const path of [metadataPath, capacityPath]) {
+    const playerRoute = await app.inject({ method: "PATCH", url: path.replace("/api/dm/", "/api/player/") });
+    assert.equal(playerRoute.statusCode, 404, "foundation configuration has no Player route");
   }
 });
 
@@ -416,6 +503,24 @@ test("player settings cannot bypass Cyrillic case-insensitive name uniqueness", 
   assert.equal(database.listPlayersByCampaign(campaign.id).find((row) => row.id === player.id).displayName, "Первый");
 });
 
+test("generic database constraints are not reported as duplicate Player names", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Campaign");
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const token = "G".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Player", playerToken: token });
+  const player = database.listPlayersByCampaign(campaign.id)[0];
+  database.approvePlayer(player.id, { characterName: "Mira" });
+  database.updatePlayerDisplayName = () => { throw new Error("SQLITE_CONSTRAINT_UNIQUE: inventory stack conflict"); };
+  const response = await app.inject({ method: "POST", url: "/api/player/settings",
+    headers: { authorization: "Bearer " + token }, payload: { displayName: "Changed" } });
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.json().message, "Не удалось выполнить запрос. Повторите позже.");
+  assert.notEqual(response.json().message, "Это имя уже занято в сессии.");
+  assert.equal(response.body.includes("SQLITE_CONSTRAINT"), false);
+});
+
 test("all DM reads and writes require the key, including through a proxy", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Campaign");
@@ -429,7 +534,9 @@ test("all DM reads and writes require the key, including through a proxy", async
     ["POST", "/api/dm/data/health"], ["GET", "/api/dm/campaigns/" + campaign.id + "/activity"],
     ["GET", "/api/dm/sessions/" + session.id + "/activity"],
     ["GET", "/api/dm/characters/00000000-0000-4000-8000-000000000001/overview"],
-    ["POST", "/api/dm/characters/00000000-0000-4000-8000-000000000001/profile"]
+    ["POST", "/api/dm/characters/00000000-0000-4000-8000-000000000001/profile"],
+    ["PATCH", "/api/dm/catalog-items/00000000-0000-4000-8000-000000000001"],
+    ["PATCH", "/api/dm/characters/00000000-0000-4000-8000-000000000001/inventory-capacity"]
   ];
   for (const [method, url] of routes) {
     for (const authorization of ["", "Bearer wrong-key", "Bearer " + dmToken + "x"]) {
@@ -513,9 +620,11 @@ test("campaign character can be reassigned next session with inventory and old s
   assert.equal((await writePlayer(firstPlayerToken, "/api/player/profile", {
     shortDescription: "Historical edit", personalGoal: "Historical edit", traits: [], appearance: "", quote: ""
   })).statusCode, 403);
-  assert.equal((await post(app, "/api/dm/characters/" + character.id + "/items", {
+  const preparationGrant = await post(app, "/api/dm/characters/" + character.id + "/items", {
     catalogItemId: item.id, quantity: 1
-  })).statusCode, 409);
+  });
+  assert.equal(preparationGrant.statusCode, 201, "DM may update persistent inventory between sessions");
+  assert.equal(database.listCampaignActivity(campaign.id).filter((event) => event.type === "item_granted").at(-1).sessionId, null);
 
   const secondSession = (await post(app, "/api/dm/campaigns/" + campaign.id + "/sessions", { name: "Second night" })).json().session;
   assert.equal((await start(secondSession)).statusCode, 200);
@@ -536,15 +645,15 @@ test("campaign character can be reassigned next session with inventory and old s
   assert.equal(secondView.json().profile.appearance, "A red scarf");
   assert.equal(secondView.json().profile.quote, "The trail remembers.");
   assert.deepEqual(secondView.json().inventory.map(({ name, quantity }) => ({ name, quantity })), [
-    { name: "Old compass", quantity: 2 }
+    { name: "Old compass", quantity: 3 }
   ]);
   const secondGrant = await post(app, "/api/dm/characters/" + character.id + "/items", {
     catalogItemId: item.id, quantity: 1
   });
   assert.equal(secondGrant.statusCode, 201);
-  assert.equal(secondGrant.json().item.quantity, 3);
+  assert.equal(secondGrant.json().item.quantity, 4);
   assert.deepEqual((await readPlayer(secondPlayerToken)).json().inventory.map(({ name, quantity }) => ({ name, quantity })), [
-    { name: "Old compass", quantity: 3 }
+    { name: "Old compass", quantity: 4 }
   ]);
 
   const thirdPlayerToken = "C".repeat(43);
@@ -565,7 +674,7 @@ test("campaign character can be reassigned next session with inventory and old s
   assert.equal(firstViewAfterEnd.statusCode, 200);
   assert.equal(firstViewAfterEnd.json().sessionName, "First night");
   assert.equal(firstViewAfterEnd.json().characterName, "Mira");
-  assert.equal(firstViewAfterEnd.json().inventory[0].quantity, 3);
+  assert.equal(firstViewAfterEnd.json().inventory[0].quantity, 4);
   const oldTokenWrite = await app.inject({
     method: "POST", url: "/api/dm/characters/" + character.id + "/items",
     headers: { authorization: "Bearer " + firstPlayerToken },
