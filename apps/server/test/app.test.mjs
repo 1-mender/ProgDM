@@ -52,7 +52,7 @@ test("pending, rejected and historical tokens cannot write private character dat
   await post(app, `/api/join/${session.joinToken}/request`, { displayName: "A", playerToken: token });
   const player = database.listPlayersByCampaign(campaign.id)[0];
   const writes = [
-    ["/api/player/profile", { shortDescription: "Invalid", personalGoal: "Invalid" }],
+    ["/api/player/profile", { shortDescription: "Invalid", personalGoal: "Invalid", traits: ["Invalid"], appearance: "Invalid", quote: "Invalid" }],
     ["/api/player/settings", { displayName: "Invalid" }],
     ["/api/player/notes", { title: "Invalid", body: "Invalid", marker: "check", pinned: true }],
     ["/api/player/notes/00000000-0000-4000-8000-000000000000", { title: "Invalid", marker: "important", pinned: true }],
@@ -142,15 +142,42 @@ test("player profile and notes enforce active assignment and field permissions",
     headers: { authorization: "Bearer " + token }, payload });
   const playerGet = (token) => app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: "Bearer " + token } });
   assert.equal((await post(app, `/api/dm/characters/${mira.id}/profile`, {
-    name: "Mira", shortDescription: "DM text", archetype: "Scout", origin: "North", personalGoal: "Explore", dmNotes: "Hidden from players"
+    name: "Mira", shortDescription: "DM text", archetype: "Scout", origin: "North", personalGoal: "Explore", dmNotes: "Hidden from players",
+    traits: ["Observant", "Careful"], appearance: "A weathered coat", quote: "Keep moving."
   })).statusCode, 200);
   assert.equal((await playerPost(aToken, "/api/player/profile", { shortDescription: "Player text", personalGoal: "Find clues", dmNotes: "Injected" })).statusCode, 400);
-  const updatedProfile = await playerPost(aToken, "/api/player/profile", { shortDescription: "Player text", personalGoal: "Find clues" });
+  for (const forbidden of ["name", "archetype", "origin", "dmNotes", "campaignId", "characterId"]) {
+    assert.equal((await playerPost(aToken, "/api/player/profile", {
+      shortDescription: "Invalid", personalGoal: "Invalid", [forbidden]: "Injected"
+    })).statusCode, 400);
+  }
+  for (const payload of [
+    { traits: [" "] }, { traits: ["x".repeat(41)] }, { traits: Array.from({ length: 9 }, (_, index) => `Trait ${index}`) },
+    { appearance: "x".repeat(1001) }, { quote: "x".repeat(301) }
+  ]) {
+    assert.equal((await playerPost(aToken, "/api/player/profile", { shortDescription: "x", personalGoal: "y", ...payload })).statusCode, 400);
+  }
+  const updatedProfile = await playerPost(aToken, "/api/player/profile", {
+    shortDescription: "Player text", personalGoal: "Find clues", traits: ["Observant", " Careful ", "Observant"],
+    appearance: "A weathered coat", quote: "Keep moving."
+  });
   assert.equal(updatedProfile.statusCode, 200);
   assert.equal(updatedProfile.json().character.dmNotes, undefined);
+  assert.deepEqual(updatedProfile.json().character.traits, ["Observant", "Careful"]);
+  assert.equal(updatedProfile.json().character.appearance, "A weathered coat");
+  assert.equal(updatedProfile.json().character.quote, "Keep moving.");
   assert.equal(updatedProfile.body.includes("Hidden from players"), false);
   assert.equal((await playerGet(aToken)).json().profile.dmNotes, undefined);
   assert.equal((await playerGet(aToken)).json().profile.archetype, "Scout");
+  assert.deepEqual((await playerGet(aToken)).json().profile.traits, ["Observant", "Careful"]);
+  assert.equal((await playerGet(aToken)).json().profile.appearance, "A weathered coat");
+  assert.equal((await playerGet(aToken)).json().profile.quote, "Keep moving.");
+  assert.equal((await playerGet(aToken)).body.includes("Hidden from players"), false);
+  const dmOverview = (await get(app, `/api/dm/characters/${mira.id}/overview`)).json();
+  assert.deepEqual(dmOverview.character.traits, ["Observant", "Careful"]);
+  assert.equal(dmOverview.character.appearance, "A weathered coat");
+  assert.equal(dmOverview.character.quote, "Keep moving.");
+  assert.equal(dmOverview.character.dmNotes, "Hidden from players");
   assert.equal(database.listCharactersByCampaign(campaign.id).find((row) => row.id === mira.id).dmNotes, "Hidden from players");
   const note = (await playerPost(aToken, "/api/player/notes", {
     title: "Сомнительная дверь", body: "My theory", marker: "check", pinned: true
@@ -290,10 +317,21 @@ test("campaign character can be reassigned next session with inventory and old s
   const readPlayer = (token) => app.inject({
     method: "GET", url: "/api/player/me", headers: { authorization: "Bearer " + token }
   });
+  const writePlayer = (token, path, payload) => app.inject({
+    method: "POST", url: path, headers: { authorization: "Bearer " + token }, payload
+  });
   const firstViewBeforeEnd = await readPlayer(firstPlayerToken);
   assert.equal(firstViewBeforeEnd.statusCode, 200);
   assert.equal(firstViewBeforeEnd.json().inventory[0].quantity, 2);
+  const profileUpdate = await writePlayer(firstPlayerToken, "/api/player/profile", {
+    shortDescription: "A mapmaker", personalGoal: "Find the lost road", traits: ["Observant", "Careful"],
+    appearance: "A red scarf", quote: "The trail remembers."
+  });
+  assert.equal(profileUpdate.statusCode, 200);
   assert.equal((await post(app, "/api/dm/sessions/" + firstSession.id + "/end")).statusCode, 200);
+  assert.equal((await writePlayer(firstPlayerToken, "/api/player/profile", {
+    shortDescription: "Historical edit", personalGoal: "Historical edit", traits: [], appearance: "", quote: ""
+  })).statusCode, 403);
   assert.equal((await post(app, "/api/dm/characters/" + character.id + "/items", {
     catalogItemId: item.id, quantity: 1
   })).statusCode, 409);
@@ -313,6 +351,9 @@ test("campaign character can be reassigned next session with inventory and old s
   const secondView = await readPlayer(secondPlayerToken);
   assert.equal(secondView.statusCode, 200);
   assert.equal(secondView.json().characterName, "Mira");
+  assert.deepEqual(secondView.json().profile.traits, ["Observant", "Careful"]);
+  assert.equal(secondView.json().profile.appearance, "A red scarf");
+  assert.equal(secondView.json().profile.quote, "The trail remembers.");
   assert.deepEqual(secondView.json().inventory.map(({ name, quantity }) => ({ name, quantity })), [
     { name: "Old compass", quantity: 2 }
   ]);
@@ -443,6 +484,7 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(exported.body.includes(session.joinToken), false);
   assert.equal(exported.body.includes("b".repeat(64)), false);
   const archive = exported.json();
+  assert.equal(archive.version, 5);
   assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
 
   const imported = await post(app, "/api/dm/campaigns/import", archive);
@@ -450,9 +492,15 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.notEqual(imported.json().campaign.id, campaign.id);
   const importedData = database.exportCampaign(imported.json().campaign.id);
   assert.equal(importedData.characters[0].name, "Mira");
+  assert.deepEqual({ traits: importedData.characters[0].traits, appearance: importedData.characters[0].appearance, quote: importedData.characters[0].quote }, {
+    traits: [], appearance: "", quote: ""
+  });
   assert.equal(importedData.inventoryItems[0].quantity, 1);
   assert.equal(importedData.knowledge[0].visibility, "character");
   assert.equal(importedData.knowledge[0].visibleToCharacterId, importedData.characters[0].id);
+  const malformedProfileArchive = structuredClone(archive);
+  malformedProfileArchive.characters[0].traits = ["x".repeat(41)];
+  assert.equal((await post(app, "/api/dm/campaigns/import", malformedProfileArchive)).statusCode, 400);
   assert.notEqual(importedData.knowledge[0].visibleToCharacterId, character.id);
   const invalid = await post(app, "/api/dm/campaigns/import", { ...archive, inventoryItems: [{ ...archive.inventoryItems[0], characterId: "missing" }] });
   assert.equal(invalid.statusCode, 400);

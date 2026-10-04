@@ -49,10 +49,11 @@ test("late responses cannot replace a newer selection or reopen a closed context
 });
 
 test("overview refresh updates untouched fields but preserves unsaved DM edits", () => {
-  const original = { id: "Mira", name: "Mira", shortDescription: "Old", personalGoal: "Old goal", archetype: "Scout", origin: "North", dmNotes: "Private" };
-  const draft = { ...original, dmNotes: "Unsaved", name: "New name" };
-  const updated = { ...original, shortDescription: "Player update", personalGoal: "Player goal", archivedAt: "date" };
-  assert.deepEqual(mergeProfileDraft(draft, original, updated), { ...updated, dmNotes: "Unsaved", name: "New name" });
+  const original = { id: "Mira", name: "Mira", shortDescription: "Old", personalGoal: "Old goal", archetype: "Scout", origin: "North", dmNotes: "Private",
+    traits: ["Alert"], appearance: "Old look", quote: "Old line" };
+  const draft = { ...original, dmNotes: "Unsaved", name: "New name", traits: ["Alert", "Careful"], quote: "Unsaved line" };
+  const updated = { ...original, shortDescription: "Player update", personalGoal: "Player goal", appearance: "Updated look", archivedAt: "date" };
+  assert.deepEqual(mergeProfileDraft(draft, original, updated), { ...updated, dmNotes: "Unsaved", name: "New name", traits: ["Alert", "Careful"], quote: "Unsaved line" });
   assert.deepEqual(mergeProfileDraft(null, null, updated), updated);
   assert.deepEqual(mergeProfileDraft(draft, original, { ...updated, id: "Nora" }), { ...updated, id: "Nora" });
 });

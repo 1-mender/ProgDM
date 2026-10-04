@@ -49,11 +49,14 @@ export const characters = sqliteTable("characters", {
   archetype: text("archetype").notNull().default(""),
   origin: text("origin").notNull().default(""),
   personalGoal: text("personal_goal").notNull().default(""),
-  dmNotes: text("dm_notes").notNull().default("")
+  dmNotes: text("dm_notes").notNull().default(""),
+  traits: text("traits").notNull().default("[]"),
+  appearance: text("appearance").notNull().default(""),
+  quote: text("quote").notNull().default("")
 }, (table) => [
   index("characters_campaign_id_idx").on(table.campaignId),
   check("character_name_valid", sql`length(trim(${table.name})) between 1 and 120`),
-  check("character_profile_valid", sql`length(${table.shortDescription}) <= 500 and length(${table.archetype}) <= 120 and length(${table.origin}) <= 500 and length(${table.personalGoal}) <= 500 and length(${table.dmNotes}) <= 2000`)
+  check("character_profile_valid", sql`length(${table.shortDescription}) <= 500 and length(${table.archetype}) <= 120 and length(${table.origin}) <= 500 and length(${table.personalGoal}) <= 500 and length(${table.dmNotes}) <= 2000 and length(${table.appearance}) <= 1000 and length(${table.quote}) <= 300`)
 ]);
 
 export const characterPersonalNotes = sqliteTable("character_personal_notes", {

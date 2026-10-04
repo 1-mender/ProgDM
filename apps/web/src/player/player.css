@@ -189,18 +189,29 @@
 .prod-profile-card { display: grid; gap: 20px; }
 .prod-profile-identity { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 16px; padding-bottom: 20px; border-bottom: 1px solid var(--player-divider); }
 .prod-avatar-large { width: 82px; font-size: 23px; }
-.prod-profile-identity h1 { margin: 0 0 3px; font-size: 29px; }
+.prod-profile-identity h1 { margin: 0 0 3px; font-size: 29px; overflow-wrap: anywhere; }
 .prod-profile-identity p { margin: 0; font-size: 15px; }
 .prod-profile-identity div > span { color: var(--player-secondary); font-size: 13px; }
 .prod-profile-section { padding-top: 1px; }
 .prod-profile-section h2 { margin-bottom: 6px; }
 .prod-profile-section p { margin: 0; color: var(--player-text); font-size: 15px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .prod-profile-goal { padding: 12px 0 12px 13px; border-left: 2px solid var(--player-accent); }
+.prod-profile-traits { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.prod-profile-traits li { max-width: 100%; padding: 5px 9px; color: var(--player-secondary); background: #eee9df; border: 1px solid var(--player-divider); border-radius: 3px; font-size: 13px; overflow-wrap: anywhere; }
+.prod-profile-quote p { color: var(--player-secondary); font-family: Georgia, serif; font-size: 14px; font-style: italic; }
 .prod-player .prod-edit-profile { justify-self: start; margin-top: 1px; }
 .prod-profile-editor { display: grid; gap: 10px; padding-top: 16px; border-top: 1px solid var(--player-divider); }
 .prod-profile-editor h2 { margin-bottom: 2px; }
 .prod-profile-editor label,
 .prod-legacy-page .player-form label { margin: 3px 0 -5px; color: var(--player-secondary); font-size: 12px; }
+.prod-profile-trait-editor { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--player-divider); }
+.prod-profile-trait-editor legend { padding: 0 4px; color: var(--player-secondary); font-size: 12px; }
+.prod-profile-trait-editor legend span { margin-left: 5px; color: var(--player-muted); }
+.prod-profile-trait-row { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 6px; align-items: center; }
+.prod-profile-trait-row input { width: 100%; min-width: 0; }
+.prod-player .prod-icon-action { width: 44px; height: 44px; display: grid; place-items: center; color: var(--player-secondary); background: transparent; border: 1px solid var(--player-border); border-radius: 3px; }
+.prod-player .prod-icon-action:disabled { opacity: .45; }
+.prod-icon-action svg { width: 18px; height: 18px; }
 .prod-player textarea,
 .prod-player input:not([type="checkbox"]) { min-height: 44px; padding: 10px 11px; color: var(--player-text); background: #fbf8f0; border: 1px solid var(--player-border); border-radius: 3px; }
 .prod-player textarea { min-height: 88px; resize: vertical; line-height: 1.45; }

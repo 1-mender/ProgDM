@@ -101,14 +101,17 @@ export function createApp(options: {
         throw error;
       }
     };
-    player.post<{ Body: { shortDescription: string; personalGoal: string } }>("/api/player/profile", {
+    player.post<{ Body: { shortDescription: string; personalGoal: string; traits?: string[]; appearance?: string; quote?: string } }>("/api/player/profile", {
       schema: { body: { type: "object", additionalProperties: false, required: ["shortDescription", "personalGoal"], properties: {
-        shortDescription: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 }
+        shortDescription: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 },
+        traits: { type: "array", maxItems: 8, items: { type: "string", minLength: 1, maxLength: 40, pattern: "\\S" } },
+        appearance: { type: "string", maxLength: 1000 }, quote: { type: "string", maxLength: 300 }
       } } }
     }, async (request, reply) => activeAction(request, reply, (hash) => {
       const character = database.updatePlayerProfile(hash, request.body);
       return { character: { id: character.id, name: character.name, archetype: character.archetype,
-        origin: character.origin, shortDescription: character.shortDescription, personalGoal: character.personalGoal } };
+        origin: character.origin, shortDescription: character.shortDescription, personalGoal: character.personalGoal,
+        traits: character.traits, appearance: character.appearance, quote: character.quote } };
     }));
     player.post<{ Body: { displayName: string } }>("/api/player/settings", {
       schema: { body: { type: "object", additionalProperties: false, required: ["displayName"], properties: {
@@ -261,7 +264,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5] }
       } } }
     }, async (request, reply) => {
       try {
@@ -269,7 +272,7 @@ export function createApp(options: {
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         if (message === "Campaign file format is not supported.") return reply.code(400).send({ message: "Формат файла кампании не поддерживается." });
-        if (/Campaign file|Campaign name|Name must|Player name|Personal note|Description|constraint/i.test(message)) {
+        if (/Campaign file|Campaign name|Name must|Player name|Personal note|Description|Profile|Character traits|constraint/i.test(message)) {
           return reply.code(400).send({ message: "Файл кампании повреждён или содержит недопустимые данные." });
         }
         throw error;
@@ -298,14 +301,16 @@ export function createApp(options: {
           throw error;
         }
       });
-    dm.post<{ Params: { id: string }; Body: { name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string } }>(
+    dm.post<{ Params: { id: string }; Body: { name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string; traits?: string[]; appearance?: string; quote?: string } }>(
       "/api/dm/characters/:id/profile", {
         schema: { params: idParams, body: { type: "object", additionalProperties: false,
           required: ["name", "shortDescription", "archetype", "origin", "personalGoal", "dmNotes"], properties: {
             name: { type: "string", minLength: 1, maxLength: 120, pattern: "\\S" },
             shortDescription: { type: "string", maxLength: 500 }, archetype: { type: "string", maxLength: 120 },
             origin: { type: "string", maxLength: 500 }, personalGoal: { type: "string", maxLength: 500 },
-            dmNotes: { type: "string", maxLength: 2000 }
+            dmNotes: { type: "string", maxLength: 2000 },
+            traits: { type: "array", maxItems: 8, items: { type: "string", minLength: 1, maxLength: 40, pattern: "\\S" } },
+            appearance: { type: "string", maxLength: 1000 }, quote: { type: "string", maxLength: 300 }
           } } }
       }, async (request, reply) => {
         try { return { character: database.updateCharacterProfile(request.params.id, request.body) }; }

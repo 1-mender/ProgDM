@@ -219,6 +219,11 @@ dialog::backdrop { background: #20252a66; }
 .character-edit summary { cursor: pointer; font-weight: 600; }
 .character-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
 .character-profile-form label { display: grid; gap: 6px; min-width: 0; }
+.character-traits-editor { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 10px; border: 1px solid #d7dce0; }
+.character-traits-editor legend { padding: 0 4px; color: #52616b; font-size: 13px; }
+.character-trait-row { display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: 6px; align-items: center; }
+.character-trait-row input { width: 100%; min-width: 0; }
+.character-trait-row button { width: 42px; min-height: 42px; padding: 5px; }
 .character-profile-form input, .character-profile-form textarea { width: 100%; }
 .character-profile-form button { justify-self: start; }
 .character-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }

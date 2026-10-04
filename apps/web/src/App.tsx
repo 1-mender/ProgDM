@@ -333,13 +333,17 @@ function DmWorkspace() {
     void mutate(async () => {
       await request(token, `/api/dm/characters/${profileDraft.id}/profile`, {
         name: profileDraft.name, shortDescription: profileDraft.shortDescription, archetype: profileDraft.archetype,
-        origin: profileDraft.origin, personalGoal: profileDraft.personalGoal, dmNotes: profileDraft.dmNotes
+        origin: profileDraft.origin, personalGoal: profileDraft.personalGoal, dmNotes: profileDraft.dmNotes,
+        traits: profileDraft.traits, appearance: profileDraft.appearance, quote: profileDraft.quote
       });
       await refreshOverview(true); setNotice("Профиль сохранён.");
     });
   }
-  function editProfile(field: "name" | "shortDescription" | "archetype" | "origin" | "personalGoal" | "dmNotes", value: string) {
+  function editProfile(field: "name" | "shortDescription" | "archetype" | "origin" | "personalGoal" | "dmNotes" | "appearance" | "quote", value: string) {
     setProfileDraft((current) => current ? { ...current, [field]: value } : null);
+  }
+  function editProfileTrait(index: number, value: string) {
+    setProfileDraft((current) => current ? { ...current, traits: current.traits.map((trait, traitIndex) => traitIndex === index ? value : trait) } : null);
   }
   function openCampaignForm() { setNotice(""); setError(""); setCampaignForm(true); }
   function confirm(intent: Confirmation) { setNotice(""); setError(""); setConfirmation(intent); }
@@ -700,7 +704,10 @@ function DmWorkspace() {
               <p><strong>Архетип:</strong> {characterOverview.character.archetype || "Не указан"}</p>
               <p><strong>Происхождение:</strong> {characterOverview.character.origin || "Не указано"}</p>
               <p><strong>Описание:</strong> {characterOverview.character.shortDescription || "Не указано"}</p>
+              {characterOverview.character.traits.length > 0 && <p><strong>Черты:</strong> {characterOverview.character.traits.join(" · ")}</p>}
               <p><strong>Личная цель:</strong> {characterOverview.character.personalGoal || "Не указана"}</p>
+              {characterOverview.character.appearance && <p><strong>Внешность:</strong> {characterOverview.character.appearance}</p>}
+              {characterOverview.character.quote && <p><strong>Цитата:</strong> {characterOverview.character.quote}</p>}
               <p><strong>Заметки ведущего:</strong> {characterOverview.character.dmNotes || "Нет"}</p>
             </div>
             <div className="character-overview-actions">
@@ -723,8 +730,18 @@ function DmWorkspace() {
                 <label>Архетип<input value={profileDraft.archetype} maxLength={120} disabled={locked} onChange={(event) => editProfile("archetype", event.target.value)} /></label>
                 <label>Происхождение<textarea value={profileDraft.origin} maxLength={500} rows={2} disabled={locked} onChange={(event) => editProfile("origin", event.target.value)} /></label>
                 <label>Личная цель<textarea value={profileDraft.personalGoal} maxLength={500} rows={2} disabled={locked} onChange={(event) => editProfile("personalGoal", event.target.value)} /></label>
+                <fieldset className="character-traits-editor" disabled={locked}>
+                  <legend>Черты ({profileDraft.traits.length} / 8)</legend>
+                  {profileDraft.traits.map((trait, index) => <div className="character-trait-row" key={`profile-trait-${index}`}>
+                    <input aria-label={`Черта ${index + 1}`} value={trait} maxLength={40} onChange={(event) => editProfileTrait(index, event.target.value)} />
+                    <button type="button" className="icon-button" aria-label={`Удалить черту ${index + 1}`} onClick={() => setProfileDraft((current) => current ? { ...current, traits: current.traits.filter((_, traitIndex) => traitIndex !== index) } : null)}><X /></button>
+                  </div>)}
+                  <button type="button" className="text-link" disabled={profileDraft.traits.length >= 8} onClick={() => setProfileDraft((current) => current && current.traits.length < 8 ? { ...current, traits: [...current.traits, ""] } : current)}>Добавить черту</button>
+                </fieldset>
+                <label>Внешность<textarea value={profileDraft.appearance} maxLength={1000} rows={3} disabled={locked} onChange={(event) => editProfile("appearance", event.target.value)} /></label>
+                <label>Цитата<textarea value={profileDraft.quote} maxLength={300} rows={2} disabled={locked} onChange={(event) => editProfile("quote", event.target.value)} /></label>
                 <label>Заметки ведущего<textarea value={profileDraft.dmNotes} maxLength={2000} rows={3} disabled={locked} onChange={(event) => editProfile("dmNotes", event.target.value)} /></label>
-                <button className="primary" disabled={locked || !profileDraft.name.trim()}>Сохранить профиль</button>
+                <button className="primary" disabled={locked || !profileDraft.name.trim() || profileDraft.traits.some((trait) => !trait.trim())}>Сохранить профиль</button>
               </form>
             </details>
             <div className="character-overview-grid">

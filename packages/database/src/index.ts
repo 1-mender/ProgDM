@@ -7,7 +7,7 @@ import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type Character, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -87,6 +87,40 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     const trimmed = value.trim();
     if (trimmed.length > max) throw new Error("Profile text is too long.");
     return trimmed;
+  }
+
+  function profileTraits(value: unknown): string[] {
+    if (!Array.isArray(value)) throw new Error("Character traits are invalid.");
+    const traits: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "string") throw new Error("Character traits are invalid.");
+      const trait = entry.trim();
+      if (!trait || trait.length > 40) throw new Error("Character traits are invalid.");
+      if (!traits.includes(trait)) traits.push(trait);
+    }
+    if (traits.length > 8) throw new Error("Character traits are invalid.");
+    return traits;
+  }
+
+  function readCharacterTraits(serialized: string): string[] {
+    try { return profileTraits(JSON.parse(serialized)); }
+    catch { return []; }
+  }
+
+  function characterRecord<T extends { traits: string }>(record: T): Omit<T, "traits"> & Pick<Character, "traits"> {
+    return { ...record, traits: readCharacterTraits(record.traits) };
+  }
+
+  function storedTraitsAreValid(serialized: string): boolean {
+    try {
+      const parsed: unknown = JSON.parse(serialized);
+      return Array.isArray(parsed) && JSON.stringify(profileTraits(parsed)) === JSON.stringify(parsed);
+    } catch { return false; }
+  }
+
+  function exportTraits(serialized: string): string[] {
+    try { return profileTraits(JSON.parse(serialized)); }
+    catch { throw new Error("Character traits are invalid."); }
   }
 
   function personalNoteTitle(value: string): string {
@@ -415,6 +449,13 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         return count === 0 ? { status: "ok", message: "Нарушений не найдено." }
           : { status: "error", message: `Найдено несогласованных записей: ${count}.` };
       });
+      check("Профили персонажей", () => {
+        const rows = client.prepare("SELECT traits, appearance, quote FROM characters").all() as { traits: string; appearance: string; quote: string }[];
+        const invalid = rows.filter((row) => !storedTraitsAreValid(row.traits) || typeof row.appearance !== "string" ||
+          row.appearance.length > 1000 || typeof row.quote !== "string" || row.quote.length > 300).length;
+        return invalid === 0 ? { status: "ok", message: "Поля профилей и черты персонажей корректны." }
+          : { status: "error", message: `Найдено профилей с некорректными чертами, внешностью или цитатой: ${invalid}.` };
+      });
       checks.push({ name: "Файлы загрузок", status: "skipped", message: "Ссылок на файлы в базе пока нет; проверено наличие каталогов." });
       return { ok: checks.every((item) => item.status !== "error"), checks };
     },
@@ -449,8 +490,10 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const characters = db.select({
         id: schema.characters.id, name: schema.characters.name, createdAt: schema.characters.createdAt, archivedAt: schema.characters.archivedAt,
         shortDescription: schema.characters.shortDescription, archetype: schema.characters.archetype,
-        origin: schema.characters.origin, personalGoal: schema.characters.personalGoal, dmNotes: schema.characters.dmNotes
-      }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all();
+        origin: schema.characters.origin, personalGoal: schema.characters.personalGoal, dmNotes: schema.characters.dmNotes,
+        traits: schema.characters.traits, appearance: schema.characters.appearance, quote: schema.characters.quote
+      }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all()
+        .map((character) => ({ ...character, traits: exportTraits(character.traits) }));
       const characterIds = characters.map((character) => character.id);
       const personalNotes = characterIds.length ? db.select().from(schema.characterPersonalNotes)
         .where(inArray(schema.characterPersonalNotes.characterId, characterIds)).all() : [];
@@ -477,7 +520,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
         .map((entry) => ({ ...entry }));
       return {
-        format: "progdm-campaign", version: 4, exportedAt: new Date().toISOString(), campaign,
+        format: "progdm-campaign", version: 5, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, personalNotes, catalogItems, inventoryItems, knowledge,
         activity: activityRows(db.select().from(schema.campaignActivity)
           .where(eq(schema.campaignActivity.campaignId, id))
@@ -486,7 +529,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
@@ -554,11 +597,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           db.insert(schema.characters).values({
             id: requireMapped(characterIds, row.id), campaignId, name: validatedName(transferString(row, "name", 120)),
             createdAt: createdAt(row), archivedAt: archiveVersion !== 1 ? archivedAt as string | null : null,
-            shortDescription: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "shortDescription", 500), 500) : "",
-            archetype: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "archetype", 120), 120) : "",
-            origin: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "origin", 500), 500) : "",
-            personalGoal: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "personalGoal", 500), 500) : "",
-            dmNotes: archiveVersion === 3 || archiveVersion === 4 ? profileText(transferString(row, "dmNotes", 2000), 2000) : ""
+            shortDescription: archiveVersion >= 3 ? profileText(transferString(row, "shortDescription", 500), 500) : "",
+            archetype: archiveVersion >= 3 ? profileText(transferString(row, "archetype", 120), 120) : "",
+            origin: archiveVersion >= 3 ? profileText(transferString(row, "origin", 500), 500) : "",
+            personalGoal: archiveVersion >= 3 ? profileText(transferString(row, "personalGoal", 500), 500) : "",
+            dmNotes: archiveVersion >= 3 ? profileText(transferString(row, "dmNotes", 2000), 2000) : "",
+            traits: JSON.stringify(archiveVersion >= 5 ? profileTraits(row.traits) : []),
+            appearance: archiveVersion >= 5 ? profileText(transferString(row, "appearance", 1000), 1000) : "",
+            quote: archiveVersion >= 5 ? profileText(transferString(row, "quote", 300), 300) : ""
           }).run();
         }
         for (const row of personalNotes) {
@@ -678,7 +724,10 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         shortDescription: schema.characters.shortDescription,
         archetype: schema.characters.archetype,
         origin: schema.characters.origin,
-        personalGoal: schema.characters.personalGoal
+        personalGoal: schema.characters.personalGoal,
+        traits: schema.characters.traits,
+        appearance: schema.characters.appearance,
+        quote: schema.characters.quote
       }).from(schema.players)
         .innerJoin(schema.sessions, eq(schema.players.sessionId, schema.sessions.id))
         .innerJoin(schema.campaigns, eq(schema.sessions.campaignId, schema.campaigns.id))
@@ -727,7 +776,9 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         characterId: player.characterId,
         profile: active ? {
           shortDescription: player.shortDescription ?? "", archetype: player.archetype ?? "",
-          origin: player.origin ?? "", personalGoal: player.personalGoal ?? ""
+          origin: player.origin ?? "", personalGoal: player.personalGoal ?? "",
+          traits: player.traits ? readCharacterTraits(player.traits) : [],
+          appearance: player.appearance ?? "", quote: player.quote ?? ""
         } : null,
         canEdit: !!active,
         inventory: player.characterId
@@ -743,15 +794,20 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         newActivity: relevant.filter(isNew)
       };
     },
-    updatePlayerProfile(tokenHash: string, fields: { shortDescription: string; personalGoal: string }) {
+    updatePlayerProfile(tokenHash: string, fields: {
+      shortDescription: string; personalGoal: string; traits?: string[]; appearance?: string; quote?: string
+    }) {
       return db.transaction(() => {
         const active = requireActivePlayerCharacter(tokenHash);
         const character = db.update(schema.characters).set({
-          shortDescription: profileText(fields.shortDescription, 500), personalGoal: profileText(fields.personalGoal, 500)
+          shortDescription: profileText(fields.shortDescription, 500), personalGoal: profileText(fields.personalGoal, 500),
+          ...(fields.traits === undefined ? {} : { traits: JSON.stringify(profileTraits(fields.traits)) }),
+          ...(fields.appearance === undefined ? {} : { appearance: profileText(fields.appearance, 1000) }),
+          ...(fields.quote === undefined ? {} : { quote: profileText(fields.quote, 300) })
         }).where(eq(schema.characters.id, active.characterId)).returning().get()!;
         appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, characterId: active.characterId,
           type: "character_profile_updated", details: { characterName: character.name } });
-        return character;
+        return characterRecord(character);
       });
     },
     updatePlayerDisplayName(tokenHash: string, displayName: string) {
@@ -870,9 +926,12 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         archetype: schema.characters.archetype,
         origin: schema.characters.origin,
         personalGoal: schema.characters.personalGoal,
-        dmNotes: schema.characters.dmNotes
+        dmNotes: schema.characters.dmNotes,
+        traits: schema.characters.traits,
+        appearance: schema.characters.appearance,
+        quote: schema.characters.quote
       }).from(schema.characters).where(eq(schema.characters.campaignId, campaignId))
-        .orderBy(asc(schema.characters.name), asc(schema.characters.id)).all();
+        .orderBy(asc(schema.characters.name), asc(schema.characters.id)).all().map(characterRecord);
     },
     listPersonalNotesByCharacter(characterId: string) {
       return db.select().from(schema.characterPersonalNotes)
@@ -893,7 +952,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .innerJoin(schema.sessions, eq(schema.sessionCharacterAssignments.sessionId, schema.sessions.id))
         .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"))).get() ?? null;
       return {
-        character, player,
+        character: characterRecord(character), player,
         inventory: db.select().from(schema.inventoryItems).where(eq(schema.inventoryItems.characterId, characterId)).all(),
         knowledge: db.select().from(schema.knowledgeEntries).where(and(
           eq(schema.knowledgeEntries.campaignId, character.campaignId),
@@ -902,18 +961,24 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         notes: this.listPersonalNotesByCharacter(characterId), activity: this.listCharacterActivity(characterId, 10)
       };
     },
-    updateCharacterProfile(characterId: string, fields: { name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string }) {
+    updateCharacterProfile(characterId: string, fields: {
+      name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string;
+      traits?: string[]; appearance?: string; quote?: string
+    }) {
       return db.transaction(() => {
         const before = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
         if (!before) throw new Error("Character not found.");
         const values = {
           name: validatedName(fields.name), shortDescription: profileText(fields.shortDescription, 500),
           archetype: profileText(fields.archetype, 120), origin: profileText(fields.origin, 500),
-          personalGoal: profileText(fields.personalGoal, 500), dmNotes: profileText(fields.dmNotes, 2000)
+          personalGoal: profileText(fields.personalGoal, 500), dmNotes: profileText(fields.dmNotes, 2000),
+          traits: JSON.stringify(fields.traits === undefined ? readCharacterTraits(before.traits) : profileTraits(fields.traits)),
+          appearance: profileText(fields.appearance ?? before.appearance, 1000),
+          quote: profileText(fields.quote ?? before.quote, 300)
         };
         const character = db.update(schema.characters).set(values).where(eq(schema.characters.id, characterId)).returning().get()!;
         appendActivity({ campaignId: before.campaignId, characterId, type: "character_profile_updated", details: { characterName: character.name } });
-        return character;
+        return characterRecord(character);
       });
     },
     listCatalogItemsByCampaign(campaignId: string): CampaignItem[] {
@@ -989,14 +1054,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         id: randomUUID(), campaignId, name: validatedName(name), createdAt: new Date().toISOString()
       }).returning().get();
       appendActivity({ campaignId, characterId: character.id, type: "character_created", details: { characterName: character.name } });
-      return character;
+      return characterRecord(character);
       });
     },
     archiveCharacter(characterId: string) {
       return db.transaction(() => {
         const character = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
         if (!character) throw new Error("Character not found.");
-        if (character.archivedAt) return character;
+        if (character.archivedAt) return characterRecord(character);
         const active = db.select({ id: schema.sessions.id }).from(schema.sessionCharacterAssignments)
           .innerJoin(schema.players, eq(schema.sessionCharacterAssignments.playerId, schema.players.id))
           .innerJoin(schema.sessions, eq(schema.sessionCharacterAssignments.sessionId, schema.sessions.id))
@@ -1005,7 +1070,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const updated = db.update(schema.characters).set({ archivedAt: new Date().toISOString() })
           .where(eq(schema.characters.id, characterId)).returning().get()!;
         appendActivity({ campaignId: character.campaignId, sessionId: activeSessionId(character.campaignId), characterId, type: "character_archived", details: { characterName: character.name } });
-        return updated;
+        return characterRecord(updated);
       });
     },
     restoreCharacter(characterId: string) {
@@ -1016,7 +1081,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         const updated = db.update(schema.characters).set({ archivedAt: null })
           .where(eq(schema.characters.id, characterId)).returning().get()!;
         appendActivity({ campaignId: character.campaignId, sessionId: activeSessionId(character.campaignId), characterId, type: "character_restored", details: { characterName: character.name } });
-        return updated;
+        return characterRecord(updated);
       });
     },
     grantInventoryItem(characterId: string, catalogItemId: string, quantity: number) {

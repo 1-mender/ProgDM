@@ -22,11 +22,15 @@ export function approvalTarget(characterId: string, characterName: string) {
   return characterId ? { characterId } : { characterName };
 }
 
-export function mergeProfileDraft<T extends { id: string; name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string }>(draft: T | null, previous: T | null, current: T): T {
+export function mergeProfileDraft<T extends { id: string; name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string; traits?: string[]; appearance?: string; quote?: string }>(draft: T | null, previous: T | null, current: T): T {
   if (!draft || !previous || draft.id !== current.id) return current;
   const merged = { ...current };
-  for (const field of ["name", "shortDescription", "archetype", "origin", "personalGoal", "dmNotes"] as const) {
-    if (draft[field] !== previous[field]) merged[field] = draft[field];
+  const fields = ["name", "shortDescription", "archetype", "origin", "personalGoal", "dmNotes", "traits", "appearance", "quote"] as const;
+  for (const field of fields) {
+    const same = Array.isArray(draft[field]) && Array.isArray(previous[field])
+      ? JSON.stringify(draft[field]) === JSON.stringify(previous[field])
+      : draft[field] === previous[field];
+    if (!same) Object.assign(merged, { [field]: draft[field] });
   }
   return merged;
 }

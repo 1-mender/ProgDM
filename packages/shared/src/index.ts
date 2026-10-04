@@ -63,6 +63,9 @@ export interface Character {
   origin: string;
   personalGoal: string;
   dmNotes: string;
+  traits: string[];
+  appearance: string;
+  quote: string;
 }
 
 export interface PersonalNote {
@@ -102,7 +105,7 @@ export interface PlayerState {
   sessionName: string;
   characterName: string | null;
   characterId: EntityId | null;
-  profile: Pick<Character, "shortDescription" | "archetype" | "origin" | "personalGoal"> | null;
+  profile: Pick<Character, "shortDescription" | "archetype" | "origin" | "personalGoal" | "traits" | "appearance" | "quote"> | null;
   canEdit: boolean;
   inventory: InventoryItem[];
   knowledge: KnowledgeEntry[];

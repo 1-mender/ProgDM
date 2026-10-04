@@ -46,10 +46,15 @@ test("Home digest uses only the server-projected player activity, at most three,
 });
 
 test("Profile uses only existing player-safe fields and guards its existing edit action", () => {
-  for (const field of ["characterName", "archetype", "origin", "shortDescription", "personalGoal"]) assert.ok(profile.includes(field));
+  for (const field of ["characterName", "archetype", "origin", "shortDescription", "personalGoal", "traits", "appearance", "quote"]) assert.ok(profile.includes(field));
   assert.equal(profile.includes("dmNotes"), false);
   assert.match(profile, /player\.canEdit/);
-  assert.match(profile, /onSave\(\{ shortDescription: description, personalGoal: goal \}\)/);
+  assert.match(profile, /onSave\(\{ shortDescription: description, personalGoal: goal, traits, appearance, quote \}\)/);
+  assert.match(profile, /traitDraft\.trim\(\)/);
+  assert.match(profile, /traits\.length >= 8/);
+  assert.match(profile, /Черты/);
+  assert.match(profile, /Внешность/);
+  assert.match(profile, /Цитата/);
 });
 
 test("Knowledge is filtered from the production-visible snapshot and maps only legacy categories", () => {

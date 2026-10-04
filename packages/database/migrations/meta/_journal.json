@@ -71,6 +71,13 @@
       "when": 1791071232207,
       "tag": "0009_past_shinko_yamashiro",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1791072749411,
+      "tag": "0010_fearless_thundra",
+      "breakpoints": true
     }
   ]
 }
