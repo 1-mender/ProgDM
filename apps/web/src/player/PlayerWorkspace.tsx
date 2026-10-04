@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useLayoutEffect, useState } from "react";
 import { Settings } from "lucide-react";
 import type { PlayerInventoryTransferTarget, PlayerJournalCursor, PlayerJournalPage, PlayerState } from "@progdm/shared";
 import { PlayerApiError, PlayerNetworkError, playerGet, playerPost } from "./api";
@@ -8,7 +8,7 @@ import { KnowledgePage } from "./KnowledgePage";
 import { JournalPage, type JournalTab } from "./JournalPage";
 import { PlayerShell } from "./PlayerShell";
 import { ProfilePage } from "./ProfilePage";
-import type { PlayerView } from "./model";
+import { resetPlayerScroll, type PlayerView } from "./model";
 import "./player.css";
 
 export function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState; credential: string; refresh: () => Promise<void> }) {
@@ -20,6 +20,10 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  useLayoutEffect(() => {
+    resetPlayerScroll(window);
+  }, [view, journalTab]);
 
   const navigate = (next: PlayerView) => {
     if (next === "settings") setDisplayName(player.displayName);

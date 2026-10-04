@@ -53,6 +53,15 @@ function validatedDescription(description: string): string {
   return value;
 }
 
+const KNOWLEDGE_CATEGORIES: readonly KnowledgeCategory[] = ["character", "place", "creature", "item", "event", "fact"];
+
+function validatedKnowledgeCategory(value: unknown): KnowledgeCategory {
+  if (typeof value !== "string" || !KNOWLEDGE_CATEGORIES.includes(value as KnowledgeCategory)) {
+    throw new Error("Knowledge category is invalid.");
+  }
+  return value as KnowledgeCategory;
+}
+
 const INVENTORY_CATEGORIES: readonly InventoryCategory[] = ["key", "document", "tool", "consumable", "equipment", "artifact", "special"];
 const INVENTORY_RARITIES: readonly InventoryRarity[] = ["common", "uncommon", "rare", "unique"];
 const EQUIPMENT_SLOTS: readonly EquipmentSlot[] = ["primary", "secondary", "armor", "accessory", "tool", "special"];
@@ -1936,6 +1945,20 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).returning().get();
       appendActivity({ campaignId, type: "knowledge_created", knowledgeEntryId: entry.id, details: { knowledgeTitle: entry.title } });
       return entry;
+      });
+    },
+    updateKnowledgeEntry(campaignId: string, entryId: string, fields: {
+      category: KnowledgeCategory; title: string; description: string
+    }) {
+      const category = validatedKnowledgeCategory(fields.category);
+      const title = validatedName(fields.title);
+      const description = validatedDescription(fields.description);
+      return db.transaction(() => {
+        const entry = db.select({ id: schema.knowledgeEntries.id }).from(schema.knowledgeEntries)
+          .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).get();
+        if (!entry) throw new Error("Knowledge entry is not in this campaign.");
+        return db.update(schema.knowledgeEntries).set({ category, title, description })
+          .where(and(eq(schema.knowledgeEntries.id, entryId), eq(schema.knowledgeEntries.campaignId, campaignId))).returning().get()!;
       });
     },
     setKnowledgeVisibility(entryId: string, visibility: KnowledgeVisibility, characterId?: string) {

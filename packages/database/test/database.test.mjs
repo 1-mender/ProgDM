@@ -1751,6 +1751,85 @@ test("Player Knowledge projection exposes only permitted summaries and deduplica
   assert.equal(outsideProjection.facts[0].body, "OUTSIDE_SESSION_FACT");
 });
 
+test("Knowledge Entry correction preserves identity, visibility, Facts and reveals without Player activity", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Knowledge corrections");
+  const otherCampaign = db.createCampaign("Other campaign");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "Current session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "Mira player", "knowledge-correction-player");
+  db.approvePlayer(player.id, { characterId: mira.id });
+
+  const visible = db.createKnowledge(campaign.id, "character", "Old title", "Old visible summary.");
+  db.setKnowledgeVisibility(visible.id, "character", mira.id);
+  const visibleFact = db.createKnowledgeFact(campaign.id, visible.id, "A revealed fact.");
+  db.revealKnowledgeFactToCharacter(campaign.id, visible.id, visibleFact.id, mira.id);
+  const hidden = db.createKnowledge(campaign.id, "fact", "Hidden title", "HIDDEN_SUMMARY_MUST_STAY_HIDDEN");
+  const hiddenFact = db.createKnowledgeFact(campaign.id, hidden.id, "A party fact.");
+  db.revealKnowledgeFactToParty(campaign.id, hidden.id, hiddenFact.id);
+  const activityBefore = db.listCampaignActivity(campaign.id);
+  const revealsBefore = db.exportCampaign(campaign.id).knowledgeFactReveals;
+
+  const updatedVisible = db.updateKnowledgeEntry(campaign.id, visible.id, {
+    category: "place", title: "Updated title", description: "Updated visible summary."
+  });
+  const updatedHidden = db.updateKnowledgeEntry(campaign.id, hidden.id, {
+    category: "event", title: "Updated hidden title", description: "UPDATED_HIDDEN_SUMMARY"
+  });
+  assert.equal(updatedVisible.id, visible.id);
+  assert.equal(updatedVisible.visibility, "character");
+  assert.equal(updatedVisible.visibleToCharacterId, mira.id);
+  assert.equal(updatedHidden.visibility, "hidden");
+  assert.equal(updatedHidden.visibleToCharacterId, null);
+  assert.deepEqual(db.listKnowledgeFacts(campaign.id, visible.id).map(({ id, body }) => ({ id, body })),
+    [{ id: visibleFact.id, body: "A revealed fact." }]);
+  assert.deepEqual(db.listKnowledgeFacts(campaign.id, hidden.id).map(({ id }) => id), [hiddenFact.id]);
+  assert.deepEqual(db.exportCampaign(campaign.id).knowledgeFactReveals, revealsBefore);
+  assert.deepEqual(db.listCampaignActivity(campaign.id), activityBefore);
+
+  const state = db.getPlayerState("knowledge-correction-player");
+  const visibleProjection = state.knowledge.find(({ id }) => id === visible.id);
+  assert.equal(visibleProjection.title, "Updated title");
+  assert.equal(visibleProjection.category, "place");
+  assert.equal(visibleProjection.summary, "Updated visible summary.");
+  assert.deepEqual(visibleProjection.facts.map(({ id }) => id), [visibleFact.id]);
+  const hiddenProjection = state.knowledge.find(({ id }) => id === hidden.id);
+  assert.equal(hiddenProjection.title, "Updated hidden title");
+  assert.equal(hiddenProjection.category, "event");
+  assert.equal(hiddenProjection.summary, null);
+  assert.equal(JSON.stringify(state.knowledge).includes("UPDATED_HIDDEN_SUMMARY"), false);
+
+  const foreignEntry = db.createKnowledge(otherCampaign.id, "fact", "Foreign", "Foreign summary.");
+  assert.throws(() => db.updateKnowledgeEntry(campaign.id, foreignEntry.id, {
+    category: "fact", title: "Cross campaign", description: "Must fail."
+  }), /not in this campaign/);
+  for (const fields of [
+    { category: "quest", title: "Valid", description: "Valid." },
+    { category: "fact", title: " \n ", description: "Valid." },
+    { category: "fact", title: "x".repeat(121), description: "Valid." },
+    { category: "fact", title: "Valid", description: "\t " },
+    { category: "fact", title: "Valid", description: "x".repeat(2001) }
+  ]) assert.throws(() => db.updateKnowledgeEntry(campaign.id, visible.id, fields), /invalid|between 1 and/);
+  assert.deepEqual(db.listCampaignActivity(campaign.id), activityBefore, "correction and invalid edits do not add Activity");
+});
+
+test("one Knowledge visibility transition creates exactly one safe Player event", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Single reveal");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "Current");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "Mira", "single-knowledge-reveal");
+  db.approvePlayer(player.id, { characterId: character.id });
+  const entry = db.createKnowledge(campaign.id, "place", "Old tower", "One short description.");
+  db.setKnowledgeVisibility(entry.id, "party");
+  const events = db.getPlayerState("single-knowledge-reveal").recentActivity
+    .filter((event) => event.kind === "knowledge_summary_opened" && event.knowledgeEntryId === entry.id);
+  assert.equal(events.length, 1);
+  assert.equal(db.listCampaignActivity(campaign.id).filter((event) => event.type === "knowledge_visibility_changed").length, 1);
+});
+
 test("Player activity projection is safe, audience-scoped, and uses the existing read marker", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Activity projection");

@@ -292,6 +292,14 @@ dialog::backdrop { background: #20252a66; }
 .knowledge-visibility { color: #777e85; font-size: 12px; }
 .knowledge-visibility.party { color: #286f63; }
 .knowledge-visibility.character { color: #8a6618; }
+.knowledge-entry-edit-button { margin-top: 12px; }
+.knowledge-entry-editor { display: grid; gap: 10px; min-width: 0; margin-top: 12px; }
+.knowledge-entry-editor .field { min-width: 0; }
+.knowledge-entry-editor input,
+.knowledge-entry-editor select,
+.knowledge-entry-editor textarea { width: 100%; }
+.knowledge-entry-edit-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.knowledge-entry-edit-actions button { min-height: 42px; }
 .knowledge-controls { min-width: 0; display: grid; align-items: center; gap: 8px; }
 .knowledge-controls button { width: 100%; min-height: 40px; }
 .knowledge-add { margin-bottom: 16px; }

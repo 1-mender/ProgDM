@@ -1040,6 +1040,84 @@ test("DM accepts only universal knowledge categories and players cannot create o
   assert.equal(database.listKnowledgeByCampaign(campaign.id).length, 6);
 });
 
+test("DM can correct Knowledge Entry content without changing grants, visibility or Player Activity", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Entry editing");
+  const otherCampaign = database.createCampaign("Other campaign");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const visible = database.createKnowledge(campaign.id, "character", "Old contact", "Old summary.");
+  database.setKnowledgeVisibility(visible.id, "party");
+  const visibleFact = database.createKnowledgeFact(campaign.id, visible.id, "Known detail.");
+  const visibleReveal = database.revealKnowledgeFactToParty(campaign.id, visible.id, visibleFact.id).reveal;
+  const hidden = database.createKnowledge(campaign.id, "fact", "Sealed record", "HIDDEN_SUMMARY");
+  const hiddenFact = database.createKnowledgeFact(campaign.id, hidden.id, "One separately opened fact.");
+  const hiddenReveal = database.revealKnowledgeFactToParty(campaign.id, hidden.id, hiddenFact.id).reveal;
+  const foreign = database.createKnowledge(otherCampaign.id, "fact", "Foreign", "Foreign description.");
+  const session = database.createSession(campaign.id, "Current");
+  database.activateSession(session.id);
+  const playerToken = "V".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira player", playerToken });
+  database.approvePlayer(database.listPlayersByCampaign(campaign.id)[0].id, { characterId: mira.id });
+
+  const path = `/api/dm/campaigns/${campaign.id}/knowledge/${visible.id}`;
+  assert.equal((await app.inject({ method: "PATCH", url: path, payload: {
+    category: "place", title: "No authorization", description: "Denied."
+  } })).statusCode, 401);
+  const badBodies = [
+    { category: "quest", title: "Valid", description: "Valid." },
+    { category: "fact", title: "  \n", description: "Valid." },
+    { category: "fact", title: "Valid", description: "\t " },
+    { category: "fact", title: "x".repeat(121), description: "Valid." },
+    { category: "fact", title: "Valid", description: "x".repeat(2001) },
+    { category: "fact", title: "Valid", description: "Valid.", visibility: "party" }
+  ];
+  for (const payload of badBodies) assert.equal((await patch(app, path, payload)).statusCode, 400);
+  assert.equal((await patch(app, `/api/dm/campaigns/not-a-uuid/knowledge/${visible.id}`, {
+    category: "fact", title: "Valid", description: "Valid."
+  })).statusCode, 400);
+  assert.equal((await patch(app, `/api/dm/campaigns/${campaign.id}/knowledge/${foreign.id}`, {
+    category: "fact", title: "Cross campaign", description: "Must fail."
+  })).statusCode, 404);
+  assert.equal((await patch(app, `/api/dm/campaigns/${otherCampaign.id}/knowledge/${visible.id}`, {
+    category: "fact", title: "Cross campaign", description: "Must fail."
+  })).statusCode, 404);
+
+  const activityBefore = database.listCampaignActivity(campaign.id);
+  const update = await patch(app, path, { category: "place", title: "Updated contact", description: "Current visible summary." });
+  assert.equal(update.statusCode, 200);
+  assert.deepEqual(update.json().entry, { ...visible, category: "place", title: "Updated contact", description: "Current visible summary.", visibility: "party" });
+  const hiddenUpdate = await patch(app, `/api/dm/campaigns/${campaign.id}/knowledge/${hidden.id}`, {
+    category: "event", title: "Updated sealed record", description: "UPDATED_HIDDEN_SUMMARY"
+  });
+  assert.equal(hiddenUpdate.statusCode, 200);
+  assert.equal((await patch(app, path, { category: "fact", title: "Valid", description: "Valid.", extra: true })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PATCH", url: `/api/dm/campaigns/${campaign.id}/knowledge/not-a-uuid`, headers, payload: {
+    category: "fact", title: "Valid", description: "Valid."
+  } })).statusCode, 400);
+
+  const exported = database.exportCampaign(campaign.id);
+  assert.equal(exported.knowledge.find(({ id }) => id === visible.id).visibility, "party");
+  assert.equal(exported.knowledge.find(({ id }) => id === visible.id).id, visible.id);
+  assert.deepEqual(exported.knowledgeFacts.filter(({ knowledgeEntryId }) => knowledgeEntryId === visible.id).map(({ id }) => id), [visibleFact.id]);
+  assert.deepEqual(exported.knowledgeFactReveals.map(({ id }) => id), [visibleReveal.id, hiddenReveal.id]);
+  assert.equal(exported.knowledge.find(({ id }) => id === hidden.id).visibility, "hidden");
+  assert.equal(exported.knowledge.find(({ id }) => id === hidden.id).visibleToCharacterId, null);
+  assert.deepEqual(database.listCampaignActivity(campaign.id), activityBefore, "Entry correction is not a Player Activity event");
+
+  const playerState = await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${playerToken}` } });
+  assert.equal(playerState.statusCode, 200);
+  const visibleProjection = playerState.json().knowledge.find(({ id }) => id === visible.id);
+  assert.equal(visibleProjection.title, "Updated contact");
+  assert.equal(visibleProjection.category, "place");
+  assert.equal(visibleProjection.summary, "Current visible summary.");
+  const hiddenProjection = playerState.json().knowledge.find(({ id }) => id === hidden.id);
+  assert.equal(hiddenProjection.title, "Updated sealed record");
+  assert.equal(hiddenProjection.summary, null);
+  assert.equal(JSON.stringify(playerState.json()).includes("UPDATED_HIDDEN_SUMMARY"), false);
+  assert.equal((await app.inject({ method: "PATCH", url: `/api/player/knowledge/${visible.id}/visibility`,
+    headers: { authorization: `Bearer ${playerToken}` }, payload: { visibility: "party" } })).statusCode, 404);
+});
+
 test("DM prepares Knowledge Facts through campaign-scoped APIs without changing reveal history", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Facts campaign");

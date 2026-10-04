@@ -604,6 +604,35 @@ export function createApp(options: {
         }
       }
     );
+    dm.patch<{ Params: { campaignId: string; entryId: string }; Body: { category: KnowledgeCategory; title: string; description: string } }>(
+      "/api/dm/campaigns/:campaignId/knowledge/:entryId", {
+        schema: {
+          params: { type: "object", additionalProperties: false, required: ["campaignId", "entryId"], properties: {
+            campaignId: { type: "string", format: "uuid" }, entryId: { type: "string", format: "uuid" }
+          } },
+          body: {
+            type: "object", additionalProperties: false, required: ["category", "title", "description"],
+            properties: {
+              category: { type: "string", enum: ["character", "place", "creature", "item", "event", "fact"] },
+              title: { type: "string", minLength: 1, maxLength: 120, pattern: "\\S" },
+              description: { type: "string", minLength: 1, maxLength: 2000, pattern: "\\S" }
+            }
+          }
+        }
+      }, async (request, reply) => {
+        try {
+          return { entry: database.updateKnowledgeEntry(request.params.campaignId, request.params.entryId, request.body) };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (message === "Knowledge entry is not in this campaign.") return reply.code(404).send({ message: "Запись не найдена в этой кампании." });
+          if (message === "Knowledge category is invalid." || message === "Name must contain between 1 and 120 characters." ||
+              message === "Description must contain between 1 and 2000 characters.") {
+            return reply.code(400).send({ message: "Проверьте категорию, название и краткое описание записи." });
+          }
+          throw error;
+        }
+      }
+    );
     const knowledgeFactParams = {
       type: "object", required: ["campaignId", "entryId"], properties: {
         campaignId: { type: "string", format: "uuid" }, entryId: { type: "string", format: "uuid" }

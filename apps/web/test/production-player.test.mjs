@@ -192,7 +192,7 @@ test("Journal timeline groups by local date and session, formats Russian time, a
   assert.match(journalPage, /onClick=\{retry\}/);
   assert.equal(model.journalActivityPresentation(events[0]).destination, undefined, "Inventory events have no fake item route");
   assert.match(journalPage, /<PersonalNotesPage notes=\{player\.notes\} busy=\{busy\} canEdit=\{player\.canEdit\}/);
-  assert.match(personalNotes, /disabled=\{!canEdit\}/);
+  assert.doesNotMatch(personalNotes, /disabled=\{!canEdit\}/);
   assert.match(personalNotes, /\{canEdit && <button className="prod-secondary"/);
 });
 
@@ -275,6 +275,41 @@ test("Personal Notes uses live API state, production metadata labels and an edit
   assert.match(personalNotes, /maxLength=\{2000\}/);
   assert.equal(personalNotes.includes("localStorage"), false);
   assert.equal(personalNotes.includes("checkbox/checkmark"), false);
+});
+
+test("Personal Notes open in read mode; edit, cancel, create and pin stay separate", () => {
+  assert.match(personalNotes, /useLayoutEffect\(\(\) => \{\s*window\.scrollTo\(0, 0\);\s*\}, \[selectedNoteId, editing\]\);/);
+  assert.match(personalNotes, /onClick=\{\(\) => setSelectedNoteId\(note\.id\)\}/);
+  assert.match(personalNotes, /aria-label=\{`Открыть заметку:/);
+  assert.doesNotMatch(personalNotes, /className="prod-personal-note-copy"[^>]*disabled/);
+  assert.match(personalNotes, /<p className="prod-note-detail-body">\{selectedNote\.body\}<\/p>/);
+  assert.match(personalNotes, /{canEdit && <button className="prod-secondary" type="button" onClick=\{\(\) => startEdit\(selectedNote\)\}>Редактировать<\/button>}/);
+  assert.match(personalNotes, /{selectedNote\.pinned && <span className="prod-note-marker"><Pin aria-hidden="true" \/>Закреплена<\/span>}/);
+  assert.match(personalNotes, /if \(editing === "new"\) setSelectedNoteId\(null\);\s*setEditing\(null\);/);
+  assert.match(personalNotes, /if \(await onSave\(noteId, \{ title, body, marker, pinned \}\)\) \{\s*setEditing\(null\);/);
+  assert.match(personalNotes, /!editing && !selectedNote && canEdit && <button className="prod-secondary" type="button" onClick=\{startCreate\}>/);
+  assert.match(personalNotes, /onClick=\{\(\) => void onSave\(note\.id, \{ title: note\.title, body: note\.body, marker: note\.marker, pinned: !note\.pinned \}\)\}/);
+});
+
+test("Player navigation resets scroll only on view or journal-tab navigation, not polling", () => {
+  const calls = [];
+  model.resetPlayerScroll({ scrollTo: (...args) => calls.push(args) });
+  assert.deepEqual(calls, [[0, 0]]);
+  assert.match(workspace, /useLayoutEffect\(\(\) => \{\s*resetPlayerScroll\(window\);\s*\}, \[view, journalTab\]\);/);
+  assert.doesNotMatch(workspace, /\[view, journalTab, player\]|\[view, journalTab, refresh\]/);
+  assert.match(home, /onPinnedNotes/);
+  assert.match(workspace, /setJournalTab\("notes"\);\s*navigate\("journal"\)/);
+  assert.match(workspace, /onOpenKnowledge=\{\(entryId\) => \{ setKnowledgeFocusId\(entryId\); navigate\("knowledge"\); \}\}/);
+});
+
+test("DM Knowledge Entry editor updates summary content separately from access and Facts controls", () => {
+  assert.ok(dmWorkspace.includes("/api/dm/campaigns/${selected.id}/knowledge/${draft.id}"));
+  assert.match(dmWorkspace, /Редактировать запись/);
+  assert.match(dmWorkspace, /Сохранить/);
+  for (const field of ["Название", "Категория", "Краткое описание"]) assert.ok(dmWorkspace.includes(field));
+  assert.match(dmWorkspace, /setNotice\("Запись обновлена\."\)/);
+  assert.match(dmWorkspace, /<section className="knowledge-facts"/);
+  assert.match(dmWorkspace, /setEditingKnowledgeEntry\(null\);\s*setNotice\("Запись обновлена\."\)/);
 });
 
 test("unused Quest types stay out of the shared production contract", () => {

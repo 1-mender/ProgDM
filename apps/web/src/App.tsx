@@ -174,6 +174,7 @@ function DmWorkspace() {
   const [knowledgeCategory, setKnowledgeCategory] = useState<KnowledgeCategory>("fact");
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
+  const [editingKnowledgeEntry, setEditingKnowledgeEntry] = useState<Pick<KnowledgeEntry, "id" | "category" | "title" | "description"> | null>(null);
   const [knowledgeTargetId, setKnowledgeTargetId] = useState("");
   const [knowledgeFacts, setKnowledgeFacts] = useState<KnowledgeFact[]>([]);
   const [knowledgeFactReveals, setKnowledgeFactReveals] = useState<KnowledgeFactReveal[]>([]);
@@ -310,7 +311,7 @@ function DmWorkspace() {
   const campaignActivity = state?.activity.filter((event) => event.campaignId === selectedId) ?? [];
   const campaignKnowledge = state?.knowledge.filter((entry) => entry.campaignId === selectedId) ?? [];
   const filteredKnowledge = campaignKnowledge.filter((entry) => entry.title.toLocaleLowerCase("ru").includes(knowledgeSearch.trim().toLocaleLowerCase("ru")));
-  const selectedKnowledge = filteredKnowledge.find((entry) => entry.id === selectedKnowledgeId) ?? filteredKnowledge[0];
+  const selectedKnowledge = campaignKnowledge.find((entry) => entry.id === selectedKnowledgeId) ?? filteredKnowledge[0];
   const liveRevealCharacters = [...new Map(grantablePlayers.flatMap((player) => {
     const character = campaignCharacters.find((item) => item.id === player.characterId);
     return character && !character.archivedAt ? [[character.id, character] as const] : [];
@@ -392,7 +393,7 @@ function DmWorkspace() {
     profileFieldBase.current = {}; setProfileFieldDraft({});
     setOpenedCharacterId(""); setCharacterOverview(null); setProfileDraft(null);
   }
-  function chooseCampaign(id: string) { closeCharacter(); historyRequests.current.invalidate(); setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setSection("sessions"); setWorkspaceMode("prepare"); setFullActivity(null); setKnowledgeTargetId(""); setSelectedKnowledgeId(""); setKnowledgeSearch(""); }
+  function chooseCampaign(id: string) { closeCharacter(); historyRequests.current.invalidate(); setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setSection("sessions"); setWorkspaceMode("prepare"); setFullActivity(null); setKnowledgeTargetId(""); setSelectedKnowledgeId(""); setEditingKnowledgeEntry(null); setKnowledgeSearch(""); }
   function showSection(next: DmSection) {
     setSection(next);
     historyRequests.current.invalidate();
@@ -555,6 +556,18 @@ function DmWorkspace() {
       });
       setKnowledgeTitle(""); setKnowledgeDescription("");
       setNotice("Запись добавлена и пока скрыта от игроков.");
+    });
+  }
+  function saveKnowledgeEntry(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || !editingKnowledgeEntry) return;
+    const draft = editingKnowledgeEntry;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selected.id}/knowledge/${draft.id}`, {
+        category: draft.category, title: draft.title.trim(), description: draft.description.trim()
+      }, 10000, "PATCH");
+      setEditingKnowledgeEntry(null);
+      setNotice("Запись обновлена.");
     });
   }
   function revealNextFact(audience: KnowledgeFactRevealAudience, characterId?: string) {
@@ -1090,9 +1103,9 @@ function DmWorkspace() {
               </div>
               <button className="secondary" disabled={locked || !knowledgeTitle.trim() || !knowledgeDescription.trim()}><Plus />Добавить скрытую запись</button>
             </form></details>}
-            <div className="field knowledge-search"><label htmlFor="knowledge-search">Найти запись</label><input id="knowledge-search" value={knowledgeSearch} onChange={(event) => { setKnowledgeSearch(event.target.value); setSelectedKnowledgeId(""); setKnowledgeTargetId(characterOverview?.character.id ?? ""); }} placeholder="Название" /></div>
-            {campaignKnowledge.length === 0 ? <p className="empty-list">Записей пока нет</p> : filteredKnowledge.length === 0 ? <p className="empty-list">Ничего не найдено</p> : <div className="knowledge-workspace">
-              <ul className="knowledge-index">{filteredKnowledge.map((entry) => <li key={entry.id}><button className={selectedKnowledge?.id === entry.id ? "selected" : ""} onClick={() => { setSelectedKnowledgeId(entry.id); setKnowledgeTargetId(entry.visibleToCharacterId ?? characterOverview?.character.id ?? ""); }}>
+            <div className="field knowledge-search"><label htmlFor="knowledge-search">Найти запись</label><input id="knowledge-search" value={knowledgeSearch} onChange={(event) => { setKnowledgeSearch(event.target.value); setSelectedKnowledgeId(""); setEditingKnowledgeEntry(null); setKnowledgeTargetId(characterOverview?.character.id ?? ""); }} placeholder="Название" /></div>
+            {campaignKnowledge.length === 0 ? <p className="empty-list">Записей пока нет</p> : filteredKnowledge.length === 0 && !selectedKnowledge ? <p className="empty-list">Ничего не найдено</p> : <div className="knowledge-workspace">
+              <ul className="knowledge-index">{filteredKnowledge.map((entry) => <li key={entry.id}><button className={selectedKnowledge?.id === entry.id ? "selected" : ""} onClick={() => { setSelectedKnowledgeId(entry.id); setEditingKnowledgeEntry(null); setKnowledgeTargetId(entry.visibleToCharacterId ?? characterOverview?.character.id ?? ""); }}>
                 <span>{entry.title}</span><small>{knowledgeCategories[entry.category]} · {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Вся партия" : "Персонаж"}</small>
               </button></li>)}</ul>
               {selectedKnowledge && (() => {
@@ -1103,14 +1116,32 @@ function DmWorkspace() {
                 const partyRevealedCount = knowledgeFacts.filter((fact) => partyRevealedIds.has(fact.id)).length;
                 return <div className="knowledge-detail">
                   <p className="eyebrow knowledge-summary-label">Краткое описание · управление доступом</p>
-                  <div className="knowledge-entry-copy">
-                    <div className="knowledge-entry-heading"><span className="knowledge-category">{knowledgeCategories[entry.category]}</span>
-                      <h3>{entry.title}</h3></div>
-                    <p>{entry.description}</p>
-                    <span className={"knowledge-visibility " + entry.visibility}>
-                      {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Открыто всей партии" : "Знает персонаж: " + (state?.characters.find((character) => character.id === entry.visibleToCharacterId)?.name ?? "персонаж")}
-                    </span>
-                  </div>
+                  {editingKnowledgeEntry?.id === entry.id ? <form className="knowledge-entry-editor" onSubmit={saveKnowledgeEntry}>
+                    <div className="field"><label htmlFor={`knowledge-edit-title-${entry.id}`}>Название</label>
+                      <input id={`knowledge-edit-title-${entry.id}`} value={editingKnowledgeEntry.title} maxLength={120} required disabled={locked}
+                        onChange={(event) => setEditingKnowledgeEntry({ ...editingKnowledgeEntry, title: event.target.value })} /></div>
+                    <div className="field"><label htmlFor={`knowledge-edit-category-${entry.id}`}>Категория</label>
+                      <select id={`knowledge-edit-category-${entry.id}`} value={editingKnowledgeEntry.category} disabled={locked}
+                        onChange={(event) => setEditingKnowledgeEntry({ ...editingKnowledgeEntry, category: event.target.value as KnowledgeCategory })}>
+                        {Object.entries(knowledgeCategories).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                      </select></div>
+                    <div className="field"><label htmlFor={`knowledge-edit-description-${entry.id}`}>Краткое описание</label>
+                      <textarea id={`knowledge-edit-description-${entry.id}`} value={editingKnowledgeEntry.description} maxLength={2000} required disabled={locked} rows={4}
+                        onChange={(event) => setEditingKnowledgeEntry({ ...editingKnowledgeEntry, description: event.target.value })} /></div>
+                    <div className="knowledge-entry-edit-actions"><button className="secondary" type="button" disabled={locked} onClick={() => setEditingKnowledgeEntry(null)}>Отмена</button>
+                      <button className="primary" disabled={locked || !editingKnowledgeEntry.title.trim() || !editingKnowledgeEntry.description.trim()}>Сохранить</button></div>
+                  </form> : <>
+                    <div className="knowledge-entry-copy">
+                      <div className="knowledge-entry-heading"><span className="knowledge-category">{knowledgeCategories[entry.category]}</span>
+                        <h3>{entry.title}</h3></div>
+                      <p>{entry.description}</p>
+                      <span className={"knowledge-visibility " + entry.visibility}>
+                        {entry.visibility === "hidden" ? "Скрыто" : entry.visibility === "party" ? "Открыто всей партии" : "Знает персонаж: " + (state?.characters.find((character) => character.id === entry.visibleToCharacterId)?.name ?? "персонаж")}
+                      </span>
+                    </div>
+                    <button className="secondary knowledge-entry-edit-button" type="button" disabled={locked}
+                      onClick={() => setEditingKnowledgeEntry({ id: entry.id, category: entry.category, title: entry.title, description: entry.description })}><Pencil />Редактировать запись</button>
+                  </>}
                   <div className="knowledge-quick-actions">
                     <button className="secondary" disabled={locked || entry.visibility === "party"} onClick={() => saveKnowledgeVisibility(entry, { visibility: "party", characterId: "" })}><Eye />Открыть описание партии</button>
                     {characterOverview?.character.campaignId === selectedId && <button className="secondary" disabled={locked || (entry.visibility === "character" && entry.visibleToCharacterId === characterOverview.character.id)} onClick={() => saveKnowledgeVisibility(entry, { visibility: "character", characterId: characterOverview.character.id })}><Eye />Открыть описание: {characterOverview.character.name}</button>}

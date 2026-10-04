@@ -11,6 +11,20 @@ export const PLAYER_NAVIGATION: { id: Exclude<PlayerView, "settings">; label: st
   { id: "profile", label: "Профиль", icon: UserRound }
 ];
 
+export function resetPlayerScroll(target: { scrollTo: (x: number, y: number) => void }) {
+  target.scrollTo(0, 0);
+}
+
+export const MAX_BAG_EMPTY_PLACEHOLDERS = 6;
+
+export function bagPlaceholderCount(freeSlots: number) {
+  return Math.min(Math.max(0, freeSlots), MAX_BAG_EMPTY_PLACEHOLDERS);
+}
+
+export function bagUnrenderedFreeSlots(freeSlots: number) {
+  return Math.max(0, freeSlots - bagPlaceholderCount(freeSlots));
+}
+
 export const KNOWLEDGE_CATEGORY_LABELS: Record<KnowledgeCategory, string> = {
   character: "Персонажи",
   place: "Места",

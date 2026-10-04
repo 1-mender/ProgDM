@@ -36,8 +36,14 @@ test("bag slot count is rows, not item quantity, and free slot rendering is capp
   const rows = [item({ quantity: 10 }), item({ id: "equipped", equippedSlot: "primary" }), item({ id: "row-2", quantity: 3 })];
   assert.equal(model.inventoryBagSlotsUsed(rows), 2);
   assert.equal(model.inventoryBagSlotsUsed([]), 0);
-  assert.match(page, /Math\.min\(freeSlots, MAX_EMPTY_CELLS\)/);
-  assert.match(page, /\+ \{freeSlots - MAX_EMPTY_CELLS\} свободных слотов/);
+  assert.equal(model.bagPlaceholderCount(12), 6);
+  assert.equal(model.bagUnrenderedFreeSlots(12), 6);
+  assert.equal(model.bagPlaceholderCount(3), 3);
+  assert.equal(model.bagUnrenderedFreeSlots(3), 0);
+  assert.equal(model.bagPlaceholderCount(0), 0);
+  assert.match(page, /bagPlaceholderCount\(freeSlots\)/);
+  assert.match(page, /\+ \{hiddenFreeSlots\} свободных слотов/);
+  assert.match(page, /bag\.map\(\(item\) => <InventoryCell/);
   assert.match(css, /\.prod-bag-grid\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
 });
 

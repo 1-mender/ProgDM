@@ -3,10 +3,9 @@ import { ChevronRight, Minus, Plus, X } from "lucide-react";
 import type { PlayerInventoryTransferTarget, PlayerInventoryItem, PlayerState } from "@progdm/shared";
 import {
   canEquipInventoryItem, canUnequipInventoryItem, EQUIPMENT_SLOT_ICONS, EQUIPMENT_SLOT_LABELS, EQUIPMENT_SLOT_ORDER,
-  INVENTORY_CATEGORY_ICONS, INVENTORY_CATEGORY_LABELS, INVENTORY_RARITY_LABELS, characterInitials, createInventoryOperationId, inventoryBagSlotsUsed
+  INVENTORY_CATEGORY_ICONS, INVENTORY_CATEGORY_LABELS, INVENTORY_RARITY_LABELS, bagPlaceholderCount, bagUnrenderedFreeSlots,
+  characterInitials, createInventoryOperationId, inventoryBagSlotsUsed
 } from "./model";
-
-const MAX_EMPTY_CELLS = 12;
 
 export function InventoryPage({ player, busy, actionError, onEquip, onUnequip, onLoadTransferTargets, onTransfer, onDiscard }: {
   player: PlayerState;
@@ -32,7 +31,8 @@ export function InventoryPage({ player, busy, actionError, onEquip, onUnequip, o
   const bagSlotsUsed = inventoryBagSlotsUsed(player.inventory);
   const capacity = player.inventoryCapacity;
   const freeSlots = capacity === null ? 0 : Math.max(0, capacity - bagSlotsUsed);
-  const emptyCells = Math.min(freeSlots, MAX_EMPTY_CELLS);
+  const emptyCells = bagPlaceholderCount(freeSlots);
+  const hiddenFreeSlots = bagUnrenderedFreeSlots(freeSlots);
   const selectedItem = selectedId ? player.inventory.find((item) => item.id === selectedId) ?? null : null;
 
   useEffect(() => {
@@ -118,7 +118,7 @@ export function InventoryPage({ player, busy, actionError, onEquip, onUnequip, o
         ? <div className="prod-bag-grid" aria-label={capacity === null ? "Сумка" : `Сумка: занято ${bagSlotsUsed} из ${capacity} слотов`}>
             {bag.map((item) => <InventoryCell key={item.id} item={item} onSelect={() => setSelectedId(item.id)} />)}
             {Array.from({ length: emptyCells }, (_, index) => <div key={`empty-${index}`} className="prod-bag-cell is-empty" aria-label="Пустой слот"><span>Пусто</span></div>)}
-            {freeSlots > MAX_EMPTY_CELLS && <p className="prod-free-slots">+ {freeSlots - MAX_EMPTY_CELLS} свободных слотов</p>}
+            {hiddenFreeSlots > 0 && <p className="prod-free-slots">+ {hiddenFreeSlots} свободных слотов</p>}
           </div>
         : <p className="prod-empty">В сумке пока нет предметов.</p>}
     </section>
