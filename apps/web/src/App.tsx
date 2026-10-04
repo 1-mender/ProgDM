@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Archive, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, ScrollText, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
+import { Archive, ArrowDown, ArrowUp, BookOpen, CalendarDays, Check, CircleStop, ClipboardList, Copy, Database, Download, Eye, EyeOff, FolderPlus, KeyRound, Link2, LogOut, PackagePlus, Pencil, Play, Plus, QrCode, Radio, RefreshCw, RotateCcw, ScrollText, Trash2, Upload, UserCheck, UserPlus, UserX, Users, X } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import type { ActivityType, Campaign, CampaignActivity, Character, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
+import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, InventoryItem, KnowledgeCategory, KnowledgeEntry, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
 import { approvalTarget, LatestRequest, mergeProfileDraft } from "./sync";
 
@@ -27,7 +27,7 @@ function activitySummary(event: CampaignActivity): string {
 }
 const sessionPlural = new Intl.PluralRules("ru");
 type BackupInfo = { id: string; createdAt: string; size: number };
-type CharacterOverview = { character: Character; player: { id: string; displayName: string } | null; inventory: InventoryItem[]; knowledge: KnowledgeEntry[]; notes: PersonalNote[]; activity: CampaignActivity[] };
+type CharacterOverview = { character: Character; player: { id: string; displayName: string } | null; profileFields: CharacterProfileFieldValue[]; inventory: InventoryItem[]; knowledge: KnowledgeEntry[]; notes: PersonalNote[]; activity: CampaignActivity[] };
 type DmSection = "sessions" | "players" | "join" | "characters" | "character" | "catalog" | "knowledge" | "history" | "data";
 function ActivityList({ activity }: { activity: CampaignActivity[] }) {
   return activity.length ? <ol className="activity-list">{activity.map((event) => <li key={event.id}>
@@ -59,12 +59,12 @@ function initialToken() {
 class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
-async function request<T>(token: string, path: string, body?: unknown, timeoutMs = 10000): Promise<T> {
+async function request<T>(token: string, path: string, body?: unknown, timeoutMs = 10000, method?: string): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(path, {
-      method: body === undefined ? "GET" : "POST",
+      method: method ?? (body === undefined ? "GET" : "POST"),
       headers: { Authorization: "Bearer " + token, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: controller.signal
@@ -122,6 +122,8 @@ function DmWorkspace() {
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [characterOverview, setCharacterOverview] = useState<CharacterOverview | null>(null);
   const [profileDraft, setProfileDraft] = useState<Character | null>(null);
+  const [profileFieldDraft, setProfileFieldDraft] = useState<Record<string, string>>({});
+  const profileFieldBase = useRef<Record<string, string>>({});
   const [openedCharacterId, setOpenedCharacterId] = useState("");
   const openedCharacter = useRef("");
   const overviewRequests = useRef(new LatestRequest());
@@ -143,6 +145,8 @@ function DmWorkspace() {
   const [playerNames, setPlayerNames] = useState<Record<string, string>>({});
   const [characterChoices, setCharacterChoices] = useState<Record<string, string>>({});
   const [newCharacterName, setNewCharacterName] = useState("");
+  const [newProfileFieldLabel, setNewProfileFieldLabel] = useState("");
+  const [editingProfileField, setEditingProfileField] = useState<{ id: string; label: string } | null>(null);
   const [catalogItemName, setCatalogItemName] = useState("");
   const [catalogItemId, setCatalogItemId] = useState("");
   const [itemQuantity, setItemQuantity] = useState("1");
@@ -199,6 +203,12 @@ function DmWorkspace() {
     profileBase.current = overview.character;
     setCharacterOverview(overview);
     setProfileDraft((draft) => resetDraft ? overview.character : mergeProfileDraft(draft, previous, overview.character));
+    const previousFields = profileFieldBase.current;
+    const incomingFields = Object.fromEntries(overview.profileFields.map((field) => [field.id, field.value]));
+    setProfileFieldDraft((draft) => resetDraft || !Object.keys(previousFields).length ? incomingFields :
+      Object.fromEntries(overview.profileFields.map((field) => [field.id,
+        draft[field.id] !== previousFields[field.id] ? draft[field.id] ?? "" : incomingFields[field.id] ?? ""])));
+    profileFieldBase.current = incomingFields;
   }, [token]);
 
   useEffect(() => {
@@ -268,6 +278,8 @@ function DmWorkspace() {
   const selectedCatalogItem = campaignItemCatalog.find((item) => item.id === catalogItemId) ?? campaignItemCatalog[0];
   const assignedCharacterIds = new Set(campaignPlayers.map((player) => player.characterId).filter((id): id is string => id !== null));
   const campaignCharacters = state?.characters.filter((character) => character.campaignId === selectedId) ?? [];
+  const campaignProfileFields = (state?.profileFields ?? []).filter((field) => field.campaignId === selectedId)
+    .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
   const availableCharacters = campaignCharacters.filter((character) => !character.archivedAt && !assignedCharacterIds.has(character.id));
   const campaignActivity = state?.activity.filter((event) => event.campaignId === selectedId) ?? [];
   const campaignKnowledge = state?.knowledge.filter((entry) => entry.campaignId === selectedId) ?? [];
@@ -314,6 +326,7 @@ function DmWorkspace() {
 
   function closeCharacter() {
     overviewRequests.current.invalidate(); openedCharacter.current = ""; profileBase.current = null;
+    profileFieldBase.current = {}; setProfileFieldDraft({});
     setOpenedCharacterId(""); setCharacterOverview(null); setProfileDraft(null);
   }
   function chooseCampaign(id: string) { closeCharacter(); historyRequests.current.invalidate(); setSelectedId(id); setSessionName(""); setNotice(""); setError(""); setSection("sessions"); setWorkspaceMode("prepare"); setFullActivity(null); setKnowledgeTargetId(""); setSelectedKnowledgeId(""); setKnowledgeSearch(""); }
@@ -337,6 +350,57 @@ function DmWorkspace() {
         traits: profileDraft.traits, appearance: profileDraft.appearance, quote: profileDraft.quote
       });
       await refreshOverview(true); setNotice("Профиль сохранён.");
+    });
+  }
+  function saveCharacterProfileFields(event: FormEvent) {
+    event.preventDefault();
+    if (!characterOverview) return;
+    void mutate(async () => {
+      const result = await request<{ profileFields: CharacterProfileFieldValue[] }>(token,
+        `/api/dm/characters/${characterOverview.character.id}/profile-fields`, {
+          values: characterOverview.profileFields.map((field) => ({ fieldId: field.id, value: profileFieldDraft[field.id] ?? "" }))
+        }, 10000, "PUT");
+      setCharacterOverview((current) => current ? { ...current, profileFields: result.profileFields } : current);
+      const values = Object.fromEntries(result.profileFields.map((field) => [field.id, field.value]));
+      profileFieldBase.current = values; setProfileFieldDraft(values);
+      setNotice("Сведения персонажа сохранены.");
+    });
+  }
+  function createProfileField(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedId) return;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selectedId}/profile-fields`, { label: newProfileFieldLabel });
+      setNewProfileFieldLabel(""); setNotice("Поле профиля добавлено.");
+    });
+  }
+  function renameProfileField(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedId || !editingProfileField) return;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selectedId}/profile-fields/${editingProfileField.id}`,
+        { label: editingProfileField.label }, 10000, "PATCH");
+      setEditingProfileField(null); setNotice("Название поля обновлено.");
+    });
+  }
+  function reorderProfileField(fieldId: string, direction: -1 | 1) {
+    if (!selectedId) return;
+    const fields = (state?.profileFields ?? []).filter((field) => field.campaignId === selectedId)
+      .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+    const index = fields.findIndex((field) => field.id === fieldId);
+    const next = index + direction;
+    if (index < 0 || next < 0 || next >= fields.length) return;
+    const ordered = [...fields]; [ordered[index], ordered[next]] = [ordered[next]!, ordered[index]!];
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selectedId}/profile-fields/reorder`, { fieldIds: ordered.map((field) => field.id) });
+      setNotice("Порядок полей обновлён.");
+    });
+  }
+  function deleteProfileField(field: { id: string; label: string }) {
+    if (!selectedId || !window.confirm(`Удалить поле профиля?\n\nПоле «${field.label}» будет удалено из профилей всех персонажей кампании.`)) return;
+    void mutate(async () => {
+      await request(token, `/api/dm/campaigns/${selectedId}/profile-fields/${field.id}`, undefined, 10000, "DELETE");
+      setEditingProfileField(null); setNotice("Поле профиля удалено.");
     });
   }
   function editProfile(field: "name" | "shortDescription" | "archetype" | "origin" | "personalGoal" | "dmNotes" | "appearance" | "quote", value: string) {
@@ -646,6 +710,28 @@ function DmWorkspace() {
           {section === "characters" &&
           <section className="character-tools">
             <div className="section-heading"><h2>Персонажи <span className="count">{campaignCharacters.length}</span></h2></div>
+            {workspaceMode === "prepare" && <details className="campaign-profile-fields">
+              <summary>Поля профиля персонажа <span className="count">{campaignProfileFields.length} / 20</span></summary>
+              {campaignProfileFields.length > 0 && <ul className="character-list">{campaignProfileFields.map((field, index) => <li key={field.id}>
+                {editingProfileField?.id === field.id ? <form className="inline-form" onSubmit={renameProfileField}>
+                  <input aria-label="Название поля профиля" value={editingProfileField.label} maxLength={60} disabled={locked}
+                    onChange={(event) => setEditingProfileField({ id: field.id, label: event.target.value })} />
+                  <button className="secondary" disabled={locked || !editingProfileField.label.trim()}>Сохранить</button>
+                  <button type="button" className="icon-button" aria-label="Отмена" onClick={() => setEditingProfileField(null)}><X /></button>
+                </form> : <><span>{field.label}</span>
+                  <button className="icon-button" title="Переместить выше" aria-label={`Переместить поле «${field.label}» выше`} disabled={locked || index === 0} onClick={() => reorderProfileField(field.id, -1)}><ArrowUp /></button>
+                  <button className="icon-button" title="Переместить ниже" aria-label={`Переместить поле «${field.label}» ниже`} disabled={locked || index === campaignProfileFields.length - 1} onClick={() => reorderProfileField(field.id, 1)}><ArrowDown /></button>
+                  <button className="icon-button" title="Переименовать поле" aria-label={`Переименовать поле «${field.label}»`} disabled={locked} onClick={() => setEditingProfileField({ id: field.id, label: field.label })}><Pencil /></button>
+                  <button className="icon-button" title="Удалить поле" aria-label={`Удалить поле «${field.label}»`} disabled={locked} onClick={() => deleteProfileField(field)}><Trash2 /></button>
+                </>}
+              </li>)}</ul>}
+              <form className="inline-form character-create-form" onSubmit={createProfileField}>
+                <div className="field"><label htmlFor="campaign-profile-field-label">Название нового поля</label><input id="campaign-profile-field-label"
+                  value={newProfileFieldLabel} maxLength={60} disabled={locked || campaignProfileFields.length >= 20}
+                  onChange={(event) => setNewProfileFieldLabel(event.target.value)} placeholder="Например, Орден" /></div>
+                <button className="secondary" disabled={locked || campaignProfileFields.length >= 20 || !newProfileFieldLabel.trim()}><Plus />Добавить поле</button>
+              </form>
+            </details>}
             {workspaceMode === "prepare" && <form className="inline-form character-create-form" onSubmit={createCharacter}>
               <div className="field"><label htmlFor="new-character-name">Имя персонажа</label><input id="new-character-name" value={newCharacterName} maxLength={120} disabled={locked} onChange={(event) => setNewCharacterName(event.target.value)} placeholder="Для назначения игроку" /></div>
               <button className="secondary" disabled={locked || !newCharacterName.trim()}><UserPlus />Добавить персонажа</button>
@@ -708,6 +794,7 @@ function DmWorkspace() {
               <p><strong>Личная цель:</strong> {characterOverview.character.personalGoal || "Не указана"}</p>
               {characterOverview.character.appearance && <p><strong>Внешность:</strong> {characterOverview.character.appearance}</p>}
               {characterOverview.character.quote && <p><strong>Цитата:</strong> {characterOverview.character.quote}</p>}
+              {characterOverview.profileFields.filter((field) => field.value.trim()).map((field) => <p key={field.id}><strong>{field.label}:</strong> {field.value}</p>)}
               <p><strong>Заметки ведущего:</strong> {characterOverview.character.dmNotes || "Нет"}</p>
             </div>
             <div className="character-overview-actions">
@@ -744,6 +831,16 @@ function DmWorkspace() {
                 <button className="primary" disabled={locked || !profileDraft.name.trim() || profileDraft.traits.some((trait) => !trait.trim())}>Сохранить профиль</button>
               </form>
             </details>
+            {characterOverview.profileFields.length > 0 && <details className="character-edit">
+              <summary>Сведения кампании</summary>
+              <form className="character-profile-form" onSubmit={saveCharacterProfileFields}>
+                {characterOverview.profileFields.map((field) => <label key={field.id}>{field.label}
+                  <input value={profileFieldDraft[field.id] ?? ""} maxLength={500} disabled={locked}
+                    onChange={(event) => setProfileFieldDraft((current) => ({ ...current, [field.id]: event.target.value }))} />
+                </label>)}
+                <button className="primary" disabled={locked}>Сохранить сведения</button>
+              </form>
+            </details>}
             <div className="character-overview-grid">
               <div><h3>Инвентарь</h3>{characterOverview.inventory.length ? <ul>{characterOverview.inventory.map((item) => <li key={item.id}>{item.name} · {item.quantity}</li>)}</ul> : <p className="muted">Пусто</p>}</div>
               <div><h3>Знания</h3>{characterOverview.knowledge.length ? <ul>{characterOverview.knowledge.map((entry) => <li key={entry.id}>{entry.title}</li>)}</ul> : <p className="muted">Нет открытых записей</p>}</div>

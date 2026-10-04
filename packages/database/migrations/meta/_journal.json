@@ -78,6 +78,13 @@
       "when": 1791072749411,
       "tag": "0010_fearless_thundra",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1791074208517,
+      "tag": "0011_fantastic_scream",
+      "breakpoints": true
     }
   ]
 }

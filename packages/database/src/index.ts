@@ -7,7 +7,7 @@ import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type Character, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type HealthCheck, type KnowledgeCategory, type KnowledgeVisibility, type PersonalNoteMarker, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -81,7 +81,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   const client = new SQLite(file);
   const db = drizzle(client, { schema });
   const backupIdPattern = /^progdm-backup-([0-9a-f-]{36})\.db$/;
-  const backupTables = ["campaigns", "sessions", "players", "characters", "character_personal_notes", "character_read_state", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "campaign_activity", "__drizzle_migrations"];
+  const backupTables = ["campaigns", "sessions", "players", "characters", "campaign_profile_field_definitions", "character_profile_field_values", "character_personal_notes", "character_read_state", "session_character_assignments", "catalog_items", "inventory_items", "knowledge_entries", "knowledge_migration_issues", "campaign_activity", "__drizzle_migrations"];
 
   function profileText(value: string, max: number): string {
     const trimmed = value.trim();
@@ -137,6 +137,35 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
   function personalNotePinned(value: unknown): boolean {
     if (typeof value !== "boolean") throw new Error("Campaign file is invalid.");
     return value;
+  }
+
+  function profileFieldLabel(value: string): string {
+    const label = value.trim();
+    if (!label || label.length > 60) throw new Error("Profile field label must contain between 1 and 60 characters.");
+    return label;
+  }
+
+  function profileFieldValue(value: string): string {
+    const fieldValue = value.trim();
+    if (fieldValue.length > 500) throw new Error("Profile field value is too long.");
+    return fieldValue;
+  }
+
+  function campaignProfileFields(campaignId: string): CampaignProfileFieldDefinition[] {
+    return db.select().from(schema.campaignProfileFieldDefinitions)
+      .where(eq(schema.campaignProfileFieldDefinitions.campaignId, campaignId))
+      .orderBy(asc(schema.campaignProfileFieldDefinitions.position), asc(schema.campaignProfileFieldDefinitions.id)).all();
+  }
+
+  function characterProfileFields(characterId: string, includeEmpty = false): CharacterProfileFieldValue[] {
+    const rows = client.prepare(`SELECT d.id, d.label, v.value FROM campaign_profile_field_definitions d
+      JOIN characters c ON c.campaign_id=d.campaign_id AND c.id=?
+      LEFT JOIN character_profile_field_values v ON v.field_id=d.id AND v.character_id=c.id
+      ORDER BY d.position, d.id`).all(characterId) as { id: string; label: string; value: string | null }[];
+    return rows.flatMap((row) => {
+      const value = row.value ?? "";
+      return includeEmpty || value ? [{ id: row.id, label: row.label, value }] : [];
+    });
   }
 
   function activePlayerCharacter(tokenHash: string) {
@@ -456,6 +485,24 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         return invalid === 0 ? { status: "ok", message: "Поля профилей и черты персонажей корректны." }
           : { status: "error", message: `Найдено профилей с некорректными чертами, внешностью или цитатой: ${invalid}.` };
       });
+      check("Определения полей профиля", () => {
+        const rows = client.prepare("SELECT campaign_id, label, position FROM campaign_profile_field_definitions ORDER BY campaign_id, position, id").all() as { campaign_id: string; label: string; position: number }[];
+        const groups = new Map<string, typeof rows>();
+        for (const row of rows) groups.set(row.campaign_id, [...(groups.get(row.campaign_id) ?? []), row]);
+        const invalid = [...groups.values()].some((group) => group.length > 20 || group.some((row, index) =>
+          typeof row.label !== "string" || row.label.trim().length < 1 || row.label.trim().length > 60 ||
+          !Number.isInteger(row.position) || row.position !== index));
+        return !invalid ? { status: "ok", message: "Поля профиля и их порядок корректны." }
+          : { status: "error", message: "Найдены некорректные определения, лимит или порядок полей профиля." };
+      });
+      check("Значения полей профиля", () => {
+        const rows = client.prepare(`SELECT count(*) AS count FROM character_profile_field_values v
+          LEFT JOIN campaign_profile_field_definitions d ON d.id=v.field_id AND d.campaign_id=v.campaign_id
+          LEFT JOIN characters c ON c.id=v.character_id AND c.campaign_id=v.campaign_id
+          WHERE d.id IS NULL OR c.id IS NULL OR typeof(v.value)!='text' OR length(v.value)>500`).get() as { count: number };
+        return rows.count === 0 ? { status: "ok", message: "Связи и значения полей персонажей корректны." }
+          : { status: "error", message: `Найдено некорректных значений полей профиля: ${rows.count}.` };
+      });
       checks.push({ name: "Файлы загрузок", status: "skipped", message: "Ссылок на файлы в базе пока нет; проверено наличие каталогов." });
       return { ok: checks.every((item) => item.status !== "error"), checks };
     },
@@ -474,6 +521,76 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     getCampaign(id: string): Campaign | null {
       return db.select().from(schema.campaigns).where(eq(schema.campaigns.id, id)).get() ?? null;
+    },
+    listCampaignProfileFields: campaignProfileFields,
+    createCampaignProfileField(campaignId: string, label: string) {
+      return db.transaction(() => {
+        if (!db.select({ id: schema.campaigns.id }).from(schema.campaigns).where(eq(schema.campaigns.id, campaignId)).get()) throw new Error("Campaign not found.");
+        const fields = campaignProfileFields(campaignId);
+        if (fields.length >= 20) throw new Error("Campaign profile fields limit reached.");
+        return db.insert(schema.campaignProfileFieldDefinitions).values({
+          id: randomUUID(), campaignId, label: profileFieldLabel(label), position: fields.length, createdAt: new Date().toISOString()
+        }).returning().get();
+      });
+    },
+    renameCampaignProfileField(campaignId: string, fieldId: string, label: string) {
+      const updated = db.update(schema.campaignProfileFieldDefinitions).set({ label: profileFieldLabel(label) })
+        .where(and(eq(schema.campaignProfileFieldDefinitions.campaignId, campaignId), eq(schema.campaignProfileFieldDefinitions.id, fieldId)))
+        .returning().get();
+      if (!updated) throw new Error("Profile field not found.");
+      return updated;
+    },
+    reorderCampaignProfileFields(campaignId: string, fieldIds: string[]) {
+      return db.transaction(() => {
+        const fields = campaignProfileFields(campaignId);
+        if (!Array.isArray(fieldIds) || fieldIds.length !== fields.length || new Set(fieldIds).size !== fields.length ||
+          fields.some((field) => !fieldIds.includes(field.id))) throw new Error("Profile field order is invalid.");
+        if (!fields.length) return fields;
+        const offset = fields.length + Math.max(...fields.map((field) => field.position)) + 1;
+        client.prepare("UPDATE campaign_profile_field_definitions SET position=position+? WHERE campaign_id=?").run(offset, campaignId);
+        const update = client.prepare("UPDATE campaign_profile_field_definitions SET position=? WHERE campaign_id=? AND id=?");
+        fieldIds.forEach((fieldId, position) => update.run(position, campaignId, fieldId));
+        return campaignProfileFields(campaignId);
+      });
+    },
+    deleteCampaignProfileField(campaignId: string, fieldId: string) {
+      return db.transaction(() => {
+        const deleted = db.delete(schema.campaignProfileFieldDefinitions).where(and(
+          eq(schema.campaignProfileFieldDefinitions.campaignId, campaignId), eq(schema.campaignProfileFieldDefinitions.id, fieldId)
+        )).returning().get();
+        if (!deleted) throw new Error("Profile field not found.");
+        const remaining = campaignProfileFields(campaignId);
+        if (remaining.length) {
+          const offset = remaining.length + Math.max(...remaining.map((field) => field.position)) + 1;
+          client.prepare("UPDATE campaign_profile_field_definitions SET position=position+? WHERE campaign_id=?").run(offset, campaignId);
+          const update = client.prepare("UPDATE campaign_profile_field_definitions SET position=? WHERE campaign_id=? AND id=?");
+          remaining.forEach((field, position) => update.run(position, campaignId, field.id));
+        }
+        return deleted;
+      });
+    },
+    updateCharacterProfileFieldValues(characterId: string, values: { fieldId: string; value: string }[]) {
+      return db.transaction(() => {
+        const character = db.select({ id: schema.characters.id, campaignId: schema.characters.campaignId })
+          .from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+        if (!character) throw new Error("Character not found.");
+        if (!Array.isArray(values) || values.length > 20 || new Set(values.map((entry) => entry.fieldId)).size !== values.length) {
+          throw new Error("Profile field values are invalid.");
+        }
+        const fields = campaignProfileFields(character.campaignId);
+        const fieldIds = new Set(fields.map((field) => field.id));
+        if (values.some((entry) => !fieldIds.has(entry.fieldId) || typeof entry.value !== "string")) throw new Error("Profile field does not belong to this character's campaign.");
+        const now = new Date().toISOString();
+        for (const entry of values) {
+          const value = profileFieldValue(entry.value);
+          db.insert(schema.characterProfileFieldValues).values({ campaignId: character.campaignId, fieldId: entry.fieldId, characterId,
+            value, updatedAt: now }).onConflictDoUpdate({
+            target: [schema.characterProfileFieldValues.fieldId, schema.characterProfileFieldValues.characterId],
+            set: { value, updatedAt: now }
+          }).run();
+        }
+        return characterProfileFields(characterId, true);
+      });
     },
     exportCampaign(id: string) {
       const campaign = db.select({ name: schema.campaigns.name, createdAt: schema.campaigns.createdAt })
@@ -495,6 +612,12 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.characters).where(eq(schema.characters.campaignId, id)).all()
         .map((character) => ({ ...character, traits: exportTraits(character.traits) }));
       const characterIds = characters.map((character) => character.id);
+      const profileFields = campaignProfileFields(id);
+      const profileFieldValues = profileFields.length ? db.select({
+        fieldId: schema.characterProfileFieldValues.fieldId, characterId: schema.characterProfileFieldValues.characterId,
+        value: schema.characterProfileFieldValues.value, updatedAt: schema.characterProfileFieldValues.updatedAt
+      }).from(schema.characterProfileFieldValues)
+        .where(eq(schema.characterProfileFieldValues.campaignId, id)).all() : [];
       const personalNotes = characterIds.length ? db.select().from(schema.characterPersonalNotes)
         .where(inArray(schema.characterPersonalNotes.characterId, characterIds)).all() : [];
       const assignments = sessionIds.length ? db.select({
@@ -520,8 +643,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       }).from(schema.knowledgeEntries).where(eq(schema.knowledgeEntries.campaignId, id)).all()
         .map((entry) => ({ ...entry }));
       return {
-        format: "progdm-campaign", version: 5, exportedAt: new Date().toISOString(), campaign,
-        sessions, players, assignments, characters, personalNotes, catalogItems, inventoryItems, knowledge,
+        format: "progdm-campaign", version: 6, exportedAt: new Date().toISOString(), campaign,
+        sessions, players, assignments, characters, profileFields, profileFieldValues, personalNotes, catalogItems, inventoryItems, knowledge,
         activity: activityRows(db.select().from(schema.campaignActivity)
           .where(eq(schema.campaignActivity.campaignId, id))
           .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all())
@@ -529,7 +652,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     },
     importCampaign(source: unknown) {
       const archive = transferRecord(source);
-      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
+      if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;
       const campaignSource = transferRecord(archive.campaign);
       const sourceCampaignName = validatedName(transferString(campaignSource, "name", 120));
@@ -542,6 +665,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const players = transferArray(archive, "players");
       const assignments = transferArray(archive, "assignments");
       const characters = transferArray(archive, "characters");
+      const profileFields = archiveVersion >= 6 ? transferArray(archive, "profileFields") : [];
+      const profileFieldValues = archiveVersion >= 6 ? transferArray(archive, "profileFieldValues") : [];
       const personalNotes = archiveVersion >= 3 ? transferArray(archive, "personalNotes") : [];
       const catalogItems = transferArray(archive, "catalogItems");
       const inventoryItems = transferArray(archive, "inventoryItems");
@@ -552,6 +677,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const sessionIds = new Map(sessions.map((row) => [transferString(row, "id"), randomUUID()]));
       const playerIds = new Map(players.map((row) => [transferString(row, "id"), randomUUID()]));
       const characterIds = new Map(characters.map((row) => [transferString(row, "id"), randomUUID()]));
+      const profileFieldIds = new Map(profileFields.map((row) => [transferString(row, "id"), randomUUID()]));
       const catalogIds = new Map(catalogItems.map((row) => [transferString(row, "id"), randomUUID()]));
       const knowledgeIds = new Map(knowledge.map((row) => [transferString(row, "id"), randomUUID()]));
       const requireMapped = (map: Map<string, string>, id: unknown) => {
@@ -559,6 +685,22 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         return map.get(id)!;
       };
       const playerSessionIds = new Map(players.map((row) => [transferString(row, "id"), transferString(row, "sessionId")]));
+      if (profileFieldIds.size !== profileFields.length || profileFields.length > 20) throw new Error("Campaign file contains invalid profile fields.");
+      const positions = profileFields.map((row) => row.position);
+      if (positions.some((position) => !Number.isInteger(position) || (position as number) < 0) ||
+        new Set(positions).size !== positions.length || [...positions].sort((a, b) => Number(a) - Number(b)).some((position, index) => position !== index)) {
+        throw new Error("Campaign file contains invalid profile field order.");
+      }
+      const profileValueKeys = new Set<string>();
+      for (const row of profileFieldValues) {
+        requireMapped(profileFieldIds, row.fieldId);
+        requireMapped(characterIds, row.characterId);
+        const key = `${String(row.fieldId)}:${String(row.characterId)}`;
+        if (profileValueKeys.has(key)) throw new Error("Campaign file contains duplicate profile field values.");
+        profileValueKeys.add(key);
+        profileFieldValue(transferString(row, "value", 500));
+        createdAt({ createdAt: row.updatedAt });
+      }
       for (const assignment of assignments) {
         const playerId = transferString(assignment, "playerId");
         const sessionId = transferString(assignment, "sessionId");
@@ -607,6 +749,18 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             quote: archiveVersion >= 5 ? profileText(transferString(row, "quote", 300), 300) : ""
           }).run();
         }
+        for (const row of [...profileFields].sort((a, b) => Number(a.position) - Number(b.position))) {
+          const position = row.position as number;
+          db.insert(schema.campaignProfileFieldDefinitions).values({
+            id: requireMapped(profileFieldIds, row.id), campaignId,
+            label: profileFieldLabel(transferString(row, "label", 60)), position,
+            createdAt: createdAt(row)
+          }).run();
+        }
+        for (const row of profileFieldValues) db.insert(schema.characterProfileFieldValues).values({
+          campaignId, fieldId: requireMapped(profileFieldIds, row.fieldId), characterId: requireMapped(characterIds, row.characterId),
+          value: profileFieldValue(transferString(row, "value", 500)), updatedAt: createdAt({ createdAt: row.updatedAt })
+        }).run();
         for (const row of personalNotes) {
           const metadata = archiveVersion >= 4 ? {
             title: personalNoteTitle(transferString(row, "title", 120)),
@@ -778,7 +932,8 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           shortDescription: player.shortDescription ?? "", archetype: player.archetype ?? "",
           origin: player.origin ?? "", personalGoal: player.personalGoal ?? "",
           traits: player.traits ? readCharacterTraits(player.traits) : [],
-          appearance: player.appearance ?? "", quote: player.quote ?? ""
+          appearance: player.appearance ?? "", quote: player.quote ?? "",
+          profileFields: characterProfileFields(active.characterId)
         } : null,
         canEdit: !!active,
         inventory: player.characterId
@@ -953,6 +1108,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .where(and(eq(schema.sessionCharacterAssignments.characterId, characterId), eq(schema.players.status, "approved"), eq(schema.sessions.status, "active"))).get() ?? null;
       return {
         character: characterRecord(character), player,
+        profileFields: characterProfileFields(characterId, true),
         inventory: db.select().from(schema.inventoryItems).where(eq(schema.inventoryItems.characterId, characterId)).all(),
         knowledge: db.select().from(schema.knowledgeEntries).where(and(
           eq(schema.knowledgeEntries.campaignId, character.campaignId),

@@ -211,6 +211,7 @@ export function createApp(options: {
         current: database.getCurrentSession(),
         players: campaigns.flatMap((campaign) => database.listPlayersByCampaign(campaign.id)),
         characters: campaigns.flatMap((campaign) => database.listCharactersByCampaign(campaign.id)),
+        profileFields: campaigns.flatMap((campaign) => database.listCampaignProfileFields(campaign.id)),
         itemCatalog: campaigns.flatMap((campaign) => database.listCatalogItemsByCampaign(campaign.id)),
         knowledge: campaigns.flatMap((campaign) => database.listKnowledgeByCampaign(campaign.id)),
         activity: campaigns.flatMap((campaign) => database.listCampaignActivity(campaign.id, 20)),
@@ -264,7 +265,7 @@ export function createApp(options: {
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
       bodyLimit: 10 * 1024 * 1024,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
-        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5] }
+        format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6] }
       } } }
     }, async (request, reply) => {
       try {
@@ -301,6 +302,68 @@ export function createApp(options: {
           throw error;
         }
       });
+    const profileFieldLabelBody = { type: "object", additionalProperties: false, required: ["label"], properties: {
+      label: { type: "string", minLength: 1, maxLength: 60, pattern: "\\S" }
+    } };
+    dm.post<{ Params: { id: string }; Body: { label: string } }>("/api/dm/campaigns/:id/profile-fields", {
+      schema: { params: idParams, body: profileFieldLabelBody }
+    }, async (request, reply) => {
+      try { return reply.code(201).send({ field: database.createCampaignProfileField(request.params.id, request.body.label) }); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Campaign not found.") return reply.code(404).send({ message: "Кампания не найдена." });
+        if (message === "Campaign profile fields limit reached.") return reply.code(409).send({ message: "В кампании уже создано максимально допустимое число полей профиля." });
+        if (message.includes("Profile field label")) return reply.code(400).send({ message: "Название поля должно содержать от 1 до 60 символов." });
+        throw error;
+      }
+    });
+    dm.patch<{ Params: { id: string; fieldId: string }; Body: { label: string } }>("/api/dm/campaigns/:id/profile-fields/:fieldId", {
+      schema: { params: { type: "object", required: ["id", "fieldId"], properties: { id: { type: "string", format: "uuid" }, fieldId: { type: "string", format: "uuid" } } }, body: profileFieldLabelBody }
+    }, async (request, reply) => {
+      try { return { field: database.renameCampaignProfileField(request.params.id, request.params.fieldId, request.body.label) }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Profile field not found.") return reply.code(404).send({ message: "Поле профиля не найдено в этой кампании." });
+        if (message.includes("Profile field label")) return reply.code(400).send({ message: "Название поля должно содержать от 1 до 60 символов." });
+        throw error;
+      }
+    });
+    dm.post<{ Params: { id: string }; Body: { fieldIds: string[] } }>("/api/dm/campaigns/:id/profile-fields/reorder", {
+      schema: { params: idParams, body: { type: "object", additionalProperties: false, required: ["fieldIds"], properties: {
+        fieldIds: { type: "array", maxItems: 20, items: { type: "string", format: "uuid" } }
+      } } }
+    }, async (request, reply) => {
+      try { return { fields: database.reorderCampaignProfileFields(request.params.id, request.body.fieldIds) }; }
+      catch (error) {
+        if (error instanceof Error && error.message === "Profile field order is invalid.") return reply.code(400).send({ message: "Список полей профиля устарел. Обновите страницу." });
+        throw error;
+      }
+    });
+    dm.delete<{ Params: { id: string; fieldId: string } }>("/api/dm/campaigns/:id/profile-fields/:fieldId", {
+      schema: { params: { type: "object", required: ["id", "fieldId"], properties: { id: { type: "string", format: "uuid" }, fieldId: { type: "string", format: "uuid" } } } }
+    }, async (request, reply) => {
+      try { return { field: database.deleteCampaignProfileField(request.params.id, request.params.fieldId) }; }
+      catch (error) {
+        if (error instanceof Error && error.message === "Profile field not found.") return reply.code(404).send({ message: "Поле профиля не найдено в этой кампании." });
+        throw error;
+      }
+    });
+    dm.put<{ Params: { id: string }; Body: { values: { fieldId: string; value: string }[] } }>("/api/dm/characters/:id/profile-fields", {
+      schema: { params: idParams, body: { type: "object", additionalProperties: false, required: ["values"], properties: {
+        values: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, required: ["fieldId", "value"], properties: {
+          fieldId: { type: "string", format: "uuid" }, value: { type: "string", maxLength: 500 }
+        } } }
+      } } }
+    }, async (request, reply) => {
+      try { return { profileFields: database.updateCharacterProfileFieldValues(request.params.id, request.body.values) }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Character not found.") return reply.code(404).send({ message: "Персонаж не найден." });
+        if (message.includes("too long")) return reply.code(400).send({ message: "Значение поля не должно превышать 500 символов." });
+        if (message.includes("Profile field")) return reply.code(400).send({ message: "Поля профиля не соответствуют кампании персонажа." });
+        throw error;
+      }
+    });
     dm.post<{ Params: { id: string }; Body: { name: string; shortDescription: string; archetype: string; origin: string; personalGoal: string; dmNotes: string; traits?: string[]; appearance?: string; quote?: string } }>(
       "/api/dm/characters/:id/profile", {
         schema: { params: idParams, body: { type: "object", additionalProperties: false,

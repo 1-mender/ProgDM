@@ -55,6 +55,11 @@ export function ProfilePage({ player, busy, onSave }: {
       {profile?.shortDescription && <section className="prod-profile-section"><h2>О персонаже</h2><p>{profile.shortDescription}</p></section>}
       {!!profile?.traits.length && <section className="prod-profile-section"><h2>Черты</h2><ul className="prod-profile-traits">{profile.traits.map((trait, index) => <li key={`${trait}-${index}`}>{trait}</li>)}</ul></section>}
       {profile?.personalGoal && <section className="prod-profile-section prod-profile-goal"><h2>Личная цель</h2><p>{profile.personalGoal}</p></section>}
+      {!!profile?.profileFields.length && <section className="prod-profile-section prod-profile-fields"><h2>Сведения</h2>
+        <dl>{profile.profileFields.filter((field) => field.value.trim()).map((field) => <div key={field.id}>
+          <dt>{field.label}</dt><dd>{field.value}</dd>
+        </div>)}</dl>
+      </section>}
       {profile?.appearance && <section className="prod-profile-section"><h2>Внешность</h2><p>{profile.appearance}</p></section>}
       {profile?.quote && <section className="prod-profile-section prod-profile-quote"><p>{profile.quote}</p></section>}
 

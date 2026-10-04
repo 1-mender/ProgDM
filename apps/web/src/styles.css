@@ -202,6 +202,13 @@ dialog::backdrop { background: #20252a66; }
 .accepted-row { grid-template-columns: minmax(0, 1fr) minmax(100px, .8fr) auto; align-items: center; }
 .badge.accepted { display: inline-flex; align-items: center; gap: 5px; color: #286f63; white-space: nowrap; }
 .character-tools { padding-top: 24px; }
+.campaign-profile-fields { max-width: 900px; margin: 0 0 18px; padding: 12px 0; border-top: 1px solid #dce0e3; border-bottom: 1px solid #dce0e3; }
+.campaign-profile-fields > summary { cursor: pointer; font-weight: 600; }
+.campaign-profile-fields > summary .count { margin-left: 8px; font-size: 12px; }
+.campaign-profile-fields .character-list { grid-template-columns: minmax(0, 1fr); }
+.campaign-profile-fields .character-list li > span { flex: 1; }
+.campaign-profile-fields .inline-form { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; }
+.campaign-profile-fields .inline-form input { min-width: 0; }
 .character-tools h3 { margin: 0 0 16px; font-size: 15px; }
 .character-create-form { align-items: flex-end; }
 .character-list { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 16px; }

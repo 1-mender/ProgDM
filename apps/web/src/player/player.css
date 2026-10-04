@@ -196,6 +196,10 @@
 .prod-profile-section h2 { margin-bottom: 6px; }
 .prod-profile-section p { margin: 0; color: var(--player-text); font-size: 15px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .prod-profile-goal { padding: 12px 0 12px 13px; border-left: 2px solid var(--player-accent); }
+.prod-profile-fields dl { display: grid; gap: 0; margin: 0; }
+.prod-profile-fields dl > div { display: grid; grid-template-columns: minmax(92px, .7fr) minmax(0, 1.3fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--player-divider); }
+.prod-profile-fields dt { color: var(--player-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.prod-profile-fields dd { min-width: 0; margin: 0; color: var(--player-text); font-size: 15px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .prod-profile-traits { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .prod-profile-traits li { max-width: 100%; padding: 5px 9px; color: var(--player-secondary); background: #eee9df; border: 1px solid var(--player-divider); border-radius: 3px; font-size: 13px; overflow-wrap: anywhere; }
 .prod-profile-quote p { color: var(--player-secondary); font-family: Georgia, serif; font-size: 14px; font-style: italic; }

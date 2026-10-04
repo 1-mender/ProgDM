@@ -101,7 +101,7 @@ test("empty database has no session and health is public", async (t) => {
   assert.deepEqual(response.json(), { snapshot: null });
   const dmState = (await get(app, "/api/dm/state")).json();
   assert.deepEqual(dmState, {
-    campaigns: [], sessions: [], current: null, players: [], characters: [], itemCatalog: [], knowledge: [], activity: [],
+    campaigns: [], sessions: [], current: null, players: [], characters: [], profileFields: [], itemCatalog: [], knowledge: [], activity: [],
     networkAddresses: dmState.networkAddresses
   });
   assert.equal(Array.isArray(dmState.networkAddresses), true);
@@ -121,6 +121,51 @@ test("DM can inspect history, archive characters and check local data", async (t
   const health = await post(app, "/api/dm/data/health");
   assert.equal(health.statusCode, 200);
   assert.equal(health.json().ok, true);
+});
+
+test("DM manages campaign profile definitions and values; player tokens cannot use the DM API", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = (await post(app, "/api/dm/campaigns", { name: "Profile fields" })).json().campaign;
+  const character = (await post(app, `/api/dm/campaigns/${campaign.id}/characters`, { name: "Mira" })).json().character;
+  const first = (await post(app, `/api/dm/campaigns/${campaign.id}/profile-fields`, { label: "Орден" })).json().field;
+  const second = (await post(app, `/api/dm/campaigns/${campaign.id}/profile-fields`, { label: "Родина" })).json().field;
+  assert.equal((await post(app, `/api/dm/campaigns/${campaign.id}/profile-fields`, { label: " " })).statusCode, 400);
+  assert.equal((await post(app, `/api/dm/campaigns/${campaign.id}/profile-fields`, { label: "Л".repeat(61) })).statusCode, 400);
+
+  const saved = await app.inject({ method: "PUT", url: `/api/dm/characters/${character.id}/profile-fields`, headers, payload: {
+    values: [{ fieldId: first.id, value: "Орден Серого Пламени" }, { fieldId: second.id, value: "Вейр" }]
+  } });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().profileFields.map(({ value }) => value), ["Орден Серого Пламени", "Вейр"]);
+  const otherCampaign = (await post(app, "/api/dm/campaigns", { name: "Other profile" })).json().campaign;
+  const foreignField = (await post(app, `/api/dm/campaigns/${otherCampaign.id}/profile-fields`, { label: "Фракция" })).json().field;
+  assert.equal((await app.inject({ method: "PUT", url: `/api/dm/characters/${character.id}/profile-fields`, headers, payload: {
+    values: [{ fieldId: foreignField.id, value: "Cross campaign" }]
+  } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PUT", url: `/api/dm/characters/${character.id}/profile-fields`, headers, payload: {
+    values: [{ fieldId: first.id, value: "x".repeat(501) }]
+  } })).statusCode, 400);
+
+  const playerToken = "P".repeat(43);
+  const session = database.createSession(campaign.id, "Session"); database.activateSession(session.id);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "A", playerToken });
+  database.approvePlayer(database.listPlayersByCampaign(campaign.id)[0].id, { characterId: character.id });
+  const playerState = (await app.inject({ method: "GET", url: "/api/player/me", headers: { authorization: `Bearer ${playerToken}` } })).json();
+  assert.deepEqual(playerState.profile.profileFields.map(({ label, value }) => [label, value]), [["Орден", "Орден Серого Пламени"], ["Родина", "Вейр"]]);
+  assert.equal("campaignId" in playerState.profile.profileFields[0], false);
+  assert.equal((await app.inject({ method: "POST", url: "/api/player/profile", headers: { authorization: `Bearer ${playerToken}` }, payload: {
+    shortDescription: "No", personalGoal: "No", profileFields: [{ id: first.id, value: "Attempt" }]
+  } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PUT", url: `/api/dm/characters/${character.id}/profile-fields`, headers: { authorization: `Bearer ${playerToken}` }, payload: { values: [] } })).statusCode, 401);
+
+  const renamed = await app.inject({ method: "PATCH", url: `/api/dm/campaigns/${campaign.id}/profile-fields/${first.id}`, headers, payload: { label: "Орден хранителей" } });
+  assert.equal(renamed.statusCode, 200);
+  assert.deepEqual(database.getCharacterOverview(character.id).profileFields[0], { id: first.id, label: "Орден хранителей", value: "Орден Серого Пламени" });
+  const reordered = await post(app, `/api/dm/campaigns/${campaign.id}/profile-fields/reorder`, { fieldIds: [second.id, first.id] });
+  assert.deepEqual(reordered.json().fields.map(({ position }) => position), [0, 1]);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/dm/campaigns/${campaign.id}/profile-fields/${second.id}`, headers })).statusCode, 200);
+  assert.deepEqual(database.getCharacterOverview(character.id).profileFields.map(({ label }) => label), ["Орден хранителей"]);
+  assert.equal((await post(app, "/api/dm/data/health")).json().ok, true);
 });
 
 test("player profile and notes enforce active assignment and field permissions", async (t) => {
@@ -484,7 +529,7 @@ test("campaign export and import are authenticated and omit player and invitatio
   assert.equal(exported.body.includes(session.joinToken), false);
   assert.equal(exported.body.includes("b".repeat(64)), false);
   const archive = exported.json();
-  assert.equal(archive.version, 5);
+  assert.equal(archive.version, 6);
   assert.equal((await app.inject({ method: "GET", url: "/api/dm/backups" })).statusCode, 401);
 
   const imported = await post(app, "/api/dm/campaigns/import", archive);

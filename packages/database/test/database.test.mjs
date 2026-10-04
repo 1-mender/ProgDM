@@ -73,7 +73,7 @@ test("backup migration hashes remain compatible across LF and CRLF checkouts", a
   } finally { db.close(); }
 });
 
-test("legacy campaign formats v1 through v4 import with character profile defaults and ID remapping", (t) => {
+test("legacy campaign formats v1 through v5 import with profile defaults and ID remapping", (t) => {
   const db = memoryDatabase(t);
   const campaign = db.createCampaign("Legacy");
   const mira = db.createCharacter(campaign.id, "Mira");
@@ -85,13 +85,15 @@ test("legacy campaign formats v1 through v4 import with character profile defaul
   const clue = db.createKnowledge(campaign.id, "note", "Clue", "Personal knowledge");
   db.setKnowledgeVisibility(clue.id, "character", mira.id);
   const current = db.exportCampaign(campaign.id);
-  for (const version of [1, 2, 3, 4]) {
+  for (const version of [1, 2, 3, 4, 5]) {
     const legacy = structuredClone(current);
     legacy.version = version;
     for (const character of legacy.characters) {
-      delete character.traits;
-      delete character.appearance;
-      delete character.quote;
+      if (version < 5) {
+        delete character.traits;
+        delete character.appearance;
+        delete character.quote;
+      }
       if (version < 3) {
         delete character.shortDescription;
         delete character.archetype;
@@ -108,6 +110,8 @@ test("legacy campaign formats v1 through v4 import with character profile defaul
       legacy.knowledge[0].visibleToPlayerId = player.id;
       delete legacy.knowledge[0].visibleToCharacterId;
     }
+    delete legacy.profileFields;
+    delete legacy.profileFieldValues;
     const imported = db.importCampaign(legacy);
     const exported = db.exportCampaign(imported.id);
     assert.equal(exported.sessions[0].status, "ended");
@@ -274,7 +278,7 @@ test("activity and archive preserve a character across sessions and campaign exp
   assert.equal(JSON.stringify(history).includes(first.joinToken), false);
 
   const archive = db.exportCampaign(campaign.id);
-  assert.equal(archive.version, 5);
+  assert.equal(archive.version, 6);
   assert.equal(archive.characters.find((row) => row.id === mira.id).archivedAt, archived.archivedAt);
   assert.equal(JSON.stringify(archive).includes("private-player-hash"), false);
   assert.equal(JSON.stringify(archive).includes(first.joinToken), false);
@@ -385,7 +389,7 @@ test("profile, personal notes and read marker belong to the character, not an ol
   assert.deepEqual(db.getPlayerState("token-b-hash").newActivity.map((event) => event.type), ["item_granted"]);
 
   const exported = db.exportCampaign(campaign.id);
-  assert.equal(exported.version, 5);
+  assert.equal(exported.version, 6);
   assert.deepEqual({ traits: exported.characters[0].traits, appearance: exported.characters[0].appearance, quote: exported.characters[0].quote }, {
     traits: ["Observant", "Careful"], appearance: "A weathered coat", quote: "Not yet."
   });
@@ -847,7 +851,7 @@ test("restoring a schema 0005 backup applies migration 0006 and preserves campai
     const currentRaw = new SQLite(file, { readonly: true });
     const currentTableNames = currentRaw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(({ name }) => name);
     currentRaw.close();
-    assert.deepEqual(legacyTableNames, currentTableNames.filter((name) => !["campaign_activity", "character_personal_notes", "character_read_state"].includes(name)), "migrations 0007 and 0008 add the activity, notes and read-state tables");
+    assert.deepEqual(legacyTableNames, currentTableNames.filter((name) => !["campaign_activity", "character_personal_notes", "character_read_state", "campaign_profile_field_definitions", "character_profile_field_values"].includes(name)), "migrations after 0005 add the later activity, profile and read-state tables");
 
     await database.restoreBackup(backupName);
 
@@ -991,12 +995,12 @@ test("data health reports invalid character traits JSON, duplicates and profile 
   } finally { raw.close(); db.close(); }
 });
 
-test("restoring a schema 0009 backup applies profile defaults and leaves source untouched", async (t) => {
+test("restoring a schema 0010 backup applies campaign profile field migration and leaves source untouched", async (t) => {
   const file = temporaryFile(t);
   const root = dirname(dirname(file));
   const backups = join(root, "backups");
   const uploads = join(root, "uploads");
-  const oldMigrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-v9-"));
+  const oldMigrationFolder = mkdtempSync(join(tmpdir(), "progdm-migrations-v10-"));
   const backupUuid = "00000000-0000-4000-8000-000000000333";
   const backupName = `progdm-backup-${backupUuid}.db`;
   mkdirSync(backups, { recursive: true });
@@ -1005,12 +1009,12 @@ test("restoring a schema 0009 backup applies profile defaults and leaves source 
 
   const sourceMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
   const journal = JSON.parse(readFileSync(join(sourceMigrations, "meta", "_journal.json"), "utf8"));
-  const versionNineEntries = journal.entries.filter((entry) => entry.idx <= 9);
+  const versionTenEntries = journal.entries.filter((entry) => entry.idx <= 10);
   mkdirSync(join(oldMigrationFolder, "meta"));
-  writeFileSync(join(oldMigrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: versionNineEntries }));
-  for (const entry of versionNineEntries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(oldMigrationFolder, entry.tag + ".sql"));
+  writeFileSync(join(oldMigrationFolder, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: versionTenEntries }));
+  for (const entry of versionTenEntries) copyFileSync(join(sourceMigrations, entry.tag + ".sql"), join(oldMigrationFolder, entry.tag + ".sql"));
 
-  const legacy = new SQLite(join(root, "legacy-v9.db"));
+  const legacy = new SQLite(join(root, "legacy-v10.db"));
   try {
     migrate(drizzle(legacy), { migrationsFolder: oldMigrationFolder });
     legacy.prepare("INSERT INTO campaigns (id, name, created_at) VALUES (?, ?, ?)")
@@ -1034,7 +1038,130 @@ test("restoring a schema 0009 backup applies profile defaults and leaves source 
     assert.equal(db.checkDataHealth().ok, true);
     assert.equal(createHash("sha256").update(readFileSync(backupPath)).digest("hex"), backupHash);
     const original = new SQLite(backupPath, { readonly: true });
-    try { assert.equal(original.prepare("PRAGMA table_info(characters)").all().some((column) => column.name === "traits"), false); }
+    try {
+      assert.equal(original.prepare("PRAGMA table_info(characters)").all().some((column) => column.name === "traits"), true);
+      assert.equal(original.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='campaign_profile_field_definitions'").get(), undefined);
+    }
     finally { original.close(); }
+  } finally { db.close(); }
+});
+
+test("campaign profile fields validate, order, retain character values, export and remap", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("North Road");
+  const otherCampaign = db.createCampaign("Other world");
+  const mira = db.createCharacter(campaign.id, "Mira");
+  const other = db.createCharacter(campaign.id, "Other");
+  const orderField = db.createCampaignProfileField(campaign.id, "Орден");
+  const homeField = db.createCampaignProfileField(campaign.id, "Родина");
+  const foreignField = db.createCampaignProfileField(otherCampaign.id, "Организация");
+  assert.equal(orderField.position, 0);
+  assert.equal(homeField.position, 1);
+  assert.throws(() => db.createCampaignProfileField(campaign.id, "  "), /label/);
+  assert.throws(() => db.createCampaignProfileField(campaign.id, "x".repeat(61)), /label/);
+  assert.throws(() => db.updateCharacterProfileFieldValues(mira.id, [{ fieldId: orderField.id, value: "x".repeat(501) }]), /too long/);
+  assert.throws(() => db.updateCharacterProfileFieldValues(mira.id, [{ fieldId: foreignField.id, value: "No" }]), /does not belong/);
+  assert.throws(() => db.updateCharacterProfileFieldValues("missing", []), /Character not found/);
+
+  db.updateCharacterProfileFieldValues(mira.id, [
+    { fieldId: orderField.id, value: " Орден Серого Пламени " }, { fieldId: homeField.id, value: "Вейр" }
+  ]);
+  assert.deepEqual(db.getCharacterOverview(mira.id).profileFields.map(({ label, value }) => ({ label, value })), [
+    { label: "Орден", value: "Орден Серого Пламени" }, { label: "Родина", value: "Вейр" }
+  ]);
+  db.renameCampaignProfileField(campaign.id, orderField.id, "Орден хранителей");
+  assert.deepEqual(db.getCharacterOverview(mira.id).profileFields[0], { id: orderField.id, label: "Орден хранителей", value: "Орден Серого Пламени" });
+  db.reorderCampaignProfileFields(campaign.id, [homeField.id, orderField.id]);
+  assert.deepEqual(db.listCampaignProfileFields(campaign.id).map(({ id, position }) => [id, position]), [[homeField.id, 0], [orderField.id, 1]]);
+  assert.throws(() => db.reorderCampaignProfileFields(campaign.id, [homeField.id, homeField.id]), /order is invalid/);
+
+  const session = db.createSession(campaign.id, "First");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "A", "profile-field-token");
+  db.approvePlayer(player.id, { characterId: mira.id });
+  assert.deepEqual(db.getPlayerState("profile-field-token").profile.profileFields.map((field) => field.value), ["Вейр", "Орден Серого Пламени"]);
+  assert.equal("dmNotes" in db.getPlayerState("profile-field-token").profile, false);
+  const otherPlayer = db.submitPlayerRequest(session.id, "C", "other-profile-field-token");
+  db.approvePlayer(otherPlayer.id, { characterId: other.id });
+  assert.deepEqual(db.getPlayerState("other-profile-field-token").profile.profileFields, []);
+  db.endSession(session.id);
+  const secondSession = db.createSession(campaign.id, "Second");
+  db.activateSession(secondSession.id);
+  const newPlayer = db.submitPlayerRequest(secondSession.id, "B", "new-profile-field-token");
+  db.approvePlayer(newPlayer.id, { characterId: mira.id });
+  assert.deepEqual(db.getPlayerState("new-profile-field-token").profile.profileFields.map((field) => field.value), ["Вейр", "Орден Серого Пламени"]);
+
+  const archive = db.exportCampaign(campaign.id);
+  assert.equal(archive.version, 6);
+  assert.deepEqual(archive.profileFields.map(({ label, position }) => [label, position]), [["Родина", 0], ["Орден хранителей", 1]]);
+  assert.equal(JSON.stringify(archive).includes("profile-field-token"), false);
+  const imported = db.importCampaign(archive);
+  const importedCharacter = db.listCharactersByCampaign(imported.id)[0];
+  const importedFields = db.listCampaignProfileFields(imported.id);
+  const importedOverview = db.getCharacterOverview(importedCharacter.id);
+  assert.notEqual(importedFields[0].id, archive.profileFields[0].id);
+  assert.notEqual(importedCharacter.id, mira.id);
+  assert.deepEqual(importedOverview.profileFields.map(({ label, value }) => [label, value]), [
+    ["Родина", "Вейр"], ["Орден хранителей", "Орден Серого Пламени"]
+  ]);
+  assert.equal(db.listCampaignProfileFields(otherCampaign.id)[0].id, foreignField.id);
+  assert.equal(db.checkDataHealth().ok, true);
+  assert.equal(other.name, "Other");
+
+  const deleted = db.deleteCampaignProfileField(campaign.id, orderField.id);
+  assert.equal(deleted.id, orderField.id);
+  assert.equal(db.getCharacterOverview(mira.id).profileFields.length, 1);
+  assert.equal(db.listCampaignProfileFields(campaign.id)[0].position, 0);
+});
+
+test("campaign profile field limit and health diagnostics reject corrupt data", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "progdm-profile-health-"));
+  const file = join(root, "game.db");
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  t.after(() => { db.close(); assert.equal(dirname(root), resolve(tmpdir())); rmSync(root, { recursive: true, force: true }); });
+  const campaign = db.createCampaign("Fields");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const fields = Array.from({ length: 20 }, (_, index) => db.createCampaignProfileField(campaign.id, `Поле ${index + 1}`));
+  assert.equal(fields.length, 20);
+  assert.throws(() => db.createCampaignProfileField(campaign.id, "Двадцать первое"), /limit reached/);
+  db.updateCharacterProfileFieldValues(character.id, [{ fieldId: fields[0].id, value: "Known" }]);
+  const raw = new SQLite(db.file);
+  try {
+    raw.pragma("ignore_check_constraints = ON");
+    raw.prepare("UPDATE campaign_profile_field_definitions SET position=40 WHERE id=? AND campaign_id=?").run(fields[0].id, campaign.id);
+    raw.pragma("ignore_check_constraints = OFF");
+    const health = db.checkDataHealth();
+    assert.equal(health.ok, false);
+    assert.match(health.checks.find((entry) => entry.name === "Определения полей профиля").message, /порядок/);
+  } finally { raw.close(); }
+});
+
+test("backup restore preserves campaign profile definitions, values and order", async (t) => {
+  const file = temporaryFile(t);
+  const root = dirname(dirname(file));
+  const db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  try {
+    const campaign = db.createCampaign("Backup profile");
+    const foreignCampaign = db.createCampaign("Unrelated campaign");
+    const character = db.createCharacter(campaign.id, "Mira");
+    const first = db.createCampaignProfileField(campaign.id, "Орден");
+    const second = db.createCampaignProfileField(campaign.id, "Родина");
+    const foreignField = db.createCampaignProfileField(foreignCampaign.id, "Фракция");
+    db.reorderCampaignProfileFields(campaign.id, [second.id, first.id]);
+    db.updateCharacterProfileFieldValues(character.id, [{ fieldId: first.id, value: "Серое пламя" }, { fieldId: second.id, value: "Вейр" }]);
+    const raw = new SQLite(file);
+    try {
+      raw.pragma("foreign_keys = ON");
+      assert.throws(() => raw.prepare("INSERT INTO character_profile_field_values (campaign_id, field_id, character_id, value, updated_at) VALUES (?, ?, ?, ?, ?)")
+        .run(campaign.id, foreignField.id, character.id, "Cross campaign", new Date().toISOString()), /FOREIGN KEY/);
+    } finally { raw.close(); }
+    const backup = await db.createBackup();
+    const backupBytes = readFileSync(db.backupFile(backup.id));
+    db.updateCharacterProfileFieldValues(character.id, [{ fieldId: first.id, value: "Changed" }]);
+    await db.restoreBackup(backup.id);
+    assert.deepEqual(db.listCampaignProfileFields(campaign.id).map(({ label, position }) => [label, position]), [["Родина", 0], ["Орден", 1]]);
+    assert.deepEqual(db.getCharacterOverview(character.id).profileFields.map(({ value }) => value), ["Вейр", "Серое пламя"]);
+    assert.deepEqual(readFileSync(db.backupFile(backup.id)), backupBytes);
+    assert.equal(db.checkDataHealth().ok, true);
   } finally { db.close(); }
 });

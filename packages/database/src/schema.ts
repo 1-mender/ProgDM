@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const campaigns = sqliteTable("campaigns", {
   id: text("id").primaryKey(),
@@ -55,8 +55,37 @@ export const characters = sqliteTable("characters", {
   quote: text("quote").notNull().default("")
 }, (table) => [
   index("characters_campaign_id_idx").on(table.campaignId),
+  uniqueIndex("characters_id_campaign_unique").on(table.id, table.campaignId),
   check("character_name_valid", sql`length(trim(${table.name})) between 1 and 120`),
   check("character_profile_valid", sql`length(${table.shortDescription}) <= 500 and length(${table.archetype}) <= 120 and length(${table.origin}) <= 500 and length(${table.personalGoal}) <= 500 and length(${table.dmNotes}) <= 2000 and length(${table.appearance}) <= 1000 and length(${table.quote}) <= 300`)
+]);
+
+export const campaignProfileFieldDefinitions = sqliteTable("campaign_profile_field_definitions", {
+  id: text("id").notNull(),
+  campaignId: text("campaign_id").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
+  label: text("label").notNull(),
+  position: integer("position").notNull(),
+  createdAt: text("created_at").notNull()
+}, (table) => [
+  primaryKey({ columns: [table.id, table.campaignId] }),
+  uniqueIndex("campaign_profile_field_position_unique").on(table.campaignId, table.position),
+  index("campaign_profile_fields_campaign_order_idx").on(table.campaignId, table.position, table.id),
+  check("campaign_profile_field_label_valid", sql`length(trim(${table.label})) between 1 and 60`),
+  check("campaign_profile_field_position_valid", sql`${table.position} >= 0`)
+]);
+
+export const characterProfileFieldValues = sqliteTable("character_profile_field_values", {
+  campaignId: text("campaign_id").notNull(),
+  fieldId: text("field_id").notNull(),
+  characterId: text("character_id").notNull(),
+  value: text("value").notNull().default(""),
+  updatedAt: text("updated_at").notNull()
+}, (table) => [
+  primaryKey({ columns: [table.fieldId, table.characterId] }),
+  foreignKey({ columns: [table.fieldId, table.campaignId], foreignColumns: [campaignProfileFieldDefinitions.id, campaignProfileFieldDefinitions.campaignId], name: "character_profile_field_values_field_campaign_fk" }).onDelete("cascade"),
+  foreignKey({ columns: [table.characterId, table.campaignId], foreignColumns: [characters.id, characters.campaignId], name: "character_profile_field_values_character_campaign_fk" }).onDelete("cascade"),
+  index("character_profile_field_values_character_idx").on(table.characterId, table.campaignId),
+  check("character_profile_field_value_valid", sql`length(${table.value}) <= 500`)
 ]);
 
 export const characterPersonalNotes = sqliteTable("character_personal_notes", {

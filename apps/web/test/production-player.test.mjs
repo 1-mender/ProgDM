@@ -57,6 +57,13 @@ test("Profile uses only existing player-safe fields and guards its existing edit
   assert.match(profile, /Цитата/);
 });
 
+test("Profile renders campaign fields read-only and omits empty values", () => {
+  assert.match(profile, /profile\?\.profileFields\.length/);
+  assert.match(profile, /profile\.profileFields\.filter\(\(field\) => field\.value\.trim\(\)\)/);
+  assert.match(profile, /<dt>\{field\.label\}<\/dt><dd>\{field\.value\}<\/dd>/);
+  assert.equal(profile.includes("setProfileField"), false);
+});
+
 test("Knowledge is filtered from the production-visible snapshot and maps only legacy categories", () => {
   for (const [value, label] of [["npc", "Персонаж мира"], ["monster", "Существо"], ["note", "Заметка"], ["quest", "Событие"]]) {
     assert.equal(model.KNOWLEDGE_CATEGORY_LABELS[value], label);

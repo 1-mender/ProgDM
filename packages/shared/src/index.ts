@@ -35,10 +35,25 @@ export interface DmState {
   current: SessionSnapshot | null;
   players: Player[];
   characters: Character[];
+  profileFields: CampaignProfileFieldDefinition[];
   itemCatalog: CampaignItem[];
   knowledge: KnowledgeEntry[];
   activity: CampaignActivity[];
   networkAddresses: NetworkAddress[];
+}
+
+export interface CampaignProfileFieldDefinition {
+  id: EntityId;
+  campaignId: EntityId;
+  label: string;
+  position: number;
+  createdAt: string;
+}
+
+export interface CharacterProfileFieldValue {
+  id: EntityId;
+  label: string;
+  value: string;
 }
 
 export interface Player {
@@ -105,7 +120,7 @@ export interface PlayerState {
   sessionName: string;
   characterName: string | null;
   characterId: EntityId | null;
-  profile: Pick<Character, "shortDescription" | "archetype" | "origin" | "personalGoal" | "traits" | "appearance" | "quote"> | null;
+  profile: (Pick<Character, "shortDescription" | "archetype" | "origin" | "personalGoal" | "traits" | "appearance" | "quote"> & { profileFields: CharacterProfileFieldValue[] }) | null;
   canEdit: boolean;
   inventory: InventoryItem[];
   knowledge: KnowledgeEntry[];
