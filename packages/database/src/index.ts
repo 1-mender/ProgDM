@@ -7,7 +7,7 @@ import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type EquipmentSlot, type HealthCheck, type InventoryCategory, type InventoryRarity, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerInventoryItem, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
+import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type EquipmentSlot, type HealthCheck, type InventoryCategory, type InventoryRarity, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerInventoryItem, type PlayerJournalCursor, type PlayerJournalPage, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 
 function validatedPlayerName(name: string): string {
@@ -627,6 +627,95 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       return { characterId: target.characterId, characterName: target.characterName, bagSlotsUsed: target.bagSlotsUsed,
         inventoryCapacity: target.inventoryCapacity, willMerge, maxQuantity };
     });
+  }
+
+  function projectPlayerActivity(active: NonNullable<ReturnType<typeof activePlayerCharacter>>, knowledge: PlayerKnowledgeEntry[]): PlayerActivityEvent[] {
+    const relevant: PlayerActivityEvent[] = [];
+    const safeEntries = new Map(knowledge.map((entry) => [entry.id, entry]));
+    const sessionNames = new Map(db.select({ id: schema.sessions.id, name: schema.sessions.name }).from(schema.sessions)
+      .where(eq(schema.sessions.campaignId, active.campaignId)).all().map((session) => [session.id, session.name]));
+    const playerProjectionTypes: ActivityType[] = ["knowledge_created", "knowledge_visibility_changed", "item_granted", "knowledge_fact_revealed", "item_transferred", "item_discarded"];
+    const campaignEvents = activityRows(db.select().from(schema.campaignActivity)
+      .where(and(eq(schema.campaignActivity.campaignId, active.campaignId), inArray(schema.campaignActivity.type, playerProjectionTypes)))
+      .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all());
+    const summaryStates = new Map<string, { visibility: KnowledgeVisibility; characterId: string | null | undefined }>();
+    const canSeeSummary = (state: { visibility: KnowledgeVisibility; characterId: string | null | undefined }) => {
+      if (state.visibility === "party") return true;
+      if (state.visibility === "hidden") return false;
+      return state.characterId === undefined ? null : state.characterId === active.characterId;
+    };
+    for (const event of campaignEvents) {
+      if (event.type === "knowledge_created" && event.knowledgeEntryId && !summaryStates.has(event.knowledgeEntryId)) {
+        summaryStates.set(event.knowledgeEntryId, { visibility: "hidden", characterId: null });
+      }
+      if (event.type === "knowledge_visibility_changed" && event.knowledgeEntryId) {
+        const previous = summaryStates.get(event.knowledgeEntryId) ?? {
+          visibility: event.details.previousVisibility ?? "hidden",
+          characterId: event.details.previousVisibility === "character" ? undefined : null
+        };
+        const next: { visibility: KnowledgeVisibility; characterId: string | null | undefined } = {
+          visibility: event.details.visibility ?? "hidden",
+          characterId: event.details.visibility === "character" ? event.characterId ?? undefined : null
+        };
+        const openedToCharacter = canSeeSummary(previous) === false && canSeeSummary(next) === true;
+        summaryStates.set(event.knowledgeEntryId, next);
+        const entry = safeEntries.get(event.knowledgeEntryId);
+        if (openedToCharacter && entry?.summaryVisible) relevant.push({
+          id: event.id, kind: "knowledge_summary_opened", createdAt: event.createdAt,
+          sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
+          knowledgeEntryId: entry.id, knowledgeTitle: entry.title
+        });
+        continue;
+      }
+      if (event.type === "item_granted" && event.characterId === active.characterId) {
+        relevant.push({
+          id: event.id, kind: "item_received", createdAt: event.createdAt,
+          sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
+          itemName: event.details.itemName ?? "Предмет",
+          quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1
+        });
+        continue;
+      }
+      if (event.type === "item_transferred") {
+        const isSender = event.characterId === active.characterId;
+        const isRecipient = event.relatedCharacterId === active.characterId;
+        if (isSender !== isRecipient) {
+          const otherCharacterId = isSender ? event.relatedCharacterId : event.characterId;
+          const otherCharacter = otherCharacterId ? db.select({ name: schema.characters.name }).from(schema.characters)
+            .where(and(eq(schema.characters.id, otherCharacterId), eq(schema.characters.campaignId, active.campaignId))).get() : null;
+          if (otherCharacter) relevant.push({
+            id: event.id, kind: "item_transferred", direction: isSender ? "sent" : "received",
+            createdAt: event.createdAt, sessionId: event.sessionId,
+            sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
+            itemName: event.details.itemName ?? "Предмет",
+            quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1,
+            otherCharacterName: otherCharacter.name
+          });
+        }
+        continue;
+      }
+      if (event.type === "item_discarded" && event.characterId === active.characterId) {
+        relevant.push({
+          id: event.id, kind: "item_discarded", createdAt: event.createdAt,
+          sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
+          itemName: event.details.itemName ?? "Предмет",
+          quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1
+        });
+        continue;
+      }
+      if (event.type === "knowledge_fact_revealed" && event.knowledgeEntryId) {
+        const entry = safeEntries.get(event.knowledgeEntryId);
+        const visibleAudience = event.details.audience === "party" && event.characterId === null ||
+          event.details.audience === "character" && event.characterId === active.characterId;
+        if (entry && visibleAudience) relevant.push({
+          id: event.id, kind: "knowledge_facts_revealed", createdAt: event.createdAt,
+          sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
+          knowledgeEntryId: entry.id, knowledgeTitle: entry.title
+        });
+      }
+    }
+    relevant.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+    return relevant;
   }
 
   return {
@@ -1317,7 +1406,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         .where(eq(schema.players.tokenHash, tokenHash)).get();
       return player ? getPlayer(player.id) : null;
     },
-    getPlayerState(tokenHash: string) {
+    getPlayerState(tokenHash: string, includeRecentActivity = true) {
       const player = db.select({
         id: schema.players.id,
         campaignId: schema.sessions.campaignId,
@@ -1424,96 +1513,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           facts: [...facts.values()].sort((left, right) => left.position - right.position || compareText(left.id, right.id))
         }));
       const active = activePlayerCharacter(tokenHash);
-      const relevant: PlayerActivityEvent[] = [];
-      if (active) {
-        const safeEntries = new Map(knowledge.map((entry) => [entry.id, entry]));
-        const sessionNames = new Map(db.select({ id: schema.sessions.id, name: schema.sessions.name }).from(schema.sessions)
-          .where(eq(schema.sessions.campaignId, active.campaignId)).all().map((session) => [session.id, session.name]));
-        const playerProjectionTypes: ActivityType[] = ["knowledge_created", "knowledge_visibility_changed", "item_granted", "knowledge_fact_revealed", "item_transferred", "item_discarded"];
-        const campaignEvents = activityRows(db.select().from(schema.campaignActivity)
-          .where(and(eq(schema.campaignActivity.campaignId, active.campaignId), inArray(schema.campaignActivity.type, playerProjectionTypes)))
-          .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all());
-        const summaryStates = new Map<string, { visibility: KnowledgeVisibility; characterId: string | null | undefined }>();
-        const canSeeSummary = (state: { visibility: KnowledgeVisibility; characterId: string | null | undefined }) => {
-          if (state.visibility === "party") return true;
-          if (state.visibility === "hidden") return false;
-          return state.characterId === undefined ? null : state.characterId === active.characterId;
-        };
-        for (const event of campaignEvents) {
-          if (event.type === "knowledge_created" && event.knowledgeEntryId && !summaryStates.has(event.knowledgeEntryId)) {
-            summaryStates.set(event.knowledgeEntryId, { visibility: "hidden", characterId: null });
-          }
-          if (event.type === "knowledge_visibility_changed" && event.knowledgeEntryId) {
-            const previous = summaryStates.get(event.knowledgeEntryId) ?? {
-              visibility: event.details.previousVisibility ?? "hidden",
-              characterId: event.details.previousVisibility === "character" ? undefined : null
-            };
-            const next: { visibility: KnowledgeVisibility; characterId: string | null | undefined } = {
-              visibility: event.details.visibility ?? "hidden",
-              characterId: event.details.visibility === "character" ? event.characterId ?? undefined : null
-            };
-            const openedToCharacter = canSeeSummary(previous) === false && canSeeSummary(next) === true;
-            summaryStates.set(event.knowledgeEntryId, next);
-            const entry = safeEntries.get(event.knowledgeEntryId);
-            if (openedToCharacter && entry?.summaryVisible) {
-              relevant.push({
-                id: event.id, kind: "knowledge_summary_opened", createdAt: event.createdAt,
-                sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
-                knowledgeEntryId: entry.id, knowledgeTitle: entry.title
-              });
-            }
-            continue;
-          }
-          if (event.type === "item_granted" && event.characterId === active.characterId) {
-            relevant.push({
-              id: event.id, kind: "item_received", createdAt: event.createdAt,
-              sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
-              itemName: event.details.itemName ?? "Предмет",
-              quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1
-            });
-            continue;
-          }
-          if (event.type === "item_transferred") {
-            const isSender = event.characterId === active.characterId;
-            const isRecipient = event.relatedCharacterId === active.characterId;
-            if (isSender !== isRecipient) {
-              const otherCharacterId = isSender ? event.relatedCharacterId : event.characterId;
-              const otherCharacter = otherCharacterId ? db.select({ name: schema.characters.name }).from(schema.characters)
-                .where(and(eq(schema.characters.id, otherCharacterId), eq(schema.characters.campaignId, active.campaignId))).get() : null;
-              if (otherCharacter) relevant.push({
-                id: event.id, kind: "item_transferred", direction: isSender ? "sent" : "received",
-                createdAt: event.createdAt, sessionId: event.sessionId,
-                sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
-                itemName: event.details.itemName ?? "Предмет",
-                quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1,
-                otherCharacterName: otherCharacter.name
-              });
-            }
-            continue;
-          }
-          if (event.type === "item_discarded" && event.characterId === active.characterId) {
-            relevant.push({
-              id: event.id, kind: "item_discarded", createdAt: event.createdAt,
-              sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
-              itemName: event.details.itemName ?? "Предмет",
-              quantity: Number.isInteger(event.details.quantity) && (event.details.quantity ?? 0) > 0 ? event.details.quantity! : 1
-            });
-            continue;
-          }
-          if (event.type === "knowledge_fact_revealed" && event.knowledgeEntryId) {
-            const entry = safeEntries.get(event.knowledgeEntryId);
-            const visibleAudience = event.details.audience === "party" && event.characterId === null ||
-              event.details.audience === "character" && event.characterId === active.characterId;
-            if (entry && visibleAudience) relevant.push({
-              id: event.id, kind: "knowledge_facts_revealed", createdAt: event.createdAt,
-              sessionId: event.sessionId, sessionName: event.sessionId ? sessionNames.get(event.sessionId) ?? null : null,
-              knowledgeEntryId: entry.id, knowledgeTitle: entry.title
-            });
-          }
-        }
-        relevant.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
-        relevant.splice(20);
-      }
+      const relevant = active && includeRecentActivity ? projectPlayerActivity(active, knowledge).slice(0, 20) : [];
       const marker = active ? db.select().from(schema.characterReadState)
         .where(eq(schema.characterReadState.characterId, active.characterId)).get() : null;
       const isNew = (event: PlayerActivityEvent) => !marker || event.createdAt > marker.lastSeenAt ||
@@ -1560,6 +1560,22 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           .orderBy(desc(schema.characterPersonalNotes.updatedAt), desc(schema.characterPersonalNotes.id)).all() : [],
         recentActivity: relevant,
         newActivity: relevant.filter(isNew)
+      };
+    },
+    listPlayerJournal(tokenHash: string, limit = 30, cursor?: PlayerJournalCursor): PlayerJournalPage {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("Journal page size is invalid.");
+      const active = requireActivePlayerCharacter(tokenHash);
+      const state = this.getPlayerState(tokenHash, false);
+      if (!state) throw new Error("Active character access required.");
+      let events = projectPlayerActivity(active, state.knowledge);
+      if (cursor) events = events.filter((event) => event.createdAt < cursor.beforeCreatedAt ||
+        event.createdAt === cursor.beforeCreatedAt && event.id < cursor.beforeId);
+      const hasMore = events.length > limit;
+      const page = events.slice(0, limit);
+      const last = page.at(-1);
+      return {
+        events: page,
+        nextCursor: hasMore && last ? { beforeCreatedAt: last.createdAt, beforeId: last.id } : null
       };
     },
     updatePlayerProfile(tokenHash: string, fields: {

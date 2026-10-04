@@ -100,6 +100,22 @@ export function createApp(options: {
         throw error;
       }
     };
+    player.get<{ Querystring: { limit?: string; beforeCreatedAt?: string; beforeId?: string } }>("/api/player/journal", {
+      schema: { querystring: {
+        type: "object", additionalProperties: false,
+        properties: {
+          limit: { type: "string", pattern: "^(?:[1-9]|[1-4][0-9]|50)$", default: "30" },
+          beforeCreatedAt: { type: "string", format: "date-time" },
+          beforeId: { type: "string", format: "uuid" }
+        },
+        allOf: [
+          { if: { required: ["beforeCreatedAt"] }, then: { required: ["beforeId"] } },
+          { if: { required: ["beforeId"] }, then: { required: ["beforeCreatedAt"] } }
+        ]
+      } }
+    }, async (request, reply) => activeAction(request, reply, (hash) => database.listPlayerJournal(hash,
+      Number(request.query.limit ?? "30"), request.query.beforeCreatedAt && request.query.beforeId
+        ? { beforeCreatedAt: request.query.beforeCreatedAt, beforeId: request.query.beforeId } : undefined)));
     const inventoryAction = (request: { params: { id: string } }, reply: { code: (status: number) => { send: (body: object) => unknown } },
       action: (hash: string, itemId: string) => unknown) => activeAction(request, reply, (hash) => {
       try { return action(hash, request.params.id); }

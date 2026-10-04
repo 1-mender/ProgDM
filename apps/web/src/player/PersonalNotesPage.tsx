@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { Pin, Plus, X } from "lucide-react";
+import { ChevronRight, Pin, Plus, X } from "lucide-react";
 import type { PersonalNote, PersonalNoteMarker } from "@progdm/shared";
-import { PERSONAL_NOTE_MARKER_LABELS, personalNoteBodyPreview, personalNoteDisplayTitle } from "./model";
+import { PERSONAL_NOTE_MARKER_LABELS, personalNoteBodyPreview, personalNoteDisplayTitle, personalNoteMarkerIcon } from "./model";
 
 type PersonalNoteDraft = Pick<PersonalNote, "title" | "body" | "marker" | "pinned">;
 
@@ -11,7 +11,6 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
   canEdit: boolean;
   onSave: (noteId: string | null, fields: PersonalNoteDraft) => Promise<boolean>;
 }) {
-  const [filter, setFilter] = useState<"pinned" | "all">("all");
   const [editing, setEditing] = useState<PersonalNote | null | false>(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -40,19 +39,14 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
     if (await onSave(editing?.id ?? null, { title, body, marker, pinned })) setEditing(false);
   }
 
-  const visibleNotes = notes.filter((note) => filter === "all" || note.pinned);
-  return <section className="prod-notes-page" aria-labelledby="prod-notes-heading">
-    <div className="prod-notes-heading"><div><h2 id="prod-notes-heading">Мои заметки</h2><p>Заметки видны тебе и ведущему.</p></div>
-      {canEdit && <button className="prod-secondary" type="button" onClick={startCreate}><Plus aria-hidden="true" />Новая заметка</button>}
-    </div>
-    <div className="prod-note-filters" role="group" aria-label="Фильтр заметок">
-      <button type="button" className={filter === "pinned" ? "is-selected" : ""} aria-pressed={filter === "pinned"} onClick={() => setFilter("pinned")}>Закреплено</button>
-      <button type="button" className={filter === "all" ? "is-selected" : ""} aria-pressed={filter === "all"} onClick={() => setFilter("all")}>Все заметки</button>
-    </div>
-    {visibleNotes.length ? <ul className="prod-personal-note-list">{visibleNotes.map((note) => <li key={note.id}>
+  const pinnedNotes = notes.filter((note) => note.pinned);
+  const otherNotes = notes.filter((note) => !note.pinned);
+  const noteRows = (entries: PersonalNote[]) => <ul className="prod-personal-note-list">{entries.map((note) => {
+    const MarkerIcon = personalNoteMarkerIcon(note.marker);
+    return <li key={note.id}>
       <button className="prod-personal-note-copy" type="button" disabled={!canEdit} onClick={() => startEdit(note)} aria-label={`${canEdit ? "Изменить" : "Заметка"}: ${personalNoteDisplayTitle(note)}`}>
         <span className="prod-personal-note-meta">
-          {note.marker !== "normal" && <span className={`prod-note-marker is-${note.marker}`}>{PERSONAL_NOTE_MARKER_LABELS[note.marker]}</span>}
+          {MarkerIcon && <span className={`prod-note-marker is-${note.marker}`}><MarkerIcon aria-hidden="true" />{PERSONAL_NOTE_MARKER_LABELS[note.marker]}</span>}
           {note.pinned && <Pin className="prod-note-pin" aria-label="Закреплена" />}
         </span>
         <strong>{personalNoteDisplayTitle(note)}</strong>
@@ -62,7 +56,20 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
         onClick={() => void onSave(note.id, { title: note.title, body: note.body, marker: note.marker, pinned: !note.pinned })}>
         <Pin aria-hidden="true" />
       </button>}
-    </li>)}</ul> : <p className="prod-empty">{filter === "pinned" ? "Пока нет закреплённых заметок." : "Пока нет заметок."}</p>}
+      {canEdit && <ChevronRight className="prod-note-chevron" aria-hidden="true" />}
+    </li>;
+  })}</ul>;
+  return <section className="prod-notes-page" aria-labelledby="prod-notes-heading">
+    <div className="prod-notes-heading"><div><h2 id="prod-notes-heading">Мои заметки</h2><p>Заметки видны тебе и ведущему.</p></div>
+      {canEdit && <button className="prod-secondary" type="button" onClick={startCreate}><Plus aria-hidden="true" />Новая заметка</button>}
+    </div>
+    {pinnedNotes.length > 0 && <section className="prod-note-group" aria-labelledby="prod-pinned-notes-heading">
+      <h3 id="prod-pinned-notes-heading"><Pin aria-hidden="true" />Закреплено</h3>{noteRows(pinnedNotes)}
+    </section>}
+    {otherNotes.length > 0 && <section className="prod-note-group" aria-labelledby="prod-all-notes-heading">
+      <h3 id="prod-all-notes-heading">{pinnedNotes.length > 0 ? "Остальные заметки" : "Все заметки"}</h3>{noteRows(otherNotes)}
+    </section>}
+    {notes.length === 0 && <p className="prod-empty">Пока нет заметок.</p>}
 
     {editing !== false && <div className="prod-note-editor-wrap">
       <form className="prod-note-editor" onSubmit={(event) => void submit(event)}>

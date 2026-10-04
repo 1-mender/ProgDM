@@ -13,6 +13,7 @@ const home = read("../src/player/HomePage.tsx");
 const profile = read("../src/player/ProfilePage.tsx");
 const knowledge = read("../src/player/KnowledgePage.tsx");
 const personalNotes = read("../src/player/PersonalNotesPage.tsx");
+const journalPage = read("../src/player/JournalPage.tsx");
 const modelSource = read("../src/player/model.ts");
 const compiledModel = ts.transpileModule(modelSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS }
@@ -123,13 +124,76 @@ test("Home and Journal use player-facing explicit event labels with no generic f
   assert.equal(model.journalActivityLabel(item), "Получен предмет: Старинный ключ × 2");
   assert.equal(model.journalActivityLabel(summary), "Открыто знание: Аптекарь");
   assert.equal(model.journalActivityLabel(facts), "Открыты новые сведения: Аптекарь");
+  assert.deepEqual(model.journalActivityPresentation(item).destination, undefined);
+  assert.deepEqual(model.journalActivityPresentation(summary).destination, { kind: "knowledge", entryId: "entry" });
+  assert.equal(model.journalActivityPresentation(facts).title, "Новые сведения");
   assert.match(modelSource, /switch \(event\.kind\)/);
   assert.match(modelSource, /assertNever\(event\)/);
-  assert.match(workspace, /journalActivityLabel\(event\)/);
-  assert.match(workspace, /event\.sessionName &&/);
+  assert.match(journalPage, /journalActivityPresentation\(event\)/);
+  assert.match(journalPage, /onOpenKnowledge\(selectedPresentation\.destination/);
+  assert.match(journalPage, /Показать более ранние события/);
+  assert.match(journalPage, /Отметить новое просмотренным/);
+  assert.match(journalPage, /aria-selected=\{activeTab ===/);
+  assert.doesNotMatch(journalPage, /CampaignActivity|event\.type|event\.details/);
   assert.doesNotMatch(home, /CampaignActivity|event\.type/);
   assert.doesNotMatch(workspace, /event\.type|event\.details/);
   assert.match(home, /Пока ничего нового\./);
+});
+
+test("Journal timeline groups by local date and session, formats Russian time, and uses safe destinations", () => {
+  const events = [
+    { id: "a", kind: "item_received", itemName: "Старинный ключ", quantity: 1, createdAt: "2026-10-04T17:14:12.000Z", sessionId: "s1", sessionName: "Старый мост" },
+    { id: "b", kind: "knowledge_summary_opened", knowledgeEntryId: "entry", knowledgeTitle: "Аптекарь", createdAt: "2026-10-04T17:09:00.000Z", sessionId: "s1", sessionName: "Старый мост" },
+    { id: "c", kind: "item_discarded", itemName: "Компас", quantity: 2, createdAt: "2026-10-04T17:08:00.000Z", sessionId: null, sessionName: null }
+  ];
+  const groups = model.journalEventGroups(events);
+  assert.equal(groups.length, 2, "a new session context starts its own timeline group");
+  assert.equal(groups[0].sessionName, "Старый мост");
+  assert.equal(groups[0].events.length, 2);
+  assert.equal(groups[1].sessionName, "Вне сессии");
+  assert.match(groups[0].dateLabel, /4 октября 2026/);
+  assert.match(model.journalEventTime(events[0].createdAt), /^\d{2}:\d{2}$/);
+  assert.equal(model.journalActivityPresentation(events[0]).secondary, "Старинный ключ");
+  assert.equal(model.journalActivityPresentation(events[2]).secondary, "Компас ×2");
+  const icons = createRequire(import.meta.url)("lucide-react");
+  const presentationText = ({ title, secondary }) => ({ title, secondary });
+  assert.equal(model.journalActivityPresentation(events[0]).icon, icons.Package);
+  const sentTransfer = { id: "t", kind: "item_transferred", direction: "sent", itemName: "Компас", quantity: 2,
+    otherCharacterName: "Rowan", createdAt: events[0].createdAt, sessionId: "s1", sessionName: "Старый мост" };
+  const receivedTransfer = { ...sentTransfer, id: "r", direction: "received", otherCharacterName: "Mira" };
+  assert.deepEqual(presentationText(model.journalActivityPresentation(sentTransfer)),
+    { title: "Передан предмет", secondary: "Компас ×2 — Rowan" });
+  assert.deepEqual(presentationText(model.journalActivityPresentation(receivedTransfer)),
+    { title: "Получен предмет", secondary: "Компас ×2 от Mira" });
+  assert.equal(model.journalActivityPresentation(sentTransfer).icon, icons.ArrowLeftRight);
+  assert.equal(model.journalActivityPresentation(events[2]).icon, icons.Trash2);
+  assert.deepEqual(presentationText(model.journalActivityPresentation(events[2])),
+    { title: "Выброшен предмет", secondary: "Компас ×2" });
+  assert.equal(model.journalActivityPresentation(events[1]).icon, icons.BookOpen);
+  const revealedFact = model.journalActivityPresentation({ ...events[1], id: "d", kind: "knowledge_facts_revealed" });
+  assert.deepEqual(presentationText(revealedFact), { title: "Новые сведения", secondary: "Аптекарь" });
+  assert.equal(revealedFact.icon, icons.Sparkles);
+  assert.equal(model.personalNoteMarkerIcon("normal"), null);
+  assert.equal(model.personalNoteMarkerIcon("important"), icons.TriangleAlert);
+  assert.equal(model.personalNoteMarkerIcon("check"), icons.Crosshair);
+  assert.equal(model.personalNoteMarkerIcon("question"), icons.CircleHelp);
+  assert.match(personalNotes, /Закреплено/);
+  assert.match(personalNotes, /Все заметки/);
+  assert.match(personalNotes, /Остальные заметки/);
+  assert.match(personalNotes, /personalNoteMarkerIcon/);
+  assert.match(personalNotes, /ChevronRight/);
+  assert.doesNotMatch(workspace, /journalActivityLabel\(event\)/);
+  assert.match(workspace, /<JournalPage/);
+  assert.match(journalPage, /aria-labelledby="prod-journal-detail-title"/);
+  assert.match(journalPage, /role="status"/);
+  assert.match(journalPage, /role="alert"/);
+  assert.match(journalPage, /newEventIds\.has\(event\.id\)/);
+  assert.match(journalPage, /disabled=\{busy\}/);
+  assert.match(journalPage, /onClick=\{retry\}/);
+  assert.equal(model.journalActivityPresentation(events[0]).destination, undefined, "Inventory events have no fake item route");
+  assert.match(journalPage, /<PersonalNotesPage notes=\{player\.notes\} busy=\{busy\} canEdit=\{player\.canEdit\}/);
+  assert.match(personalNotes, /disabled=\{!canEdit\}/);
+  assert.match(personalNotes, /\{canEdit && <button className="prod-secondary"/);
 });
 
 test("Profile uses only existing player-safe fields and guards its existing edit action", () => {
@@ -172,8 +236,10 @@ test("InventoryPage, Journal, Settings and existing player mutations remain in t
   for (const path of ["/api/player/profile", "/api/player/settings", "/api/player/notes", "/api/player/activity/seen", "/api/player/inventory/${itemId}/equip", "/api/player/inventory/${itemId}/unequip"]) assert.ok(workspace.includes(path));
   assert.match(workspace, /<InventoryPage player=\{player\}/);
   assert.doesNotMatch(workspace, /player\.inventory\.map/);
-  assert.match(workspace, /player\.recentActivity\.map/);
-  assert.match(personalNotes, /visibleNotes\.map/);
+  assert.match(workspace, /<JournalPage/);
+  assert.match(journalPage, /player\.newActivity/);
+  assert.match(journalPage, /onLoadPage/);
+  assert.match(personalNotes, /entries\.map\(\(note\) =>/);
 });
 
 test("neutral initials placeholder derives solely from the live character/player name", () => {
@@ -199,7 +265,7 @@ test("Home selects at most two persisted pinned notes and excludes unpinned note
 });
 
 test("Personal Notes uses live API state, production metadata labels and an editable plain-text form", () => {
-  assert.match(workspace, /<PersonalNotesPage notes=\{player\.notes\}/);
+  assert.match(journalPage, /<PersonalNotesPage notes=\{player\.notes\}/);
   assert.match(workspace, /playerPost\(credential, noteId \? `\/api\/player\/notes/);
   assert.match(personalNotes, /Закреплено/);
   assert.match(personalNotes, /Все заметки/);

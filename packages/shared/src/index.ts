@@ -172,6 +172,16 @@ export type PlayerActivityEvent =
   | (PlayerActivityEventBase & { kind: "knowledge_summary_opened"; knowledgeEntryId: EntityId; knowledgeTitle: string })
   | (PlayerActivityEventBase & { kind: "knowledge_facts_revealed"; knowledgeEntryId: EntityId; knowledgeTitle: string });
 
+export interface PlayerJournalCursor {
+  beforeCreatedAt: string;
+  beforeId: EntityId;
+}
+
+export interface PlayerJournalPage {
+  events: PlayerActivityEvent[];
+  nextCursor: PlayerJournalCursor | null;
+}
+
 export interface PlayerKnowledgeEntry {
   id: EntityId;
   category: KnowledgeCategory;

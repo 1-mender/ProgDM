@@ -10,7 +10,8 @@ const database = openDatabase({
   file: ":memory:", backupsDirectory: join(dataDirectory, "backups"), uploadsDirectory: join(dataDirectory, "uploads")
 });
 const app = createApp({ database, dmToken: "progdm-ui-test" });
-await app.listen({ host: "127.0.0.1", port: 3334 });
+const port = Number(process.env.PROGDM_UI_TEST_PORT ?? 3334);
+await app.listen({ host: "127.0.0.1", port });
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => void app.close().finally(() => rmSync(dataDirectory, { recursive: true, force: true })));
 }

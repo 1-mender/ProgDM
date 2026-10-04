@@ -1,5 +1,5 @@
 import type { EquipmentSlot, InventoryCategory, InventoryRarity, KnowledgeCategory, PersonalNote, PersonalNoteMarker, PlayerActivityEvent, PlayerInventoryItem } from "@progdm/shared";
-import { ArrowLeftRight, BookOpen, CircleDot, Diamond, FileText, FlaskConical, Home, KeyRound, Package, ScrollText, Shield, Sparkles, Trash2, UserRound, Wrench, type LucideIcon } from "lucide-react";
+import { ArrowLeftRight, BookOpen, CircleHelp, CircleDot, Crosshair, Diamond, FileText, FlaskConical, Home, KeyRound, Package, ScrollText, Shield, Sparkles, Trash2, TriangleAlert, UserRound, Wrench, type LucideIcon } from "lucide-react";
 
 export type PlayerView = "home" | "inventory" | "knowledge" | "journal" | "profile" | "settings";
 
@@ -123,6 +123,78 @@ export function journalActivityLabel(event: PlayerActivityEvent) {
     case "knowledge_facts_revealed": return `Открыты новые сведения: ${event.knowledgeTitle}`;
     default: return assertNever(event);
   }
+}
+
+export function journalActivityPresentation(event: PlayerActivityEvent): {
+  title: string;
+  secondary: string;
+  icon: LucideIcon;
+  destination?: { kind: "knowledge"; entryId: string };
+} {
+  const quantityText = (name: string, quantity: number) => quantity > 1 ? `${name} ×${quantity}` : name;
+  switch (event.kind) {
+    case "item_received": return { title: "Получен предмет", secondary: quantityText(event.itemName, event.quantity), icon: Package };
+    case "item_transferred": return {
+      title: event.direction === "sent" ? "Передан предмет" : "Получен предмет",
+      secondary: event.direction === "sent"
+        ? `${quantityText(event.itemName, event.quantity)} — ${event.otherCharacterName}`
+        : `${quantityText(event.itemName, event.quantity)} от ${event.otherCharacterName}`,
+      icon: ArrowLeftRight
+    };
+    case "item_discarded": return { title: "Выброшен предмет", secondary: quantityText(event.itemName, event.quantity), icon: Trash2 };
+    case "knowledge_summary_opened": return {
+      title: "Открыто знание", secondary: event.knowledgeTitle, icon: BookOpen,
+      destination: { kind: "knowledge", entryId: event.knowledgeEntryId }
+    };
+    case "knowledge_facts_revealed": return {
+      title: "Новые сведения", secondary: event.knowledgeTitle, icon: Sparkles,
+      destination: { kind: "knowledge", entryId: event.knowledgeEntryId }
+    };
+    default: return assertNever(event);
+  }
+}
+
+export function personalNoteMarkerIcon(marker: PersonalNoteMarker): LucideIcon | null {
+  switch (marker) {
+    case "normal": return null;
+    case "important": return TriangleAlert;
+    case "check": return Crosshair;
+    case "question": return CircleHelp;
+    default: return assertNever(marker);
+  }
+}
+
+export interface JournalEventGroup {
+  key: string;
+  dateLabel: string;
+  sessionName: string;
+  events: PlayerActivityEvent[];
+}
+
+export function journalEventGroups(events: PlayerActivityEvent[]): JournalEventGroup[] {
+  const groups = new Map<string, JournalEventGroup>();
+  for (const event of events) {
+    const date = new Date(event.createdAt);
+    const dateKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const sessionKey = event.sessionId ?? "outside-session";
+    const key = `${dateKey}:${sessionKey}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        key,
+        dateLabel: new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" }).format(date),
+        sessionName: event.sessionName ?? "Вне сессии",
+        events: []
+      };
+      groups.set(key, group);
+    }
+    group.events.push(event);
+  }
+  return [...groups.values()];
+}
+
+export function journalEventTime(value: string) {
+  return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value));
 }
 
 export function homeActivityIcon(event: PlayerActivityEvent): LucideIcon {

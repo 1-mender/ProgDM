@@ -1831,6 +1831,10 @@ test("Player activity projection is safe, audience-scoped, and uses the existing
   assert.equal(hasEvent(rowanState.recentActivity, "knowledge_facts_revealed", miraEntry.id), false);
   assert.ok(hasEvent(rowanState.recentActivity, "knowledge_summary_opened", miraSummary.id),
     "switching a summary from one Character to party opens it to other Characters");
+  const fullMiraJournal = db.listPlayerJournal("activity-mira-hash", 50).events;
+  assert.equal(fullMiraJournal.some((event) => event.knowledgeTitle === "Revoked secret title"), false,
+    "pagination must not restore a Knowledge title after its last current grant was revoked");
+  assert.equal(JSON.stringify(fullMiraJournal).includes("MIRA_FACT_BODY_SECRET"), false);
 
   const groupedEntry = db.createKnowledge(campaign.id, "fact", "Mira's multi-part clue", "HIDDEN_GROUP_SUMMARY");
   const groupedFacts = ["A", "B", "C"].map((suffix) => db.createKnowledgeFact(campaign.id, groupedEntry.id, `GROUP_FACT_${suffix}_SECRET`));
@@ -1851,6 +1855,82 @@ test("Player activity projection is safe, audience-scoped, and uses the existing
   assert.equal(afterSeen[0].knowledgeTitle, "Mira's multi-part clue");
   assert.equal(db.listCampaignActivity(campaign.id).some((event) => event.type === "knowledge_fact_access_revoked"), true);
   assert.equal(db.getPlayerState("activity-mira-hash").recentActivity.some((event) => "type" in event || "details" in event), false);
+});
+
+test("Player Journal cursor uses the event ID tie-breaker and ignores newly inserted newer events", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "progdm-journal-test-"));
+  const file = join(directory, "game.db");
+  const db = openDatabase({ file });
+  const campaign = db.createCampaign("Journal tie-breaker");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "Chapter");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "Mira", "journal-tie-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+  const item = db.createCatalogItem(campaign.id, "Key");
+  for (let index = 0; index < 4; index++) db.grantInventoryItem(character.id, item.id, 1);
+
+  const raw = new SQLite(file);
+  t.after(() => { raw.close(); db.close(); rmSync(directory, { recursive: true, force: true }); });
+  raw.prepare("UPDATE campaign_activity SET created_at=? WHERE campaign_id=? AND type='item_granted'")
+    .run("2020-01-01T00:00:00.000Z", campaign.id);
+  const first = db.listPlayerJournal("journal-tie-token", 2);
+  assert.ok(first.nextCursor);
+  assert.deepEqual(first.events.map((event) => event.id), [...first.events.map((event) => event.id)].sort().reverse());
+
+  db.grantInventoryItem(character.id, item.id, 1);
+  const second = db.listPlayerJournal("journal-tie-token", 2, first.nextCursor);
+  assert.equal(second.events.some((event) => event.createdAt > first.nextCursor.beforeCreatedAt), false,
+    "an event inserted before the cursor must not shift the next page");
+  assert.ok(second.events.every((event) => event.createdAt < first.nextCursor.beforeCreatedAt ||
+    event.createdAt === first.nextCursor.beforeCreatedAt && event.id < first.nextCursor.beforeId));
+  assert.equal(new Set([...first.events, ...second.events].map((event) => event.id)).size, 4);
+});
+
+test("Player Journal paginates the full safe activity projection with a strict stable cursor", (t) => {
+  const db = memoryDatabase(t);
+  const campaign = db.createCampaign("Full Journal");
+  const character = db.createCharacter(campaign.id, "Mira");
+  const session = db.createSession(campaign.id, "Current session");
+  db.activateSession(session.id);
+  const player = db.submitPlayerRequest(session.id, "Mira player", "journal-current-token");
+  db.approvePlayer(player.id, { characterId: character.id });
+  const catalogItem = db.createCatalogItem(campaign.id, "Journal token");
+  for (let index = 0; index < 27; index++) db.grantInventoryItem(character.id, catalogItem.id, 1);
+
+  const state = db.getPlayerState("journal-current-token");
+  assert.equal(state.recentActivity.length, 20, "Home remains limited to its existing 20-event window");
+  const first = db.listPlayerJournal("journal-current-token", 8);
+  assert.equal(first.events.length, 8);
+  assert.ok(first.nextCursor);
+  assert.ok(first.events.every((event) => event.kind === "item_received"));
+  assert.deepEqual(first.events, [...first.events].sort((left, right) =>
+    right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)));
+
+  const second = db.listPlayerJournal("journal-current-token", 8, first.nextCursor);
+  assert.equal(second.events.length, 8);
+  assert.ok(second.events.every((event) => event.createdAt < first.nextCursor.beforeCreatedAt ||
+    event.createdAt === first.nextCursor.beforeCreatedAt && event.id < first.nextCursor.beforeId));
+  assert.equal(new Set([...first.events, ...second.events].map((event) => event.id)).size, 16);
+
+  const all = [...first.events, ...second.events];
+  let cursor = second.nextCursor;
+  while (cursor) {
+    const page = db.listPlayerJournal("journal-current-token", 8, cursor);
+    all.push(...page.events);
+    cursor = page.nextCursor;
+  }
+  assert.equal(all.length, 27, "Journal includes older events outside Home's recent window");
+  assert.equal(new Set(all.map((event) => event.id)).size, 27);
+  assert.equal(db.listPlayerJournal("journal-current-token", 50).nextCursor, null);
+  assert.throws(() => db.listPlayerJournal("journal-current-token", 0), /page size is invalid/);
+  assert.throws(() => db.listPlayerJournal("journal-current-token", 51), /page size is invalid/);
+  assert.throws(() => db.listPlayerJournal("unknown-journal-token"), /Active character access required/);
+
+  const serialized = JSON.stringify(all);
+  for (const forbidden of ["campaignId", "playerId", "characterId", "catalogItemId", "sourceInventoryItemId", "details", "payload", "type"]) {
+    assert.equal(serialized.includes(`\"${forbidden}\"`), false, `Journal projection leaked ${forbidden}`);
+  }
 });
 
 test("Knowledge Fact export v10 remaps references, omits secrets, and imports invalid references atomically", (t) => {
@@ -2411,6 +2491,18 @@ test("catalog transfers merge atomically, project to both characters, and replay
   assert.equal(received.kind, "item_transferred");
   assert.equal(received.direction, "received");
   assert.equal(received.otherCharacterName, "Mira");
+  const unrelated = db.createCharacter(campaign.id, "Victor");
+  const unrelatedPlayer = db.submitPlayerRequest(session.id, "Victor player", "transfer-unrelated-token");
+  db.approvePlayer(unrelatedPlayer.id, { characterId: unrelated.id });
+  assert.equal(db.listPlayerJournal(senderToken, 50).events.some((entry) => entry.id === event.id && entry.kind === "item_transferred" && entry.direction === "sent"), true);
+  assert.equal(db.listPlayerJournal(recipientToken, 50).events.some((entry) => entry.id === event.id && entry.kind === "item_transferred" && entry.direction === "received"), true);
+  assert.equal(db.listPlayerJournal("transfer-unrelated-token", 50).events.some((entry) => entry.id === event.id), false);
+  const discard = db.discardPlayerInventoryItem(senderToken, source.id, 1, randomUUID());
+  const discardEvent = db.listCampaignActivity(campaign.id).find((row) => row.type === "item_discarded");
+  assert.ok(discardEvent);
+  assert.equal(db.listPlayerJournal(senderToken, 50).events.some((entry) => entry.id === discardEvent.id && entry.kind === "item_discarded"), true);
+  assert.equal(db.listPlayerJournal(recipientToken, 50).events.some((entry) => entry.id === discardEvent.id), false);
+  assert.equal(discard.replayed, false);
   for (const projection of [sent, received]) {
     for (const forbidden of ["relatedCharacterId", "characterId", "playerId", "sourceInventoryItemId", "operationId", "payload"]) {
       assert.equal(forbidden in projection, false);

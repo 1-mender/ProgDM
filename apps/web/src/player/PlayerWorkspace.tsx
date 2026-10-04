@@ -1,19 +1,20 @@
-import { useState } from "react";
-import { BookOpen, Check, ScrollText, Settings, UserRound } from "lucide-react";
-import type { PlayerInventoryTransferTarget, PlayerState } from "@progdm/shared";
+import { useCallback, useState } from "react";
+import { Settings } from "lucide-react";
+import type { PlayerInventoryTransferTarget, PlayerJournalCursor, PlayerJournalPage, PlayerState } from "@progdm/shared";
 import { PlayerApiError, PlayerNetworkError, playerGet, playerPost } from "./api";
 import { HomePage } from "./HomePage";
 import { InventoryPage } from "./InventoryPage";
 import { KnowledgePage } from "./KnowledgePage";
-import { PersonalNotesPage } from "./PersonalNotesPage";
+import { JournalPage, type JournalTab } from "./JournalPage";
 import { PlayerShell } from "./PlayerShell";
 import { ProfilePage } from "./ProfilePage";
-import { journalActivityLabel, type PlayerView } from "./model";
+import type { PlayerView } from "./model";
 import "./player.css";
 
 export function PlayerWorkspace({ player, credential, refresh }: { player: PlayerState; credential: string; refresh: () => Promise<void> }) {
   const [view, setView] = useState<PlayerView>("home");
-  const [journalTab, setJournalTab] = useState<"activity" | "notes">("activity");
+  const [journalTab, setJournalTab] = useState<JournalTab>("chronicle");
+  const [knowledgeFocusId, setKnowledgeFocusId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState(player.displayName);
   const [expandedKnowledge, setExpandedKnowledge] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -65,6 +66,15 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
   const markSeen = (activityId: string) => void run(
     () => playerPost(credential, "/api/player/activity/seen", { upToActivityId: activityId }), "Просмотрено."
   );
+  const loadJournalPage = useCallback((cursor?: PlayerJournalCursor) => {
+    const query = new URLSearchParams({ limit: "30" });
+    if (cursor) {
+      query.set("beforeCreatedAt", cursor.beforeCreatedAt);
+      query.set("beforeId", cursor.beforeId);
+    }
+    return playerGet<PlayerJournalPage>(credential, `/api/player/journal?${query.toString()}`);
+  }, [credential]);
+  const clearKnowledgeFocus = useCallback(() => setKnowledgeFocusId(null), []);
 
   let content;
   if (view === "home") content = <HomePage player={player} busy={busy} onProfile={() => navigate("profile")} onJournal={() => navigate("journal")} onPinnedNotes={() => {
@@ -74,7 +84,7 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
   else if (view === "profile") content = <ProfilePage player={player} busy={busy} onSave={(fields) => run(
     () => playerPost(credential, "/api/player/profile", fields), "Профиль сохранён."
   )} />;
-  else if (view === "knowledge") content = <KnowledgePage player={player} />;
+  else if (view === "knowledge") content = <KnowledgePage player={player} focusEntryId={knowledgeFocusId} onFocusHandled={clearKnowledgeFocus} />;
   else if (view === "inventory") content = <InventoryPage player={player} busy={busy} actionError={error}
     onEquip={(itemId) => run(() => playerPost(credential, `/api/player/inventory/${itemId}/equip`, {}), "Предмет экипирован.")}
     onUnequip={(itemId) => run(() => playerPost(credential, `/api/player/inventory/${itemId}/unequip`, {}), "Предмет перемещён в сумку.")}
@@ -84,22 +94,11 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
       () => playerPost(credential, `/api/player/inventory/${itemId}/transfer`, { recipientCharacterId: recipientId, quantity, operationId }), "Предмет передан.")}
     onDiscard={(itemId, quantity, operationId) => runInventoryAction(
       () => playerPost(credential, `/api/player/inventory/${itemId}/discard`, { quantity, operationId }), "Предмет выброшен.")} />;
-  else if (view === "journal") content = <section className="prod-page prod-legacy-page"><h1>Журнал</h1>
-    <div className="player-journal-tabs" role="tablist" aria-label="Разделы журнала">
-      <button type="button" role="tab" aria-selected={journalTab === "activity"} className={journalTab === "activity" ? "selected" : ""} onClick={() => setJournalTab("activity")}>Хроника</button>
-      <button type="button" role="tab" aria-selected={journalTab === "notes"} className={journalTab === "notes" ? "selected" : ""} onClick={() => setJournalTab("notes")}>Мои заметки</button>
-    </div>
-    {journalTab === "activity" && <>
-      {player.recentActivity.length ? <ul className="player-simple-list">{player.recentActivity.map((event) => <li key={event.id}>
-        <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })}</time>
-        <span className="player-journal-event">{journalActivityLabel(event)}{event.sessionName && <small>{event.sessionName}</small>}</span>
-      </li>)}</ul> : <p className="prod-empty">Пока нет событий.</p>}
-      {player.recentActivity[0] && <button className="prod-secondary" type="button" disabled={busy || !player.canEdit} onClick={() => markSeen(player.recentActivity[0]!.id)}><Check aria-hidden="true" />Отметить просмотренным</button>}
-    </>}
-    {journalTab === "notes" && <PersonalNotesPage notes={player.notes} busy={busy} canEdit={player.canEdit} onSave={(noteId, fields) => run(
-        () => playerPost(credential, noteId ? `/api/player/notes/${noteId}` : "/api/player/notes", fields), "Заметка сохранена."
-      )} />}
-  </section>;
+  else if (view === "journal") content = <JournalPage player={player} activeTab={journalTab} onTabChange={setJournalTab}
+    onLoadPage={loadJournalPage} onOpenKnowledge={(entryId) => { setKnowledgeFocusId(entryId); navigate("knowledge"); }}
+    onMarkSeen={markSeen} busy={busy} onSaveNote={(noteId, fields) => run(
+      () => playerPost(credential, noteId ? `/api/player/notes/${noteId}` : "/api/player/notes", fields), "Заметка сохранена."
+    )} />;
   else content = <section className="prod-page prod-legacy-page"><div className="prod-settings-heading"><h1>Настройки</h1><Settings aria-hidden="true" /></div>
     {player.canEdit && <form className="player-form" onSubmit={(event) => { event.preventDefault(); void run(
       () => playerPost(credential, "/api/player/settings", { displayName }), "Имя обновлено."

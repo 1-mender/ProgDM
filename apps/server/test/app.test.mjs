@@ -507,6 +507,63 @@ test("serialized Player activity is safe and drops a hidden Entry title after it
   assert.equal(database.listCampaignActivity(campaign.id).some((event) => event.type === "knowledge_fact_access_revoked"), true);
 });
 
+test("Player Journal endpoint paginates safe activity and requires an active assigned controller", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Journal API");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const session = database.createSession(campaign.id, "Chapter");
+  database.activateSession(session.id);
+  const token = "J".repeat(43);
+  await post(app, `/api/join/${session.joinToken}/request`, { displayName: "Mira", playerToken: token });
+  const approved = database.listPlayersByCampaign(campaign.id).find((player) => player.displayName === "Mira");
+  database.approvePlayer(approved.id, { characterId: mira.id });
+  const catalogItem = database.createCatalogItem(campaign.id, "Chronicle item");
+  for (let index = 0; index < 32; index++) database.grantInventoryItem(mira.id, catalogItem.id, 1);
+
+  const journal = (authToken, query = "") => app.inject({ method: "GET", url: `/api/player/journal${query}`,
+    headers: { authorization: `Bearer ${authToken}` } });
+  assert.equal((await app.inject({ method: "GET", url: "/api/player/journal" })).statusCode, 401);
+  const defaultPage = await journal(token);
+  assert.equal(defaultPage.statusCode, 200);
+  assert.equal(defaultPage.json().events.length, 30, "the default page size is 30");
+  assert.ok(defaultPage.json().nextCursor);
+  assert.ok(defaultPage.json().events.every((event) => event.kind === "item_received"));
+  assert.equal(defaultPage.body.includes("Chronicle item"), true);
+  const maxPage = await journal(token, "?limit=50");
+  assert.equal(maxPage.statusCode, 200);
+  assert.equal(maxPage.json().events.length, 32, "the maximum allowed limit accepts up to 50 events");
+  for (const forbidden of ["campaignId", "playerId", "characterId", "relatedCharacterId", "catalogItemId", "sourceInventoryItemId", "operationId", "payload", "details", "factCount"]) {
+    assert.equal(defaultPage.body.includes(`\"${forbidden}\"`), false, `Journal API leaked ${forbidden}`);
+  }
+
+  const cursor = defaultPage.json().nextCursor;
+  const next = await journal(token, `?limit=30&beforeCreatedAt=${encodeURIComponent(cursor.beforeCreatedAt)}&beforeId=${cursor.beforeId}`);
+  assert.equal(next.statusCode, 200, next.body);
+  assert.equal(next.json().events.length, 2);
+  assert.ok(next.json().events.every((event) => event.createdAt < cursor.beforeCreatedAt ||
+    event.createdAt === cursor.beforeCreatedAt && event.id < cursor.beforeId));
+  assert.equal(next.json().nextCursor, null);
+
+  for (const query of ["?limit=0", "?limit=51", "?beforeId=00000000-0000-4000-8000-000000000000",
+    "?beforeCreatedAt=not-a-date&beforeId=00000000-0000-4000-8000-000000000000",
+    "?beforeCreatedAt=2026-10-05T10%3A00%3A00.000Z", "?characterId=" + mira.id]) {
+    assert.equal((await journal(token, query)).statusCode, 400, query);
+  }
+
+  const pendingToken = "P".repeat(43);
+  const rejectedToken = "R".repeat(43);
+  database.submitPlayerRequest(session.id, "Pending", createHash("sha256").update(pendingToken).digest("hex"));
+  const rejected = database.submitPlayerRequest(session.id, "Rejected", createHash("sha256").update(rejectedToken).digest("hex"));
+  database.rejectPlayer(rejected.id);
+  assert.equal((await journal(pendingToken)).statusCode, 403);
+  assert.equal((await journal(rejectedToken)).statusCode, 403);
+
+  database.endSession(session.id);
+  const historical = await journal(token);
+  assert.equal(historical.statusCode, 403);
+  assert.equal(historical.body.includes("Chronicle item"), false);
+});
+
 test("public and player validation and unexpected errors are sanitized", async (t) => {
   const { app, database } = fixture(t);
   const invalid = await app.inject({ method: "GET", url: "/api/join/invalid" });

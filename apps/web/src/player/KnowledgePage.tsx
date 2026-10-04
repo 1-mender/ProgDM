@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Lightbulb, MapPin, Package, PawPrint, Search, UserRound, X, type LucideIcon } from "lucide-react";
 import type { KnowledgeCategory, PlayerState } from "@progdm/shared";
 import { KNOWLEDGE_CATEGORY_LABELS, knowledgeCountLabel } from "./model";
@@ -13,12 +13,21 @@ const categoryIcons: Record<KnowledgeCategory, LucideIcon> = {
   fact: Lightbulb
 };
 
-export function KnowledgePage({ player }: { player: PlayerState }) {
+export function KnowledgePage({ player, focusEntryId = null, onFocusHandled }: {
+  player: PlayerState;
+  focusEntryId?: string | null;
+  onFocusHandled?: () => void;
+}) {
   const [category, setCategory] = useState<KnowledgeCategory | "all">("all");
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = player.knowledge.find((entry) => entry.id === selectedId);
+  useEffect(() => {
+    if (!focusEntryId) return;
+    setSelectedId(player.knowledge.some((entry) => entry.id === focusEntryId) ? focusEntryId : null);
+    onFocusHandled?.();
+  }, [focusEntryId, onFocusHandled, player.knowledge]);
   const categories = categoryOrder;
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("ru");
