@@ -1,8 +1,0 @@
-
-  VITE v7.3.6  ready in 498 ms
-
-  ➜  Local:   http://127.0.0.1:5174/
-  ➜  press h + enter to show help
-00:43:44 [vite] (client) hmr update /src/App.tsx
-00:47:00 [vite] (client) page reload index.html
-00:47:02 [vite] (client) hmr update /src/App.tsx
