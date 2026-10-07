@@ -14,3 +14,4 @@ data/**
 # Tooling
 .DS_Store
 Thumbs.db
+desktop.ini

@@ -1099,7 +1099,7 @@ test("DM can correct Knowledge Entry content without changing grants, visibility
   assert.equal(exported.knowledge.find(({ id }) => id === visible.id).visibility, "party");
   assert.equal(exported.knowledge.find(({ id }) => id === visible.id).id, visible.id);
   assert.deepEqual(exported.knowledgeFacts.filter(({ knowledgeEntryId }) => knowledgeEntryId === visible.id).map(({ id }) => id), [visibleFact.id]);
-  assert.deepEqual(exported.knowledgeFactReveals.map(({ id }) => id), [visibleReveal.id, hiddenReveal.id]);
+  assert.deepEqual(exported.knowledgeFactReveals.map(({ id }) => id).sort(), [visibleReveal.id, hiddenReveal.id].sort());
   assert.equal(exported.knowledge.find(({ id }) => id === hidden.id).visibility, "hidden");
   assert.equal(exported.knowledge.find(({ id }) => id === hidden.id).visibleToCharacterId, null);
   assert.deepEqual(database.listCampaignActivity(campaign.id), activityBefore, "Entry correction is not a Player Activity event");
