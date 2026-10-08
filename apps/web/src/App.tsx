@@ -4,6 +4,7 @@ import { QRCodeSVG } from "qrcode.react";
 import type { ActivityType, Campaign, CampaignActivity, Character, CharacterProfileFieldValue, DataHealth, DmState, EquipmentSlot, InventoryCategory, InventoryItem, InventoryRarity, KnowledgeCategory, KnowledgeEntry, KnowledgeFact, KnowledgeFactReveal, KnowledgeFactRevealAudience, KnowledgeVisibility, PersonalNote, Player, Session } from "@progdm/shared";
 import { JoinPage } from "./JoinPage";
 import { approvalTarget, LatestRequest, mergeProfileDraft, PendingOperationIds } from "./sync";
+import { ApiError, DownloadNetworkError, downloadFile } from "./dm-download";
 
 const tokenKey = "progdm.dmToken";
 const campaignKey = "progdm.campaign";
@@ -68,9 +69,6 @@ function initialToken() {
   }
   return readStored(tokenKey);
 }
-class ApiError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
-}
 class AmbiguousRevealFailure extends Error {}
 async function request<T>(token: string, path: string, body?: unknown, timeoutMs = 10000, method?: string): Promise<T> {
   const controller = new AbortController();
@@ -89,18 +87,6 @@ async function request<T>(token: string, path: string, body?: unknown, timeoutMs
     if (error instanceof ApiError) throw error;
     throw new Error("Нет связи с сервером. Обновите данные перед повтором действия.");
   } finally { clearTimeout(timer); }
-}
-
-async function downloadFile(token: string, path: string, filename: string) {
-  const response = await fetch(path, { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
-  if (!response.ok) {
-    const result = await response.json().catch(() => ({}));
-    throw new ApiError(result.message ?? "Не удалось скачать файл.", response.status);
-  }
-  const url = URL.createObjectURL(await response.blob());
-  const link = document.createElement("a");
-  link.href = url; link.download = filename; link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function Modal({ title, children, close, busy, closeOnBackdrop = false }: { title: string; children: ReactNode; close: () => void; busy: boolean; closeOnBackdrop?: boolean }) {
@@ -392,7 +378,7 @@ function DmWorkspace() {
           ? options.conflictMessage
           : failure instanceof Error ? failure.message : "Не удалось сохранить изменения.";
       setError(message);
-      if (!(failure instanceof ApiError) && !(failure instanceof AmbiguousRevealFailure)) setPhase("error");
+      if (!(failure instanceof ApiError) && !(failure instanceof AmbiguousRevealFailure) && !(failure instanceof DownloadNetworkError)) setPhase("error");
       if (failure instanceof ApiError && failure.status === 409) {
         setConfirmation(null); setCleanupConfirmation(null);
         try { await refresh(); } catch { setPhase("error"); }
@@ -693,7 +679,9 @@ function DmWorkspace() {
   function createBackup() {
     void mutate(async () => {
       const { backup } = await request<{ backup: BackupInfo }>(token, "/api/dm/backups", {}, 120000);
-      await downloadFile(token, "/api/dm/backups/" + encodeURIComponent(backup.id) + "/download", "ProgDM-rezervnaya-kopiya.db");
+      setBackups((current) => [backup, ...current.filter((entry) => entry.id !== backup.id)]);
+      setBackupId(backup.id);
+      await downloadFile(token, "/api/dm/backups/" + encodeURIComponent(backup.id) + "/download", "ProgDM-rezervnaya-kopiya.db", 60000);
       setNotice("Резервная копия создана и скачана.");
     });
   }
@@ -928,7 +916,7 @@ function DmWorkspace() {
               </select></div>
               <button className="secondary" disabled={locked || !backupId} onClick={restoreBackupNow}><RefreshCw />Восстановить</button>
               <button className="icon-button" title="Скачать выбранную копию" aria-label="Скачать выбранную копию" disabled={locked || !backupId} onClick={() => void mutate(async () => {
-                await downloadFile(token, "/api/dm/backups/" + encodeURIComponent(backupId) + "/download", "ProgDM-rezervnaya-kopiya.db");
+                await downloadFile(token, "/api/dm/backups/" + encodeURIComponent(backupId) + "/download", "ProgDM-rezervnaya-kopiya.db", 60000);
               })}><Download /></button>
             </div>}
           </section>

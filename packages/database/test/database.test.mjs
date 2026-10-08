@@ -11,7 +11,7 @@ import SQLite from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { ACTIVITY_TYPES } from "@progdm/shared";
+import { ACTIVITY_TYPES, CAMPAIGN_ARCHIVE_MAX_BYTES } from "@progdm/shared";
 import { openDatabase, resolveDatabaseFile } from "../dist/index.js";
 
 function temporaryFile(t) {
@@ -28,6 +28,53 @@ function memoryDatabase(t) {
   t.after(() => database.close());
   return database;
 }
+
+test("archive v11 round-trips more than 10000 actual activity events without truncation and rejects corrupt references atomically", (t) => {
+  const database = memoryDatabase(t);
+  const campaign = database.createCampaign("Long history");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  for (let i = 0; i < 10000; i++) database.updateCharacterProfile(mira.id, {
+    name: "Mira", shortDescription: "History", archetype: "", origin: "", personalGoal: "", dmNotes: ""
+  });
+  const archive = database.exportCampaign(campaign.id);
+  assert.equal(archive.version, 11);
+  assert.equal(archive.activity.length, 10002);
+  assert.ok(Buffer.byteLength(JSON.stringify(archive)) < CAMPAIGN_ARCHIVE_MAX_BYTES);
+  const corrupt = structuredClone(archive);
+  corrupt.activity.at(-1).characterId = "missing-character";
+  assert.throws(() => database.importCampaign(corrupt), /invalid reference/);
+  assert.equal(database.listCampaigns().length, 1);
+  const imported = database.importCampaign(archive);
+  const restored = database.exportCampaign(imported.id);
+  const character = restored.characters[0];
+  assert.notEqual(character.id, mira.id);
+  assert.equal(restored.activity.length, 10003, "original history plus campaign_imported, no truncation");
+  assert.equal(restored.activity.filter((event) => event.type === "character_profile_updated").length, 10000);
+  assert.ok(restored.activity.filter((event) => event.characterId).every((event) => event.characterId === character.id));
+  const originalIds = new Set(archive.activity.map(({ id }) => id));
+  assert.ok(restored.activity.every((event) => !originalIds.has(event.id)));
+});
+
+test("direct DB archive import and export enforce the same explicit UTF-8 byte budget", (t) => {
+  let database;
+  t.after(() => database?.close());
+  const file = temporaryFile(t);
+  database = openDatabase({ file });
+  const campaign = database.createCampaign("Byte budget");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const archive = database.exportCampaign(campaign.id);
+  const large = "я".repeat(CAMPAIGN_ARCHIVE_MAX_BYTES / 2);
+  assert.throws(() => database.importCampaign({ ...archive, extra: large }), /archive size limit exceeded/);
+  assert.equal(database.listCampaigns().length, 1);
+  // Isolated raw data isolates export budget enforcement from API field-length validation.
+  const raw = new SQLite(file);
+  try {
+    raw.pragma("ignore_check_constraints = ON");
+    raw.prepare("UPDATE characters SET appearance = ? WHERE id = ?").run(large, mira.id);
+  }
+  finally { raw.close(); }
+  assert.throws(() => database.exportCampaign(campaign.id), /archive size limit exceeded/);
+});
 
 function activeInventoryPair(database, campaignName = "Transfers") {
   const campaign = database.createCampaign(campaignName);

@@ -9,6 +9,15 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type EquipmentSlot, type HealthCheck, type InventoryCategory, type InventoryRarity, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerInventoryItem, type PlayerJournalCursor, type PlayerJournalPage, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
+import { CAMPAIGN_ARCHIVE_MAX_BYTES } from "@progdm/shared";
+
+function checkArchiveSize(archive: unknown) {
+  let json: string | undefined;
+  try { json = JSON.stringify(archive); }
+  catch { throw new Error("Campaign file is invalid."); }
+  if (json === undefined) throw new Error("Campaign file is invalid.");
+  if (Buffer.byteLength(json, "utf8") > CAMPAIGN_ARCHIVE_MAX_BYTES) throw new Error("Campaign archive size limit exceeded.");
+}
 
 function validatedPlayerName(name: string): string {
   const value = name.trim();
@@ -137,7 +146,7 @@ function transferString(record: Record<string, unknown>, key: string, max = 200)
 
 function transferArray(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   const value = record[key];
-  if (!Array.isArray(value) || value.length > 10000) throw new Error("Campaign file is invalid.");
+  if (!Array.isArray(value)) throw new Error("Campaign file is invalid.");
   return value.map(transferRecord);
 }
 
@@ -1124,7 +1133,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
         createdAt: schema.knowledgeFactReveals.createdAt
       }).from(schema.knowledgeFactReveals).where(eq(schema.knowledgeFactReveals.campaignId, id))
         .orderBy(asc(schema.knowledgeFactReveals.createdAt), asc(schema.knowledgeFactReveals.id)).all();
-      return {
+      const archive = {
         format: "progdm-campaign", version: 11, exportedAt: new Date().toISOString(), campaign,
         sessions, players, assignments, characters, profileFields, profileFieldValues, personalNotes, catalogItems, inventoryItems, knowledge,
         knowledgeFacts, knowledgeFactReveals,
@@ -1132,8 +1141,11 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           .where(eq(schema.campaignActivity.campaignId, id))
           .orderBy(asc(schema.campaignActivity.createdAt), asc(schema.campaignActivity.id)).all())
       };
+      checkArchiveSize(archive);
+      return archive;
     },
     importCampaign(source: unknown) {
+      checkArchiveSize(source);
       const archive = transferRecord(source);
       if (archive.format !== "progdm-campaign" || ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].includes(archive.version as number)) throw new Error("Campaign file format is not supported.");
       const archiveVersion = archive.version as number;

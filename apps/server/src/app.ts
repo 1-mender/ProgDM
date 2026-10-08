@@ -5,6 +5,10 @@ import { isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
 import { openDatabase, type GameDatabase } from "@progdm/database";
 import { isDmAuthorized, loadDmToken } from "./dm-auth.js";
+import { CAMPAIGN_ARCHIVE_MAX_BYTES } from "@progdm/shared";
+
+export const JSON_BODY_LIMIT = 64 * 1024;
+export const CAMPAIGN_IMPORT_BODY_LIMIT = CAMPAIGN_ARCHIVE_MAX_BYTES;
 import type { EquipmentSlot, InventoryCategory, InventoryRarity, KnowledgeCategory, KnowledgeFactRevealAudience, KnowledgeVisibility, NetworkAddress, PersonalNoteMarker } from "@progdm/shared";
 
 export function requestLogFields(request: { method: string; url: string }) {
@@ -39,12 +43,13 @@ export function createApp(options: {
   const database = options.database ?? openDatabase();
   const app = Fastify({
     logger: options.logger ? { redact: ["req.headers.authorization"], serializers: { req: requestLogFields } } : false,
-    bodyLimit: 4096,
+    bodyLimit: JSON_BODY_LIMIT,
     ajv: { customOptions: { coerceTypes: false, removeAdditional: false } }
   });
   const playerCredentials = new WeakMap<object, string>();
 
   app.setErrorHandler<FastifyError>((error, request, reply) => {
+    if (error.statusCode === 413) return reply.code(413).send({ message: "Запрос слишком большой." });
     if (error.validation || error.statusCode === 400) return reply.code(400).send({ message: "Проверьте введённые данные и допустимые значения." });
     if (error.statusCode && error.statusCode < 500) return reply.code(error.statusCode).send({ message: "Не удалось обработать запрос." });
     request.log.error(error);
@@ -282,6 +287,7 @@ export function createApp(options: {
     });
 
     dm.setErrorHandler<FastifyError>((error, request, reply) => {
+      if (error.statusCode === 413) return reply.code(413).send({ message: "Запрос слишком большой." });
       if (error.validation || error.statusCode === 400) {
         return reply.code(400).send({ message: "Проверьте введённые данные и допустимые значения." });
       }
@@ -405,11 +411,12 @@ export function createApp(options: {
           .send(database.exportCampaign(request.params.id));
       } catch (error) {
         if (error instanceof Error && error.message === "Campaign not found.") return reply.code(404).send({ message: "Кампания не найдена." });
+        if (error instanceof Error && error.message === "Campaign archive size limit exceeded.") return reply.code(413).send({ message: "Кампания превышает лимит архива 64 МиБ." });
         throw error;
       }
     });
     dm.post<{ Body: unknown }>("/api/dm/campaigns/import", {
-      bodyLimit: 10 * 1024 * 1024,
+      bodyLimit: CAMPAIGN_IMPORT_BODY_LIMIT,
       schema: { body: { type: "object", required: ["format", "version"], properties: {
         format: { const: "progdm-campaign" }, version: { enum: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }
       } } }
@@ -418,6 +425,7 @@ export function createApp(options: {
         return reply.code(201).send({ campaign: database.importCampaign(request.body) });
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
+        if (message === "Campaign archive size limit exceeded.") return reply.code(413).send({ message: "Запрос слишком большой." });
         if (message === "Campaign file format is not supported.") return reply.code(400).send({ message: "Формат файла кампании не поддерживается." });
         if (/Campaign file|Campaign name|Name must|Player name|Personal note|Description|Profile|Character traits|Catalog item|Equipment slot|Inventory|over-capacity|equipment state|equipment slots|inventory stacks|constraint/i.test(message)) {
           return reply.code(400).send({ message: "Файл кампании повреждён или содержит недопустимые данные." });
@@ -739,6 +747,7 @@ export function createApp(options: {
       }
     });
     dm.post<{ Params: { campaignId: string; entryId: string }; Body: { factIds: string[] } }>("/api/dm/campaigns/:campaignId/knowledge/:entryId/facts/reorder", {
+      bodyLimit: CAMPAIGN_IMPORT_BODY_LIMIT,
       schema: { params: knowledgeFactParams, body: { type: "object", additionalProperties: false, required: ["factIds"], properties: {
         factIds: { type: "array", items: { type: "string", format: "uuid" } }
       } } }

@@ -1,5 +1,8 @@
 export type EntityId = string;
 
+// Shared by DB round-trip validation and HTTP transport; archive schema remains v11.
+export const CAMPAIGN_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
+
 export type SessionStatus = "planned" | "active" | "ended";
 
 export interface Campaign {

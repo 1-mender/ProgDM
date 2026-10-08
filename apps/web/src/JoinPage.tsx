@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { BookOpen, Check, CircleHelp, Clock3, RefreshCw } from "lucide-react";
 import type { JoinInfo, PlayerState } from "@progdm/shared";
 import { joinName, loadJoinSnapshot } from "./sync";
 import { PlayerApiError, playerRequest } from "./player/api";
+import { JoinIntent } from "./player/join-intent";
 import { PlayerWorkspace as ProductionPlayerWorkspace } from "./player/PlayerWorkspace";
 
 const statusCopy = { rejected: "Нужно повторно попросить ведущего" };
 
-function playerKey(invite: string) { return "progdm.playerToken:" + invite; }
 function makeToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))
@@ -21,9 +21,13 @@ async function getPlayerState(credential: string) {
 }
 
 export function JoinPage({ invite }: { invite: string }) {
+  const intent = useMemo(() => new JoinIntent(invite, {
+    getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value),
+    removeItem: (key) => localStorage.removeItem(key)
+  }), [invite]);
   const [information, setInformation] = useState<JoinInfo | null>(null);
   const [credential, setCredential] = useState(() => {
-    try { return localStorage.getItem(playerKey(invite)) ?? ""; } catch { return ""; }
+    try { return intent.read(); } catch { return ""; }
   });
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const [name, setName] = useState<string | null>(() => {
@@ -45,7 +49,16 @@ export function JoinPage({ invite }: { invite: string }) {
       inFlight = true;
       const sequence = ++requestSequence.current;
       try {
-        const snapshot = await loadJoinSnapshot(credential, getPlayerState, async () =>
+        const snapshot = await loadJoinSnapshot(credential, async (key) => {
+          try {
+            const current = await getPlayerState(key);
+            intent.confirm(key);
+            return current;
+          } catch (failure) {
+            if (failure instanceof PlayerApiError && failure.status === 401 && intent.retainUnauthorized(submitting.current)) return null;
+            throw failure;
+          }
+        }, async () =>
           playerRequest<JoinInfo>("/api/join/" + encodeURIComponent(invite), { cache: "no-store" }));
         if (disposed || sequence !== requestSequence.current) return;
         if (snapshot.information) setInformation(snapshot.information);
@@ -55,7 +68,7 @@ export function JoinPage({ invite }: { invite: string }) {
       } catch (failure) {
         if (disposed || sequence !== requestSequence.current) return;
         if (failure instanceof PlayerApiError && failure.status === 401 && credential) {
-          try { localStorage.removeItem(playerKey(invite)); } catch { /* Storage may be disabled. */ }
+          try { intent.clear(credential); } catch { /* Storage may be disabled. */ }
           setCredential("");
           setPlayer(null);
         } else if (failure instanceof PlayerApiError && failure.status === 404) {
@@ -70,7 +83,7 @@ export function JoinPage({ invite }: { invite: string }) {
     void refresh();
     const interval = window.setInterval(() => { if (!submitting.current) void refresh(); }, 3000);
     return () => { disposed = true; requestSequence.current++; window.clearInterval(interval); };
-  }, [credential, invite]);
+  }, [credential, invite, intent]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -78,10 +91,11 @@ export function JoinPage({ invite }: { invite: string }) {
     submitting.current = true;
     requestSequence.current++;
     setBusy(true); setError("");
-    const key = credential || makeToken();
+    let key: string;
     try {
-      localStorage.setItem(playerKey(invite), key);
       localStorage.setItem("progdm.playerName:" + invite, displayName.trim());
+      key = intent.begin(makeToken);
+      setCredential(key);
     } catch {
       setError("Браузер не смог сохранить доступ. Разреши локальное хранилище и повтори.");
       setBusy(false);
@@ -96,11 +110,21 @@ export function JoinPage({ invite }: { invite: string }) {
           body: JSON.stringify({ displayName: displayName.trim(), playerToken: key }),
           cache: "no-store"
         });
-        setCredential(key);
+        intent.confirm(key);
         const sequence = ++requestSequence.current;
         const current = await getPlayerState(key);
         if (sequence === requestSequence.current) setPlayer(current);
       } catch (failure) {
+        if (failure instanceof PlayerApiError && failure.status === 409) {
+          try {
+            const current = await getPlayerState(key);
+            intent.confirm(key); setPlayer(current);
+            return;
+          } catch { /* Preserve the credential while the first request may still be unresolved. */ }
+        }
+        if (failure instanceof PlayerApiError && (failure.status === 400 || failure.status === 404) && intent.pending()) {
+          intent.clear(key); setCredential("");
+        }
         setError(failure instanceof Error ? failure.message : "Не удалось отправить заявку.");
         if (failure instanceof PlayerApiError && failure.status === 404) setUnavailable(true);
       } finally { submitting.current = false; setBusy(false); }

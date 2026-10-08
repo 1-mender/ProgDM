@@ -30,7 +30,7 @@ export class PendingOperationIds {
 }
 
 export async function loadJoinSnapshot<P extends { status: string }, I>(
-  credential: string, readPlayer: (token: string) => Promise<P>, readInvitation: () => Promise<I>
+  credential: string, readPlayer: (token: string) => Promise<P | null>, readInvitation: () => Promise<I>
 ) {
   const player = credential ? await readPlayer(credential) : null;
   // Historical approved access is independent of whether new requests are still accepted.

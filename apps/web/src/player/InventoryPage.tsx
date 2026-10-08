@@ -4,7 +4,7 @@ import type { PlayerInventoryTransferTarget, PlayerInventoryItem, PlayerState } 
 import {
   canEquipInventoryItem, canUnequipInventoryItem, EQUIPMENT_SLOT_ICONS, EQUIPMENT_SLOT_LABELS, EQUIPMENT_SLOT_ORDER,
   INVENTORY_CATEGORY_ICONS, INVENTORY_CATEGORY_LABELS, INVENTORY_RARITY_LABELS, bagPlaceholderCount, bagUnrenderedFreeSlots,
-  characterInitials, createInventoryOperationId, inventoryBagSlotsUsed
+  characterInitials, inventoryBagSlotsUsed
 } from "./model";
 
 export function InventoryPage({ player, busy, actionError, onEquip, onUnequip, onLoadTransferTargets, onTransfer, onDiscard }: {
@@ -14,8 +14,8 @@ export function InventoryPage({ player, busy, actionError, onEquip, onUnequip, o
   onEquip: (itemId: string) => Promise<boolean>;
   onUnequip: (itemId: string) => Promise<boolean>;
   onLoadTransferTargets: (itemId: string) => Promise<PlayerInventoryTransferTarget[]>;
-  onTransfer: (itemId: string, recipientId: string, quantity: number, operationId: string) => Promise<"success" | "ambiguous" | "failed">;
-  onDiscard: (itemId: string, quantity: number, operationId: string) => Promise<"success" | "ambiguous" | "failed">;
+  onTransfer: (itemId: string, recipientId: string, quantity: number) => Promise<"success" | "ambiguous" | "failed">;
+  onDiscard: (itemId: string, quantity: number) => Promise<"success" | "ambiguous" | "failed">;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sheetMode, setSheetMode] = useState<"detail" | "transfer" | "discard">("detail");
@@ -24,7 +24,6 @@ export function InventoryPage({ player, busy, actionError, onEquip, onUnequip, o
   const [actionQuantity, setActionQuantity] = useState(1);
   const [loadingTargets, setLoadingTargets] = useState(false);
   const [sheetError, setSheetError] = useState("");
-  const operationIds = useRef(new Map<string, string>());
   const closeRef = useRef<HTMLButtonElement>(null);
   const bag = player.inventory.filter((item) => item.equippedSlot === null);
   const equipped = player.inventory.filter((item) => item.equippedSlot !== null);
@@ -62,27 +61,16 @@ export function InventoryPage({ player, busy, actionError, onEquip, onUnequip, o
     catch (failure) { setSheetError(failure instanceof Error ? failure.message : "Не удалось загрузить список персонажей."); }
     finally { setLoadingTargets(false); }
   };
-  const getOperationId = (key: string) => {
-    const current = operationIds.current.get(key);
-    if (current) return current;
-    const next = createInventoryOperationId();
-    operationIds.current.set(key, next);
-    return next;
-  };
   const submitTransfer = async () => {
     if (!selectedItem || !selectedRecipientId) return;
     const target = targets.find((entry) => entry.characterId === selectedRecipientId);
     if (!target || target.maxQuantity < actionQuantity) return;
-    const key = `transfer:${selectedItem.id}:${selectedRecipientId}:${actionQuantity}`;
-    const outcome = await onTransfer(selectedItem.id, selectedRecipientId, actionQuantity, getOperationId(key));
-    if (outcome !== "ambiguous") operationIds.current.delete(key);
+    const outcome = await onTransfer(selectedItem.id, selectedRecipientId, actionQuantity);
     if (outcome === "success") closeSheet();
   };
   const submitDiscard = async () => {
     if (!selectedItem) return;
-    const key = `discard:${selectedItem.id}:${actionQuantity}`;
-    const outcome = await onDiscard(selectedItem.id, actionQuantity, getOperationId(key));
-    if (outcome !== "ambiguous") operationIds.current.delete(key);
+    const outcome = await onDiscard(selectedItem.id, actionQuantity);
     if (outcome === "success") closeSheet();
   };
 

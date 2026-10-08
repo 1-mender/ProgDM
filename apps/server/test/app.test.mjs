@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { openDatabase } from "@progdm/database";
-import { createApp, requestLogFields } from "../dist/app.js";
+import { createApp, requestLogFields, JSON_BODY_LIMIT, CAMPAIGN_IMPORT_BODY_LIMIT } from "../dist/app.js";
+import { loadTs, memoryStorage } from "../../web/test/helpers/runtime.mjs";
 
 const dmToken = "test-dm-token";
 const headers = { authorization: "Bearer " + dmToken };
@@ -21,6 +22,150 @@ function fixture(t) {
 function get(app, url) { return app.inject({ method: "GET", url, headers }); }
 function post(app, url, payload = {}) { return app.inject({ method: "POST", url, headers, payload }); }
 function patch(app, url, payload = {}) { return app.inject({ method: "PATCH", url, headers, payload }); }
+
+test("join retry with persisted credential restores the original Player after a lost response", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Join retry");
+  const session = database.createSession(campaign.id, "Session");
+  database.activateSession(session.id);
+  const { JoinIntent } = loadTs(new URL("../../web/src/player/join-intent.ts", import.meta.url));
+  const storage = memoryStorage();
+  const first = new JoinIntent(session.joinToken, storage);
+  const token = first.begin(() => "J".repeat(43));
+  const path = `/api/join/${session.joinToken}/request`;
+  assert.equal((await post(app, path, { displayName: "Mira", playerToken: token })).statusCode, 200);
+  const original = database.listPlayersByCampaign(campaign.id)[0];
+  const reload = new JoinIntent(session.joinToken, storage);
+  const retry = reload.begin(() => { throw new Error("must not replace credential"); });
+  assert.equal((await post(app, path, { displayName: "Mira", playerToken: retry })).statusCode, 200);
+  const state = await app.inject({ url: "/api/player/me", headers: { authorization: `Bearer ${retry}` } });
+  assert.equal(state.statusCode, 200);
+  assert.equal(state.json().displayName, original.displayName);
+  assert.equal(database.getPlayerByTokenHash(createHash("sha256").update(retry).digest("hex")).id, original.id);
+  assert.equal(database.listPlayersByCampaign(campaign.id).length, 1);
+  assert.equal(database.listCampaignActivity(campaign.id).filter(({ type }) => type === "player_requested").length, 1);
+});
+
+test("persistent client inventory intents replay actual transfer/discard exactly once after reload", async (t) => {
+  const { app, database } = fixture(t);
+  const api = loadTs(new URL("../../web/src/player/api.ts", import.meta.url));
+  const { InventoryIntents } = loadTs(new URL("../../web/src/player/inventory-intents.ts", import.meta.url), { "./api": api });
+  const campaign = database.createCampaign("Ambiguous inventory");
+  const sender = database.createCharacter(campaign.id, "Mira");
+  const recipient = database.createCharacter(campaign.id, "Rowan");
+  const session = database.createSession(campaign.id, "Session"); database.activateSession(session.id);
+  const token = "I".repeat(43);
+  const senderPlayer = database.submitPlayerRequest(session.id, "Sender", createHash("sha256").update(token).digest("hex"));
+  const recipientPlayer = database.submitPlayerRequest(session.id, "Recipient", "recipient-hash");
+  database.approvePlayer(senderPlayer.id, { characterId: sender.id });
+  database.approvePlayer(recipientPlayer.id, { characterId: recipient.id });
+  const catalog = database.createCatalogItem(campaign.id, "Аптечка");
+  database.grantInventoryItem(sender.id, catalog.id, 5);
+  const item = database.listCharacterInventory(sender.id)[0];
+  const storage = memoryStorage();
+  for (const type of ["transfer", "discard"]) {
+    const intent = { type, inventoryItemId: item.id, quantity: 1, ...(type === "transfer" ? { recipientCharacterId: recipient.id } : {}) };
+    let loseResponse = true;
+    const ids = [];
+    const send = async (operationId) => {
+      ids.push(operationId);
+      const response = await app.inject({ method: "POST", url: `/api/player/inventory/${item.id}/${type}`,
+        headers: { authorization: `Bearer ${token}` }, payload: { quantity: 1, operationId,
+          ...(type === "transfer" ? { recipientCharacterId: recipient.id } : {}) } });
+      assert.equal(response.statusCode, 200, response.body);
+      if (loseResponse) { loseResponse = false; throw new api.PlayerNetworkError(); }
+    };
+    const before = database.listCharacterInventory(sender.id)[0].quantity;
+    await assert.rejects(new InventoryIntents(token, storage).execute(intent, send, async () => {}), api.PlayerNetworkError);
+    await new InventoryIntents(token, storage).execute(intent, send, async () => {});
+    assert.equal(ids[0], ids[1]);
+    assert.equal(database.listCharacterInventory(sender.id)[0].quantity, before - 1);
+    assert.equal(database.listCampaignActivity(campaign.id).filter((event) => event.type === `item_${type === "transfer" ? "transferred" : "discarded"}`).length, 1);
+  }
+  assert.equal(database.listCharacterInventory(recipient.id)[0].quantity, 1);
+  assert.equal(database.listCharacterInventory(sender.id)[0].quantity, 3);
+  const full = { type: "discard", inventoryItemId: item.id, quantity: 3 };
+  let loseFullResponse = true;
+  const fullSend = async (operationId) => {
+    const response = await app.inject({ method: "POST", url: `/api/player/inventory/${item.id}/discard`,
+      headers: { authorization: `Bearer ${token}` }, payload: { quantity: 3, operationId } });
+    assert.equal(response.statusCode, 200, response.body);
+    if (loseFullResponse) { loseFullResponse = false; throw new api.PlayerNetworkError(); }
+  };
+  await assert.rejects(new InventoryIntents(token, storage).execute(full, fullSend, async () => {}), api.PlayerNetworkError);
+  assert.equal(database.listCharacterInventory(sender.id).length, 0);
+  await new InventoryIntents(token, storage).execute(full, fullSend, async () => {});
+  assert.equal(database.listCampaignActivity(campaign.id).filter(({ type }) => type === "item_discarded").length, 2);
+  assert.equal(new InventoryIntents(token, storage).pending().length, 0);
+});
+
+test("maximum Cyrillic profile, notes and DM text payloads fit transport while schema limits remain strict", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Русский текст");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const session = database.createSession(campaign.id, "Session"); database.activateSession(session.id);
+  const token = "C".repeat(43);
+  const player = database.submitPlayerRequest(session.id, "Mira", createHash("sha256").update(token).digest("hex"));
+  database.approvePlayer(player.id, { characterId: mira.id });
+  const send = (url, payload) => app.inject({ method: "POST", url, payload, headers: { authorization: `Bearer ${token}` } });
+  const profile = { shortDescription: "я".repeat(500), personalGoal: "я".repeat(500), appearance: "я".repeat(1000), quote: "я".repeat(300),
+    traits: Array.from({ length: 8 }, (_, i) => "я".repeat(39) + i) };
+  assert.ok(Buffer.byteLength(JSON.stringify(profile)) > 4096);
+  assert.equal((await send("/api/player/profile", profile)).statusCode, 200);
+  assert.equal(database.getPlayerState(createHash("sha256").update(token).digest("hex")).profile.appearance, profile.appearance);
+  const note = { title: "я".repeat(120), body: "я".repeat(2000), marker: "important", pinned: true };
+  assert.equal((await send("/api/player/notes", note)).statusCode, 200);
+  assert.equal(database.listPersonalNotesByCharacter(mira.id)[0].body, note.body);
+  assert.equal((await send("/api/player/notes", { ...note, body: "я".repeat(2001) })).statusCode, 400);
+  assert.equal((await send("/api/player/profile", { ...profile, appearance: "я".repeat(1001) })).statusCode, 400);
+  const dmProfile = { ...profile, name: "я".repeat(120), archetype: "я".repeat(120), origin: "я".repeat(500), dmNotes: "я".repeat(2000) };
+  assert.equal((await post(app, `/api/dm/characters/${mira.id}/profile`, dmProfile)).statusCode, 200);
+  assert.equal((await post(app, `/api/dm/campaigns/${campaign.id}/knowledge`, { category: "fact", title: "я".repeat(120), description: "я".repeat(2000) })).statusCode, 201);
+  const fields = Array.from({ length: 20 }, (_, i) => database.createCampaignProfileField(campaign.id, "Поле " + i));
+  const values = fields.map((field) => ({ fieldId: field.id, value: "я".repeat(500) }));
+  assert.equal((await app.inject({ method: "PUT", url: `/api/dm/characters/${mira.id}/profile-fields`, headers, payload: { values } })).statusCode, 200);
+});
+
+test("normal JSON and campaign import use explicit byte policies and safe Russian 413 errors", async (t) => {
+  const { app } = fixture(t);
+  assert.equal(JSON_BODY_LIMIT, 64 * 1024);
+  assert.equal(CAMPAIGN_IMPORT_BODY_LIMIT, 64 * 1024 * 1024);
+  const huge = await post(app, "/api/dm/campaigns", { name: "x".repeat(JSON_BODY_LIMIT) });
+  assert.equal(huge.statusCode, 413);
+  assert.equal(huge.json().message, "Запрос слишком большой.");
+  const oversized = await app.inject({ method: "POST", url: "/api/dm/campaigns/import", headers: {
+    ...headers, "content-type": "application/json", "content-length": String(CAMPAIGN_IMPORT_BODY_LIMIT + 1)
+  }, payload: "{}" });
+  assert.equal(oversized.statusCode, 413);
+  assert.equal(oversized.json().message, "Запрос слишком большой.");
+});
+
+test("HTTP import round-trips a v11 campaign with 10002 activity rows and no partial corrupt import", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("HTTP long history");
+  const mira = database.createCharacter(campaign.id, "Mira");
+  const archive = database.exportCampaign(campaign.id);
+  const template = archive.activity.find((event) => event.type === "character_created");
+  for (let i = 0; i < 10000; i++) archive.activity.push({ ...template, id: randomUUID(), createdAt: new Date(1700000000000 + i).toISOString() });
+  const body = "я".repeat(2000);
+  for (let i = 0; i < 2500; i++) archive.personalNotes.push({ id: randomUUID(), characterId: mira.id, title: "Запись " + i,
+    body, marker: "normal", pinned: false, createdAt: "2026-10-08T12:00:00.000Z", updatedAt: "2026-10-08T12:00:00.000Z" });
+  assert.ok(Buffer.byteLength(JSON.stringify(archive)) > 10 * 1024 * 1024, "exceeds the previous HTTP limit");
+  assert.equal(archive.activity.length, 10002);
+  const imported = await post(app, "/api/dm/campaigns/import", archive);
+  assert.equal(imported.statusCode, 201, imported.body);
+  const exported = await get(app, `/api/dm/campaigns/${imported.json().campaign.id}/export`);
+  assert.equal(exported.statusCode, 200);
+  assert.equal(exported.json().activity.length, 10003);
+  assert.equal(exported.json().personalNotes.length, 2500);
+  const remapped = exported.json().characters[0].id;
+  assert.notEqual(remapped, mira.id);
+  assert.ok(exported.json().activity.filter((event) => event.characterId).every((event) => event.characterId === remapped));
+  const corrupt = structuredClone(archive); corrupt.activity.at(-1).characterId = "missing";
+  assert.equal((await post(app, "/api/dm/campaigns/import", corrupt)).statusCode, 400);
+  assert.equal(database.listCampaigns().length, 2);
+  assert.equal((await post(app, "/api/dm/campaigns/import", exported.json())).statusCode, 201);
+});
 
 test("request logs redact invitation secrets and omit authorization headers", () => {
   const token = "Z".repeat(43);

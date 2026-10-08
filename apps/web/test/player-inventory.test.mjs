@@ -110,8 +110,8 @@ test("transfer sheet presents only narrow character targets with capacity, merge
   assert.match(page, /target\.maxQuantity < quantity/);
   assert.match(page, /error=\{sheetError \|\| actionError\}/);
   assert.match(page, /disabled=\{!canSubmit\}/);
-  assert.match(page, /createInventoryOperationId\(\)/);
-  assert.match(page, /outcome !== "ambiguous"/);
+  assert.match(workspace, /inventoryIntents\.execute\(intent/);
+  assert.match(page, /onTransfer\(selectedItem\.id, selectedRecipientId, actionQuantity\)/);
   assert.match(workspace, /transfer-targets/);
 });
 
