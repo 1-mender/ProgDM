@@ -19,14 +19,18 @@ export function ProfilePage({ player, busy, onSave }: {
   const [quote, setQuote] = useState(player.profile?.quote ?? "");
   const traitsKey = JSON.stringify(player.profile?.traits ?? []);
 
-  useEffect(() => {
+  function resetDraftFromPlayer() {
     setDescription(player.profile?.shortDescription ?? "");
     setGoal(player.profile?.personalGoal ?? "");
-    setTraits(player.profile?.traits ?? []);
+    setTraits([...(player.profile?.traits ?? [])]);
     setTraitDraft("");
     setAppearance(player.profile?.appearance ?? "");
     setQuote(player.profile?.quote ?? "");
-  }, [player.profile?.shortDescription, player.profile?.personalGoal, traitsKey, player.profile?.appearance, player.profile?.quote]);
+  }
+
+  useEffect(() => {
+    if (!editing) resetDraftFromPlayer();
+  }, [editing, player.profile?.shortDescription, player.profile?.personalGoal, traitsKey, player.profile?.appearance, player.profile?.quote]);
 
   function addTrait() {
     const value = traitDraft.trim();
@@ -63,7 +67,7 @@ export function ProfilePage({ player, busy, onSave }: {
       {profile?.appearance && <section className="prod-profile-section"><h2>Внешность</h2><p>{profile.appearance}</p></section>}
       {profile?.quote && <section className="prod-profile-section prod-profile-quote"><p>{profile.quote}</p></section>}
 
-      {player.canEdit && !editing && <button className="prod-secondary prod-edit-profile" type="button" onClick={() => setEditing(true)}><Pencil aria-hidden="true" />Редактировать</button>}
+      {player.canEdit && !editing && <button className="prod-secondary prod-edit-profile" type="button" onClick={() => { resetDraftFromPlayer(); setEditing(true); }}><Pencil aria-hidden="true" />Редактировать</button>}
       {editing && player.canEdit && <form className="prod-profile-editor" onSubmit={(event) => void submit(event)}>
         <h2>Мои записи в профиле</h2>
         <label htmlFor="prod-profile-description">О персонаже</label>
@@ -85,7 +89,7 @@ export function ProfilePage({ player, busy, onSave }: {
         <textarea id="prod-profile-appearance" value={appearance} maxLength={1000} rows={4} disabled={busy} onChange={(event) => setAppearance(event.target.value)} />
         <label htmlFor="prod-profile-quote">Цитата</label>
         <textarea id="prod-profile-quote" value={quote} maxLength={300} rows={2} disabled={busy} onChange={(event) => setQuote(event.target.value)} />
-        <div className="prod-actions"><button className="prod-secondary" type="button" disabled={busy} onClick={() => setEditing(false)}>Отмена</button><button className="prod-primary" type="submit" disabled={busy}>Сохранить</button></div>
+        <div className="prod-actions"><button className="prod-secondary" type="button" disabled={busy} onClick={() => { resetDraftFromPlayer(); setEditing(false); }}>Отмена</button><button className="prod-primary" type="submit" disabled={busy}>Сохранить</button></div>
       </form>}
     </article>
   </div>;

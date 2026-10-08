@@ -23,6 +23,28 @@ function get(app, url) { return app.inject({ method: "GET", url, headers }); }
 function post(app, url, payload = {}) { return app.inject({ method: "POST", url, headers, payload }); }
 function patch(app, url, payload = {}) { return app.inject({ method: "PATCH", url, headers, payload }); }
 
+test("DM first/repeated Character restore have identical normalized JSON traits and one activity", async (t) => {
+  const { app, database } = fixture(t);
+  const campaign = database.createCampaign("Restore API");
+  for (const traits of [["Careful"], []]) {
+    const character = database.createCharacter(campaign.id, traits.length ? "Mira" : "Rowan");
+    database.updateCharacterProfile(character.id, { name: character.name, shortDescription: "", archetype: "", origin: "",
+      personalGoal: "", dmNotes: "", traits });
+    assert.equal((await post(app, `/api/dm/characters/${character.id}/archive`)).statusCode, 200);
+    const first = await post(app, `/api/dm/characters/${character.id}/restore`);
+    const before = database.listCampaignActivity(campaign.id);
+    const second = await post(app, `/api/dm/characters/${character.id}/restore`);
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+    assert.ok(Array.isArray(first.json().character.traits));
+    assert.deepEqual(second.json(), first.json());
+    assert.deepEqual(second.json().character.traits, traits);
+    assert.equal(second.json().character.archivedAt, null);
+    assert.deepEqual(database.listCampaignActivity(campaign.id), before);
+    assert.equal(before.filter((event) => event.type === "character_restored" && event.characterId === character.id).length, 1);
+  }
+});
+
 test("join retry with persisted credential restores the original Player after a lost response", async (t) => {
   const { app, database } = fixture(t);
   const campaign = database.createCampaign("Join retry");

@@ -29,6 +29,34 @@ function memoryDatabase(t) {
   return database;
 }
 
+test("Character returns normalized traits on first/repeated restore without duplicate activity", (t) => {
+  const database = memoryDatabase(t);
+  const campaign = database.createCampaign("Normalized Character");
+  for (const traits of [["Careful", "Observant"], []]) {
+    const created = database.createCharacter(campaign.id, traits.length ? "Mira" : "Rowan");
+    assert.deepEqual(created.traits, []);
+    const updated = database.updateCharacterProfile(created.id, {
+      name: created.name, shortDescription: "Profile", archetype: "", origin: "", personalGoal: "", dmNotes: "", traits
+    });
+    assert.deepEqual(updated.traits, traits);
+    const archived = database.archiveCharacter(created.id);
+    assert.deepEqual(archived.traits, traits);
+    assert.deepEqual(database.archiveCharacter(created.id), archived);
+    const first = database.restoreCharacter(created.id);
+    const before = database.listCampaignActivity(campaign.id);
+    const second = database.restoreCharacter(created.id);
+    assert.ok(Array.isArray(first.traits));
+    assert.ok(Array.isArray(second.traits));
+    assert.deepEqual(second.traits, traits);
+    assert.deepEqual(second, first);
+    assert.equal(second.archivedAt, null);
+    assert.deepEqual(database.listCampaignActivity(campaign.id), before);
+    assert.equal(before.filter((event) => event.type === "character_restored" && event.characterId === created.id).length, 1);
+    assert.deepEqual(database.getCharacterOverview(created.id).character, first);
+    assert.deepEqual(database.listCharactersByCampaign(campaign.id).find(({ id }) => id === created.id), first);
+  }
+});
+
 test("archive v11 round-trips more than 10000 actual activity events without truncation and rejects corrupt references atomically", (t) => {
   const database = memoryDatabase(t);
   const campaign = database.createCampaign("Long history");

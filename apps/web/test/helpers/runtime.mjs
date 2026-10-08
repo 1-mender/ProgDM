@@ -55,7 +55,14 @@ export function componentRuntime() {
     useMemo: memo,
     useCallback: (callback, deps) => memo(() => callback, deps),
     useEffect(callback, deps) {
-      memo(() => { effects.push(callback); return null; }, deps);
+      const index = cursor++;
+      const previous = slots[index];
+      if (!previous || !deps || deps.some((item, i) => !Object.is(item, previous.dependencies[i]))) {
+        effects.push(() => {
+          previous?.cleanup?.();
+          slots[index] = { dependencies: deps, cleanup: callback() };
+        });
+      }
     },
     useLayoutEffect(callback, deps) { react.useEffect(callback, deps); }
   };
@@ -72,6 +79,8 @@ export function componentRuntime() {
   return {
     react,
     mount(component, properties) { Component = component; props = properties; return render(); },
+    rerender(properties) { props = properties; return render(); },
+    unmount() { for (const slot of slots) slot?.cleanup?.(); },
     render,
     async settle() {
       for (let i = 0; i < 5; i++) { await new Promise((done) => setImmediate(done)); render(); }

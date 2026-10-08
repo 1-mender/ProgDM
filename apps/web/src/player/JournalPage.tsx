@@ -6,6 +6,15 @@ import { PersonalNotesPage } from "./PersonalNotesPage";
 
 export type JournalTab = "chronicle" | "notes";
 
+function compareEvents(left: PlayerActivityEvent, right: PlayerActivityEvent) {
+  if (left.createdAt !== right.createdAt) return left.createdAt > right.createdAt ? -1 : 1;
+  return left.id === right.id ? 0 : left.id > right.id ? -1 : 1;
+}
+
+function mergeEvents(current: PlayerActivityEvent[], incoming: PlayerActivityEvent[]) {
+  return [...new Map([...current, ...incoming].map((event) => [event.id, event])).values()].sort(compareEvents);
+}
+
 export function JournalPage({ player, activeTab, onTabChange, onLoadPage, onOpenKnowledge, onMarkSeen, onSaveNote, busy }: {
   player: PlayerState;
   activeTab: JournalTab;
@@ -20,56 +29,117 @@ export function JournalPage({ player, activeTab, onTabChange, onLoadPage, onOpen
   const [nextCursor, setNextCursor] = useState<PlayerJournalCursor | null>(null);
   const [loading, setLoading] = useState<"first" | "more" | null>(null);
   const [loadError, setLoadError] = useState("");
+  const [headError, setHeadError] = useState("");
+  const [initialized, setInitialized] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const requestGeneration = useRef(0);
+  const headGeneration = useRef(0);
+  const paginationInFlight = useRef(false);
+  const hasLoadedMore = useRef(false);
+  const lastHeadSignal = useRef("");
+  const loadedEvents = useRef(events);
+  const headSignal = JSON.stringify([
+    player.recentActivity.map((event) => event.id),
+    player.knowledge.map((entry) => [entry.id, entry.title, entry.summaryVisible, entry.facts.map((fact) => fact.id)])
+  ]);
 
   const loadFirstPage = useCallback(async () => {
     const generation = ++requestGeneration.current;
+    headGeneration.current++;
+    paginationInFlight.current = true;
+    hasLoadedMore.current = false;
+    setInitialized(false);
     setLoading("first");
     setLoadError("");
+    setHeadError("");
     setEvents([]);
     setNextCursor(null);
     setSelectedId(null);
     try {
       const page = await onLoadPage();
       if (requestGeneration.current !== generation) return;
-      setEvents(page.events);
+      setEvents(mergeEvents([], page.events));
       setNextCursor(page.nextCursor);
+      setInitialized(true);
     } catch (failure) {
       if (requestGeneration.current === generation) setLoadError(failure instanceof Error ? failure.message : "Не удалось загрузить хронику.");
     } finally {
-      if (requestGeneration.current === generation) setLoading(null);
+      if (requestGeneration.current === generation) { paginationInFlight.current = false; setLoading(null); }
     }
   }, [onLoadPage]);
 
   useEffect(() => {
     if (activeTab !== "chronicle") return;
+    lastHeadSignal.current = headSignal;
     void loadFirstPage();
-    return () => { requestGeneration.current += 1; };
-  }, [activeTab, loadFirstPage]);
+    return () => { requestGeneration.current += 1; headGeneration.current += 1; paginationInFlight.current = false; };
+  }, [activeTab, loadFirstPage, player.characterId]);
+
+  const refreshHead = useCallback(async () => {
+    const generation = requestGeneration.current;
+    const headTicket = ++headGeneration.current;
+    const previousHead = loadedEvents.current[0];
+    setHeadError("");
+    try {
+      let page = await onLoadPage();
+      const firstCursor = page.nextCursor;
+      const incoming = [...page.events];
+      // Bridge bursts larger than a page before keeping an already-loaded tail cursor.
+      while (previousHead && page.nextCursor && page.events.length && compareEvents(page.events.at(-1)!, previousHead) < 0) {
+        if (requestGeneration.current !== generation || headGeneration.current !== headTicket) return;
+        page = await onLoadPage(page.nextCursor);
+        incoming.push(...page.events);
+      }
+      if (requestGeneration.current !== generation || headGeneration.current !== headTicket) return;
+      setEvents((current) => mergeEvents(current, incoming));
+      if (!hasLoadedMore.current || !previousHead) setNextCursor(firstCursor);
+    } catch {
+      if (requestGeneration.current === generation && headGeneration.current === headTicket) {
+        setHeadError("Не удалось обновить хронику. Попробуйте ещё раз.");
+      }
+    }
+  }, [onLoadPage]);
+
+  useEffect(() => {
+    if (activeTab !== "chronicle" || !initialized || lastHeadSignal.current === headSignal) return;
+    lastHeadSignal.current = headSignal;
+    void refreshHead();
+  }, [activeTab, initialized, headSignal, refreshHead]);
 
   const loadMore = async (cursor: PlayerJournalCursor | null = nextCursor) => {
-    if (!cursor || loading) return;
+    if (!cursor || paginationInFlight.current) return;
+    paginationInFlight.current = true;
     const generation = requestGeneration.current;
     setLoading("more");
     setLoadError("");
     try {
       const page = await onLoadPage(cursor);
       if (requestGeneration.current !== generation) return;
-      setEvents((current) => {
-        const known = new Set(current.map((event) => event.id));
-        return [...current, ...page.events.filter((event) => !known.has(event.id))];
-      });
+      hasLoadedMore.current = true;
+      setEvents((current) => mergeEvents(current, page.events));
       setNextCursor(page.nextCursor);
     } catch (failure) {
       if (requestGeneration.current === generation) setLoadError(failure instanceof Error ? failure.message : "Не удалось загрузить более ранние события.");
     } finally {
-      if (requestGeneration.current === generation) setLoading(null);
+      if (requestGeneration.current === generation) { paginationInFlight.current = false; setLoading(null); }
     }
   };
 
-  const groups = useMemo(() => journalEventGroups(events), [events]);
-  const selected = events.find((event) => event.id === selectedId);
+  const safeEvents = useMemo(() => {
+    const knowledge = new Map(player.knowledge.map((entry) => [entry.id, entry]));
+    return events.flatMap<PlayerActivityEvent>((event) => {
+      if (event.kind !== "knowledge_summary_opened" && event.kind !== "knowledge_facts_revealed") return [event];
+      const entry = knowledge.get(event.knowledgeEntryId);
+      if (!entry || (event.kind === "knowledge_summary_opened" ? !entry.summaryVisible : !entry.facts.length)) return [];
+      return [{ ...event, knowledgeTitle: entry.title }];
+    });
+  }, [events, player.knowledge]);
+  loadedEvents.current = safeEvents;
+  const groups = useMemo(() => journalEventGroups(safeEvents), [safeEvents]);
+  const selected = safeEvents.find((event) => event.id === selectedId);
+  useEffect(() => {
+    if (selectedId && !selected) setSelectedId(null);
+  }, [selectedId, selected]);
   const selectedPresentation = selected ? journalActivityPresentation(selected) : null;
   const SelectedIcon = selectedPresentation?.icon;
   const selectedGroup = selected ? groups.find((group) => group.events.some((event) => event.id === selected.id)) : null;
@@ -97,7 +167,8 @@ export function JournalPage({ player, activeTab, onTabChange, onLoadPage, onOpen
         onClick={() => onMarkSeen(newestNewEvent.id)}>Отметить новое просмотренным</button>}
       {loading === "first" && events.length === 0 && <p className="prod-empty" role="status">Загружаем хронику…</p>}
       {loadError && <div className="prod-journal-error" role="alert"><p>{loadError}</p><button className="prod-secondary" type="button" onClick={retry}>Повторить</button></div>}
-      {!loading && !loadError && events.length === 0 && <p className="prod-empty">Пока нет событий.</p>}
+      {headError && <div className="prod-journal-error" role="status"><p>{headError}</p><button className="prod-secondary" type="button" onClick={() => void refreshHead()}>Повторить</button></div>}
+      {!loading && !loadError && safeEvents.length === 0 && <p className="prod-empty">Пока нет событий.</p>}
       {selected && selectedPresentation ? <article className="prod-journal-detail" aria-labelledby="prod-journal-detail-title">
         <button className="prod-back" type="button" onClick={() => setSelectedId(null)}><ArrowLeft aria-hidden="true" />Хроника</button>
         <div className="prod-journal-detail-heading">
@@ -111,7 +182,7 @@ export function JournalPage({ player, activeTab, onTabChange, onLoadPage, onOpen
         {selectedPresentation.destination?.kind === "knowledge" && <button className="prod-secondary prod-journal-knowledge-link" type="button"
           onClick={() => onOpenKnowledge(selectedPresentation.destination!.entryId)}>Открыть запись знания</button>}
       </article> : <>
-        {events.length > 0 && <div className="prod-chronicle-groups" aria-label="Хроника персонажа">
+        {safeEvents.length > 0 && <div className="prod-chronicle-groups" aria-label="Хроника персонажа">
           {groups.map((group) => <section className="prod-chronicle-group" key={group.key}>
             <header><h2>{group.dateLabel}</h2><span>{group.sessionName}</span></header>
             <ol className="prod-chronicle-events">

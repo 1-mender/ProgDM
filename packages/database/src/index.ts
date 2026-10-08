@@ -2411,7 +2411,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       return db.transaction(() => {
         const character = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
         if (!character) throw new Error("Character not found.");
-        if (!character.archivedAt) return character;
+        if (!character.archivedAt) return characterRecord(character);
         const updated = db.update(schema.characters).set({ archivedAt: null })
           .where(eq(schema.characters.id, characterId)).returning().get()!;
         appendActivity({ campaignId: character.campaignId, sessionId: activeSessionId(character.campaignId), characterId, type: "character_restored", details: { characterName: character.name } });
