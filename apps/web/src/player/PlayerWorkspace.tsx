@@ -116,8 +116,9 @@ export function PlayerWorkspace({ player, credential, refresh }: { player: Playe
       { type: "discard", inventoryItemId: itemId, quantity }, "Предмет выброшен.")} />;
   else if (view === "journal") content = <JournalPage player={player} activeTab={journalTab} onTabChange={setJournalTab}
     onLoadPage={loadJournalPage} onOpenKnowledge={(entryId) => { setKnowledgeFocusId(entryId); navigate("knowledge"); }}
-    onMarkSeen={markSeen} busy={busy} onSaveNote={(noteId, fields) => run(
-      () => playerPost(credential, noteId ? `/api/player/notes/${noteId}` : "/api/player/notes", fields), "Заметка сохранена."
+    onMarkSeen={markSeen} busy={busy} onSaveNote={(noteId, fields, creationId) => run(
+      () => playerPost(credential, noteId ? `/api/player/notes/${noteId}` : "/api/player/notes",
+        noteId ? fields : { ...fields, noteId: creationId }), "Заметка сохранена."
     )} />;
   else content = <section className="prod-page prod-legacy-page"><div className="prod-settings-heading"><h1>Настройки</h1><Settings aria-hidden="true" /></div>
     {player.canEdit && <form className="player-form" onSubmit={(event) => { event.preventDefault(); void run(

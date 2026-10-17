@@ -22,7 +22,7 @@ export function JournalPage({ player, activeTab, onTabChange, onLoadPage, onOpen
   onLoadPage: (cursor?: PlayerJournalCursor) => Promise<PlayerJournalPage>;
   onOpenKnowledge: (entryId: string) => void;
   onMarkSeen: (eventId: string) => void;
-  onSaveNote: (noteId: string | null, fields: Pick<PersonalNote, "title" | "body" | "marker" | "pinned">) => Promise<boolean>;
+  onSaveNote: (noteId: string | null, fields: Pick<PersonalNote, "title" | "body" | "marker" | "pinned">, creationId?: string) => Promise<boolean>;
   busy: boolean;
 }) {
   const [events, setEvents] = useState<PlayerActivityEvent[]>([]);

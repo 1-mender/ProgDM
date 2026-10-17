@@ -144,6 +144,7 @@ function DmWorkspace() {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const loadId = useRef(0);
+  const refreshInFlight = useRef<number | null>(null);
   const [campaignForm, setCampaignForm] = useState(false);
   const [campaignName, setCampaignName] = useState("");
   const [sessionName, setSessionName] = useState("");
@@ -183,7 +184,9 @@ function DmWorkspace() {
   const [copied, setCopied] = useState(false);
 
   const refresh = useCallback(async (silent = false) => {
+    if (silent && refreshInFlight.current !== null) return;
     const id = ++loadId.current;
+    refreshInFlight.current = id;
     if (!silent) setPhase("loading");
     try {
       const [data, backupData] = await Promise.all([
@@ -203,6 +206,8 @@ function DmWorkspace() {
         setToken(""); storeValue(tokenKey, ""); setState(null);
       }
       throw failure;
+    } finally {
+      if (refreshInFlight.current === id) refreshInFlight.current = null;
     }
   }, [token]);
 
@@ -270,7 +275,7 @@ function DmWorkspace() {
     const interval = window.setInterval(() => {
       if (token && !busyRef.current) void refresh(true).catch(() => {});
     }, 3000);
-    return () => { loadId.current++; window.clearInterval(interval); };
+    return () => { loadId.current++; refreshInFlight.current = null; window.clearInterval(interval); };
   }, [token, refresh]);
   useEffect(() => { storeValue(campaignKey, selectedId); }, [selectedId]);
 
@@ -363,6 +368,7 @@ function DmWorkspace() {
 
   async function mutate(action: () => Promise<void>, options: { notFoundMessage?: string; conflictMessage?: string } = {}) {
     if (busyRef.current || phase !== "ready") return;
+    loadId.current++;
     overviewRequests.current.invalidate(); historyRequests.current.invalidate();
     busyRef.current = true; setBusy(true); setError(""); setNotice("");
     try {

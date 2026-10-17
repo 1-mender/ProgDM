@@ -40,13 +40,16 @@ test("approved join state uses the production workspace and keeps join states in
 
 test("Player HTTP timeout releases polling and mutation state, then a retry succeeds", async () => {
   const originalFetch = globalThis.fetch;
+  const validState = { displayName: "Player", status: "approved", campaignName: "Campaign", sessionName: "Session",
+    characterName: "Mira", characterId: "mira", canEdit: true, profile: null, inventoryCapacity: 12,
+    inventory: [], knowledge: [], notes: [], recentActivity: [], newActivity: [] };
   let calls = 0;
   globalThis.fetch = (_input, init) => {
     calls++;
     if (calls === 1) return new Promise((_resolve, reject) => {
       init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
     });
-    return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    return Promise.resolve(new Response(JSON.stringify(validState), { status: 200 }));
   };
   try {
     await assert.rejects(playerApi.playerRequest("/api/player/me", {}, 5), (error) => {
@@ -54,7 +57,7 @@ test("Player HTTP timeout releases polling and mutation state, then a retry succ
       assert.equal(error instanceof playerApi.PlayerNetworkError, true);
       return true;
     });
-    assert.deepEqual(await playerApi.playerRequest("/api/player/me", {}, 100), { ok: true });
+    assert.deepEqual(await playerApi.playerRequest("/api/player/me", {}, 100), validState);
     assert.equal(calls, 2);
     assert.match(joinPage, /finally \{ inFlight = false; \}/);
     assert.match(workspace, /finally \{\s*setBusy\(false\);\s*\}/);
@@ -286,7 +289,7 @@ test("Personal Notes open in read mode; edit, cancel, create and pin stay separa
   assert.match(personalNotes, /{canEdit && <button className="prod-secondary" type="button" onClick=\{\(\) => startEdit\(selectedNote\)\}>Редактировать<\/button>}/);
   assert.match(personalNotes, /{selectedNote\.pinned && <span className="prod-note-marker"><Pin aria-hidden="true" \/>Закреплена<\/span>}/);
   assert.match(personalNotes, /if \(editing === "new"\) setSelectedNoteId\(null\);\s*setEditing\(null\);/);
-  assert.match(personalNotes, /if \(await onSave\(noteId, \{ title, body, marker, pinned \}\)\) \{\s*setEditing\(null\);/);
+  assert.match(personalNotes, /if \(await onSave\(noteId, \{ title, body, marker, pinned \}, isNew \? creationId : undefined\)\) \{\s*setEditing\(null\);/);
   assert.match(personalNotes, /!editing && !selectedNote && canEdit && <button className="prod-secondary" type="button" onClick=\{startCreate\}>/);
   assert.match(personalNotes, /onClick=\{\(\) => void onSave\(note\.id, \{ title: note\.title, body: note\.body, marker: note\.marker, pinned: !note\.pinned \}\)\}/);
 });

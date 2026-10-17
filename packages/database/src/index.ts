@@ -416,6 +416,144 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       });
   }
 
+  function collectDomainIntegrityChecks(database: SQLite.Database): HealthCheck[] {
+    const checks: HealthCheck[] = [];
+    const check = (name: string, run: () => Omit<HealthCheck, "name">) => {
+      try { checks.push({ name, ...run() }); }
+      catch { checks.push({ name, status: "error", message: "Проверка не выполнена. Проверьте доступ к локальным данным." }); }
+    };
+    const domainQueries = [
+      ["Назначения персонажей", "SELECT count(*) AS count FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id JOIN characters c ON c.id=a.character_id WHERE p.session_id!=a.session_id OR c.campaign_id!=s.campaign_id"],
+      ["Категории знаний", "SELECT count(*) AS count FROM knowledge_entries WHERE category NOT IN ('character', 'place', 'creature', 'item', 'event', 'fact')"],
+      ["Личные знания", "SELECT count(*) AS count FROM knowledge_entries k JOIN characters c ON c.id=k.visible_to_character_id WHERE c.campaign_id!=k.campaign_id"],
+      ["Факты знаний", `SELECT count(*) AS count FROM knowledge_facts f
+        LEFT JOIN knowledge_entries k ON k.id=f.knowledge_entry_id
+        WHERE k.id IS NULL OR k.campaign_id!=f.campaign_id OR typeof(f.body)!='text' OR length(trim(f.body)) NOT BETWEEN 1 AND 2000 OR
+        typeof(f.position)!='integer' OR f.position<0 OR EXISTS (
+          SELECT 1 FROM knowledge_facts d WHERE d.knowledge_entry_id=f.knowledge_entry_id AND d.position=f.position AND d.id!=f.id
+        )`],
+      ["Раскрытие фактов", `SELECT count(*) AS count FROM knowledge_fact_reveals r
+        LEFT JOIN knowledge_facts f ON f.id=r.knowledge_fact_id
+        LEFT JOIN characters c ON c.id=r.character_id
+        LEFT JOIN sessions s ON s.id=r.session_id
+        WHERE f.id IS NULL OR f.campaign_id!=r.campaign_id OR
+          r.audience NOT IN ('party','character') OR
+          (r.audience='party' AND r.character_id IS NOT NULL) OR
+          (r.audience='character' AND (c.id IS NULL OR c.campaign_id!=r.campaign_id)) OR
+          (r.session_id IS NOT NULL AND (s.id IS NULL OR s.campaign_id!=r.campaign_id)) OR
+          (r.audience='party' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.audience='party' AND d.id!=r.id)) OR
+          (r.audience='character' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.character_id=r.character_id AND d.audience='character' AND d.id!=r.id))`],
+      ["Вместимость сумок", `SELECT count(*) AS count FROM characters c WHERE typeof(c.inventory_capacity)!='integer' OR c.inventory_capacity<0 OR
+        (SELECT count(*) FROM inventory_items i WHERE i.character_id=c.id AND i.equipped_slot IS NULL)>c.inventory_capacity`],
+      ["Каталог предметов", `SELECT count(*) AS count FROM catalog_items WHERE typeof(description)!='text' OR length(description)>2000 OR
+        category NOT IN ('key','document','tool','consumable','equipment','artifact','special') OR
+        (rarity IS NOT NULL AND rarity NOT IN ('common','uncommon','rare','unique')) OR
+        (equipment_slot IS NOT NULL AND equipment_slot NOT IN ('primary','secondary','armor','accessory','tool','special')) OR
+        typeof(transfer_allowed)!='integer' OR transfer_allowed NOT IN (0,1) OR
+        typeof(discard_allowed)!='integer' OR discard_allowed NOT IN (0,1)`],
+      ["Инвентарь и экипировка", `SELECT count(*) AS count FROM inventory_items i
+        LEFT JOIN characters c ON c.id=i.character_id
+        LEFT JOIN catalog_items ci ON ci.id=i.catalog_item_id
+        WHERE c.id IS NULL OR typeof(i.quantity)!='integer' OR i.quantity NOT BETWEEN 1 AND 9999 OR
+          (ci.id IS NOT NULL AND c.campaign_id!=ci.campaign_id) OR
+          (i.equipped_slot IS NOT NULL AND (i.equipped_slot NOT IN ('primary','secondary','armor','accessory','tool','special') OR
+            ci.id IS NULL OR i.quantity!=1 OR ci.equipment_slot IS NOT i.equipped_slot)) OR
+          EXISTS (SELECT 1 FROM inventory_items d WHERE d.character_id=i.character_id AND d.id!=i.id AND
+            i.equipped_slot IS NOT NULL AND d.equipped_slot=i.equipped_slot) OR
+          EXISTS (SELECT 1 FROM inventory_items d WHERE d.character_id=i.character_id AND d.id!=i.id AND
+            i.catalog_item_id IS NOT NULL AND d.catalog_item_id=i.catalog_item_id AND
+            i.equipped_slot IS NULL AND d.equipped_slot IS NULL)`],
+      ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id AND a.released_at IS NULL WHERE p.removed_at IS NULL AND s.removed_at IS NULL AND p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
+      ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE a.released_at IS NULL AND p.removed_at IS NULL AND s.removed_at IS NULL AND c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
+      ["Отметки просмотра", "SELECT count(*) AS count FROM character_read_state r JOIN characters c ON c.id=r.character_id LEFT JOIN campaign_activity a ON a.id=r.last_seen_id WHERE a.id IS NULL OR a.campaign_id!=c.campaign_id OR a.created_at!=r.last_seen_at"],
+      ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id LEFT JOIN characters r ON r.id=a.related_character_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id) OR (a.related_character_id IS NOT NULL AND (r.id IS NULL OR r.campaign_id!=a.campaign_id))"],
+      ["Передачи и выбрасывание", `SELECT count(*) AS count FROM campaign_activity a
+        LEFT JOIN characters sender ON sender.id=a.character_id AND sender.campaign_id=a.campaign_id
+        LEFT JOIN characters recipient ON recipient.id=a.related_character_id AND recipient.campaign_id=a.campaign_id
+        LEFT JOIN sessions s ON s.id=a.session_id AND s.campaign_id=a.campaign_id
+        LEFT JOIN players p ON p.id=a.player_id AND p.session_id=a.session_id
+        WHERE a.type IN ('item_transferred','item_discarded') AND (
+          sender.id IS NULL OR s.id IS NULL OR p.id IS NULL OR p.status!='approved' OR
+          json_type(a.payload,'$.itemName') IS NOT 'text' OR coalesce(length(trim(json_extract(a.payload,'$.itemName'))),0)=0 OR
+          json_type(a.payload,'$.quantity') IS NOT 'integer' OR CAST(json_extract(a.payload,'$.quantity') AS integer) NOT BETWEEN 1 AND 9999 OR
+          json_type(a.payload,'$.sourceInventoryItemId') IS NOT 'text' OR length(json_extract(a.payload,'$.sourceInventoryItemId'))!=36 OR
+          NOT EXISTS (SELECT 1 FROM session_character_assignments a_sender WHERE a_sender.session_id=a.session_id AND a_sender.player_id=a.player_id AND a_sender.character_id=a.character_id) OR
+          (a.type='item_transferred' AND (recipient.id IS NULL OR recipient.id=sender.id OR NOT EXISTS (
+            SELECT 1 FROM session_character_assignments a_target JOIN players p_target ON p_target.id=a_target.player_id
+            WHERE a_target.session_id=a.session_id AND a_target.character_id=a.related_character_id AND p_target.status='approved'))) OR
+          (a.type='item_discarded' AND a.related_character_id IS NOT NULL)
+        )`],
+      ["Личные заметки", "SELECT count(*) AS count FROM character_personal_notes n LEFT JOIN characters c ON c.id=n.character_id WHERE c.id IS NULL OR length(n.title)>120 OR length(trim(n.body)) NOT BETWEEN 1 AND 2000 OR n.marker NOT IN ('normal', 'important', 'check', 'question') OR typeof(n.pinned)!='integer' OR n.pinned NOT IN (0, 1)"]
+    ] as const;
+    for (const [name, query] of domainQueries) check(name, () => {
+      const count = (database.prepare(query).get() as { count: number }).count;
+      return count === 0 ? { status: "ok", message: "Нарушений не найдено." }
+        : { status: "error", message: `Найдено несогласованных записей: ${count}.` };
+    });
+    check("Жизненный цикл сессий и игроков", () => {
+      const sessions = database.prepare("SELECT status, removed_at FROM sessions").all() as { status: string; removed_at: string | null }[];
+      const players = database.prepare("SELECT removed_at FROM players").all() as { removed_at: string | null }[];
+      const assignments = database.prepare("SELECT released_at FROM session_character_assignments").all() as { released_at: string | null }[];
+      const badTimestamps = [...sessions.map((row) => row.removed_at), ...players.map((row) => row.removed_at), ...assignments.map((row) => row.released_at)]
+        .filter((value) => value !== null && !validLifecycleTimestamp(value)).length;
+      const invalid = database.prepare(`SELECT
+        (SELECT count(*) FROM sessions WHERE removed_at IS NOT NULL AND status='active') +
+        (SELECT count(*) FROM players p JOIN session_character_assignments a ON a.player_id=p.id WHERE p.removed_at IS NOT NULL AND a.released_at IS NULL) +
+        (SELECT count(*) FROM session_character_assignments a JOIN players p ON p.id=a.player_id WHERE a.released_at IS NULL AND p.session_id!=a.session_id) +
+        (SELECT count(*) FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN characters c ON c.id=a.character_id WHERE a.released_at IS NULL AND c.campaign_id!=s.campaign_id) AS count`).get() as { count: number };
+      const duplicateAssignments = database.prepare(`SELECT count(*) AS count FROM (
+        SELECT session_id, character_id FROM session_character_assignments WHERE released_at IS NULL GROUP BY session_id, character_id HAVING count(*)>1
+      )`).get() as { count: number };
+      const duplicateNames = new Set<string>();
+      const names = database.prepare("SELECT session_id, display_name FROM players WHERE removed_at IS NULL").all() as { session_id: string; display_name: string }[];
+      const seenNames = new Set<string>();
+      for (const row of names) {
+        const key = `${row.session_id}:${row.display_name.trim().toLocaleLowerCase("ru")}`;
+        if (seenNames.has(key)) duplicateNames.add(key);
+        seenNames.add(key);
+      }
+      const issueCount = badTimestamps + invalid.count + duplicateAssignments.count + duplicateNames.size;
+      return issueCount === 0 ? { status: "ok", message: "Отозванные записи, назначения и активные имена согласованы." }
+        : { status: "error", message: `Найдены нарушения жизненного цикла: ${issueCount}.` };
+    });
+    check("Идентификаторы операций с предметами", () => {
+      const rows = database.prepare("SELECT payload FROM campaign_activity WHERE type IN ('item_transferred','item_discarded')").all() as { payload: string }[];
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      const invalid = rows.filter((row) => {
+        try { return !uuid.test(String((JSON.parse(row.payload) as Record<string, unknown>).sourceInventoryItemId ?? "")); }
+        catch { return true; }
+      }).length;
+      return invalid === 0 ? { status: "ok", message: "Ссылки на исходные строки инвентаря корректны." }
+        : { status: "error", message: `Найдено событий с некорректными ссылками на предметы: ${invalid}.` };
+    });
+    check("Профили персонажей", () => {
+      const rows = database.prepare("SELECT traits, appearance, quote FROM characters").all() as { traits: string; appearance: string; quote: string }[];
+      const invalid = rows.filter((row) => !storedTraitsAreValid(row.traits) || typeof row.appearance !== "string" ||
+        row.appearance.length > 1000 || typeof row.quote !== "string" || row.quote.length > 300).length;
+      return invalid === 0 ? { status: "ok", message: "Поля профилей и черты персонажей корректны." }
+        : { status: "error", message: `Найдено профилей с некорректными чертами, внешностью или цитатой: ${invalid}.` };
+    });
+    check("Определения полей профиля", () => {
+      const rows = database.prepare("SELECT campaign_id, label, position FROM campaign_profile_field_definitions ORDER BY campaign_id, position, id").all() as { campaign_id: string; label: string; position: number }[];
+      const groups = new Map<string, typeof rows>();
+      for (const row of rows) groups.set(row.campaign_id, [...(groups.get(row.campaign_id) ?? []), row]);
+      const invalid = [...groups.values()].some((group) => group.length > 20 || group.some((row, index) =>
+        typeof row.label !== "string" || row.label.trim().length < 1 || row.label.trim().length > 60 ||
+        !Number.isInteger(row.position) || row.position !== index));
+      return !invalid ? { status: "ok", message: "Поля профиля и их порядок корректны." }
+        : { status: "error", message: "Найдены некорректные определения, лимит или порядок полей профиля." };
+    });
+    check("Значения полей профиля", () => {
+      const rows = database.prepare(`SELECT count(*) AS count FROM character_profile_field_values v
+        LEFT JOIN campaign_profile_field_definitions d ON d.id=v.field_id AND d.campaign_id=v.campaign_id
+        LEFT JOIN characters c ON c.id=v.character_id AND c.campaign_id=v.campaign_id
+        WHERE d.id IS NULL OR c.id IS NULL OR typeof(v.value)!='text' OR length(v.value)>500`).get() as { count: number };
+      return rows.count === 0 ? { status: "ok", message: "Связи и значения полей персонажей корректны." }
+        : { status: "error", message: `Найдено некорректных значений полей профиля: ${rows.count}.` };
+    });
+    return checks;
+  }
+
   function restoreBackupFile(sourceFile: string): void {
     const original = new SQLite(sourceFile, { readonly: true, fileMustExist: true });
     try {
@@ -435,20 +573,14 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
 
         if (staged.pragma("integrity_check", { simple: true }) !== "ok") throw new Error("Migrated backup failed integrity check.");
         if ((staged.pragma("foreign_key_check") as unknown[]).length) throw new Error("Migrated backup contains invalid references.");
-        const lifecycleTimes = staged.prepare(`SELECT removed_at AS value FROM sessions WHERE removed_at IS NOT NULL
-          UNION ALL SELECT removed_at FROM players WHERE removed_at IS NOT NULL
-          UNION ALL SELECT released_at FROM session_character_assignments WHERE released_at IS NOT NULL`).all() as { value: string }[];
-        if (lifecycleTimes.some(({ value }) => !validLifecycleTimestamp(value))) throw new Error("Migrated backup contains invalid lifecycle timestamps.");
-        const lifecycleViolation = staged.prepare(`SELECT
-          EXISTS(SELECT 1 FROM sessions WHERE removed_at IS NOT NULL AND status='active') OR
-          EXISTS(SELECT 1 FROM players p JOIN session_character_assignments a ON a.player_id=p.id WHERE p.removed_at IS NOT NULL AND a.released_at IS NULL) OR
-          EXISTS(SELECT 1 FROM session_character_assignments a GROUP BY a.session_id, a.character_id HAVING count(*) FILTER (WHERE a.released_at IS NULL)>1) AS invalid`).get() as { invalid: number };
-        if (lifecycleViolation.invalid) throw new Error("Migrated backup contains invalid lifecycle references.");
         const schemaSignature = (database: SQLite.Database, schemaName: string) =>
           (database.prepare(`SELECT type, name, tbl_name, sql FROM ${schemaName}.sqlite_master WHERE type IN ('table', 'index', 'view', 'trigger') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type, name`).all() as { type: string; name: string; tbl_name: string; sql: string }[])
             .map((object) => ({ ...object, sql: object.sql.replace(/\s+/g, " ").trim() }));
         if (JSON.stringify(schemaSignature(staged, "main")) !== JSON.stringify(schemaSignature(client, "main"))) {
           throw new Error("Backup schema is not supported.");
+        }
+        if (collectDomainIntegrityChecks(staged).some((check) => check.status === "error")) {
+          throw new Error("Backup contains invalid domain references.");
         }
       } finally { staged.close(); }
 
@@ -849,135 +981,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
             : { status: "error", message: "Каталог отсутствует." };
         });
       }
-      const domainQueries = [
-        ["Назначения персонажей", "SELECT count(*) AS count FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id JOIN characters c ON c.id=a.character_id WHERE p.session_id!=a.session_id OR c.campaign_id!=s.campaign_id"],
-        ["Категории знаний", "SELECT count(*) AS count FROM knowledge_entries WHERE category NOT IN ('character', 'place', 'creature', 'item', 'event', 'fact')"],
-        ["Личные знания", "SELECT count(*) AS count FROM knowledge_entries k JOIN characters c ON c.id=k.visible_to_character_id WHERE c.campaign_id!=k.campaign_id"],
-        ["Факты знаний", `SELECT count(*) AS count FROM knowledge_facts f
-          LEFT JOIN knowledge_entries k ON k.id=f.knowledge_entry_id
-          WHERE k.id IS NULL OR k.campaign_id!=f.campaign_id OR typeof(f.body)!='text' OR length(trim(f.body)) NOT BETWEEN 1 AND 2000 OR
-          typeof(f.position)!='integer' OR f.position<0 OR EXISTS (
-            SELECT 1 FROM knowledge_facts d WHERE d.knowledge_entry_id=f.knowledge_entry_id AND d.position=f.position AND d.id!=f.id
-          )`],
-        ["Раскрытие фактов", `SELECT count(*) AS count FROM knowledge_fact_reveals r
-          LEFT JOIN knowledge_facts f ON f.id=r.knowledge_fact_id
-          LEFT JOIN characters c ON c.id=r.character_id
-          LEFT JOIN sessions s ON s.id=r.session_id
-          WHERE f.id IS NULL OR f.campaign_id!=r.campaign_id OR
-            r.audience NOT IN ('party','character') OR
-            (r.audience='party' AND r.character_id IS NOT NULL) OR
-            (r.audience='character' AND (c.id IS NULL OR c.campaign_id!=r.campaign_id)) OR
-            (r.session_id IS NOT NULL AND (s.id IS NULL OR s.campaign_id!=r.campaign_id)) OR
-            (r.audience='party' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.audience='party' AND d.id!=r.id)) OR
-            (r.audience='character' AND EXISTS (SELECT 1 FROM knowledge_fact_reveals d WHERE d.knowledge_fact_id=r.knowledge_fact_id AND d.character_id=r.character_id AND d.audience='character' AND d.id!=r.id))`],
-        ["Вместимость сумок", `SELECT count(*) AS count FROM characters c WHERE typeof(c.inventory_capacity)!='integer' OR c.inventory_capacity<0 OR
-          (SELECT count(*) FROM inventory_items i WHERE i.character_id=c.id AND i.equipped_slot IS NULL)>c.inventory_capacity`],
-        ["Каталог предметов", `SELECT count(*) AS count FROM catalog_items WHERE typeof(description)!='text' OR length(description)>2000 OR
-          category NOT IN ('key','document','tool','consumable','equipment','artifact','special') OR
-          (rarity IS NOT NULL AND rarity NOT IN ('common','uncommon','rare','unique')) OR
-          (equipment_slot IS NOT NULL AND equipment_slot NOT IN ('primary','secondary','armor','accessory','tool','special')) OR
-          typeof(transfer_allowed)!='integer' OR transfer_allowed NOT IN (0,1) OR
-          typeof(discard_allowed)!='integer' OR discard_allowed NOT IN (0,1)`],
-        ["Инвентарь и экипировка", `SELECT count(*) AS count FROM inventory_items i
-          LEFT JOIN characters c ON c.id=i.character_id
-          LEFT JOIN catalog_items ci ON ci.id=i.catalog_item_id
-          WHERE c.id IS NULL OR typeof(i.quantity)!='integer' OR i.quantity NOT BETWEEN 1 AND 9999 OR
-            (ci.id IS NOT NULL AND c.campaign_id!=ci.campaign_id) OR
-            (i.equipped_slot IS NOT NULL AND (i.equipped_slot NOT IN ('primary','secondary','armor','accessory','tool','special') OR
-              ci.id IS NULL OR i.quantity!=1 OR ci.equipment_slot IS NOT i.equipped_slot)) OR
-            EXISTS (SELECT 1 FROM inventory_items d WHERE d.character_id=i.character_id AND d.id!=i.id AND
-              i.equipped_slot IS NOT NULL AND d.equipped_slot=i.equipped_slot) OR
-            EXISTS (SELECT 1 FROM inventory_items d WHERE d.character_id=i.character_id AND d.id!=i.id AND
-              i.catalog_item_id IS NOT NULL AND d.catalog_item_id=i.catalog_item_id AND
-              i.equipped_slot IS NULL AND d.equipped_slot IS NULL)`],
-        ["Активные игроки", "SELECT count(*) AS count FROM players p JOIN sessions s ON s.id=p.session_id LEFT JOIN session_character_assignments a ON a.player_id=p.id AND a.released_at IS NULL WHERE p.removed_at IS NULL AND s.removed_at IS NULL AND p.status='approved' AND s.status='active' AND a.player_id IS NULL"],
-        ["Архивные персонажи", "SELECT count(*) AS count FROM session_character_assignments a JOIN characters c ON c.id=a.character_id JOIN sessions s ON s.id=a.session_id JOIN players p ON p.id=a.player_id WHERE a.released_at IS NULL AND p.removed_at IS NULL AND s.removed_at IS NULL AND c.archived_at IS NOT NULL AND s.status='active' AND p.status='approved'"],
-        ["Отметки просмотра", "SELECT count(*) AS count FROM character_read_state r JOIN characters c ON c.id=r.character_id LEFT JOIN campaign_activity a ON a.id=r.last_seen_id WHERE a.id IS NULL OR a.campaign_id!=c.campaign_id OR a.created_at!=r.last_seen_at"],
-        ["История кампании", "SELECT count(*) AS count FROM campaign_activity a LEFT JOIN sessions s ON s.id=a.session_id LEFT JOIN players p ON p.id=a.player_id LEFT JOIN characters c ON c.id=a.character_id LEFT JOIN catalog_items i ON i.id=a.catalog_item_id LEFT JOIN knowledge_entries k ON k.id=a.knowledge_entry_id LEFT JOIN characters r ON r.id=a.related_character_id WHERE (s.id IS NOT NULL AND s.campaign_id!=a.campaign_id) OR (p.id IS NOT NULL AND (a.session_id IS NULL OR p.session_id!=a.session_id)) OR (c.id IS NOT NULL AND c.campaign_id!=a.campaign_id) OR (i.id IS NOT NULL AND i.campaign_id!=a.campaign_id) OR (k.id IS NOT NULL AND k.campaign_id!=a.campaign_id) OR (a.related_character_id IS NOT NULL AND (r.id IS NULL OR r.campaign_id!=a.campaign_id))"],
-        ["Передачи и выбрасывание", `SELECT count(*) AS count FROM campaign_activity a
-          LEFT JOIN characters sender ON sender.id=a.character_id AND sender.campaign_id=a.campaign_id
-          LEFT JOIN characters recipient ON recipient.id=a.related_character_id AND recipient.campaign_id=a.campaign_id
-          LEFT JOIN sessions s ON s.id=a.session_id AND s.campaign_id=a.campaign_id
-          LEFT JOIN players p ON p.id=a.player_id AND p.session_id=a.session_id
-          WHERE a.type IN ('item_transferred','item_discarded') AND (
-            sender.id IS NULL OR s.id IS NULL OR p.id IS NULL OR p.status!='approved' OR
-            json_type(a.payload,'$.itemName') IS NOT 'text' OR coalesce(length(trim(json_extract(a.payload,'$.itemName'))),0)=0 OR
-            json_type(a.payload,'$.quantity') IS NOT 'integer' OR CAST(json_extract(a.payload,'$.quantity') AS integer) NOT BETWEEN 1 AND 9999 OR
-            json_type(a.payload,'$.sourceInventoryItemId') IS NOT 'text' OR length(json_extract(a.payload,'$.sourceInventoryItemId'))!=36 OR
-            NOT EXISTS (SELECT 1 FROM session_character_assignments a_sender WHERE a_sender.session_id=a.session_id AND a_sender.player_id=a.player_id AND a_sender.character_id=a.character_id) OR
-            (a.type='item_transferred' AND (recipient.id IS NULL OR recipient.id=sender.id OR NOT EXISTS (
-              SELECT 1 FROM session_character_assignments a_target JOIN players p_target ON p_target.id=a_target.player_id
-              WHERE a_target.session_id=a.session_id AND a_target.character_id=a.related_character_id AND p_target.status='approved'))) OR
-            (a.type='item_discarded' AND a.related_character_id IS NOT NULL)
-          )`],
-        ["Личные заметки", "SELECT count(*) AS count FROM character_personal_notes n LEFT JOIN characters c ON c.id=n.character_id WHERE c.id IS NULL OR length(n.title)>120 OR length(trim(n.body)) NOT BETWEEN 1 AND 2000 OR n.marker NOT IN ('normal', 'important', 'check', 'question') OR typeof(n.pinned)!='integer' OR n.pinned NOT IN (0, 1)"]
-      ] as const;
-      for (const [name, query] of domainQueries) check(name, () => {
-        const count = (client.prepare(query).get() as { count: number }).count;
-        return count === 0 ? { status: "ok", message: "Нарушений не найдено." }
-          : { status: "error", message: `Найдено несогласованных записей: ${count}.` };
-      });
-      check("Жизненный цикл сессий и игроков", () => {
-        const sessions = client.prepare("SELECT status, removed_at FROM sessions").all() as { status: string; removed_at: string | null }[];
-        const players = client.prepare("SELECT removed_at FROM players").all() as { removed_at: string | null }[];
-        const assignments = client.prepare("SELECT released_at FROM session_character_assignments").all() as { released_at: string | null }[];
-        const badTimestamps = [...sessions.map((row) => row.removed_at), ...players.map((row) => row.removed_at), ...assignments.map((row) => row.released_at)]
-          .filter((value) => value !== null && !validLifecycleTimestamp(value)).length;
-        const invalid = client.prepare(`SELECT
-          (SELECT count(*) FROM sessions WHERE removed_at IS NOT NULL AND status='active') +
-          (SELECT count(*) FROM players p JOIN session_character_assignments a ON a.player_id=p.id WHERE p.removed_at IS NOT NULL AND a.released_at IS NULL) +
-          (SELECT count(*) FROM session_character_assignments a JOIN players p ON p.id=a.player_id WHERE a.released_at IS NULL AND p.session_id!=a.session_id) +
-          (SELECT count(*) FROM session_character_assignments a JOIN sessions s ON s.id=a.session_id JOIN characters c ON c.id=a.character_id WHERE a.released_at IS NULL AND c.campaign_id!=s.campaign_id) AS count`).get() as { count: number };
-        const duplicateAssignments = client.prepare(`SELECT count(*) AS count FROM (
-          SELECT session_id, character_id FROM session_character_assignments WHERE released_at IS NULL GROUP BY session_id, character_id HAVING count(*)>1
-        )`).get() as { count: number };
-        const duplicateNames = new Set<string>();
-        const names = client.prepare("SELECT session_id, display_name FROM players WHERE removed_at IS NULL").all() as { session_id: string; display_name: string }[];
-        const seenNames = new Set<string>();
-        for (const row of names) {
-          const key = `${row.session_id}:${row.display_name.trim().toLocaleLowerCase("ru")}`;
-          if (seenNames.has(key)) duplicateNames.add(key);
-          seenNames.add(key);
-        }
-        const issueCount = badTimestamps + invalid.count + duplicateAssignments.count + duplicateNames.size;
-        return issueCount === 0 ? { status: "ok", message: "Отозванные записи, назначения и активные имена согласованы." }
-          : { status: "error", message: `Найдены нарушения жизненного цикла: ${issueCount}.` };
-      });
-      check("Идентификаторы операций с предметами", () => {
-        const rows = client.prepare("SELECT payload FROM campaign_activity WHERE type IN ('item_transferred','item_discarded')").all() as { payload: string }[];
-        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-        const invalid = rows.filter((row) => {
-          try { return !uuid.test(String((JSON.parse(row.payload) as Record<string, unknown>).sourceInventoryItemId ?? "")); }
-          catch { return true; }
-        }).length;
-        return invalid === 0 ? { status: "ok", message: "Ссылки на исходные строки инвентаря корректны." }
-          : { status: "error", message: `Найдено событий с некорректными ссылками на предметы: ${invalid}.` };
-      });
-      check("Профили персонажей", () => {
-        const rows = client.prepare("SELECT traits, appearance, quote FROM characters").all() as { traits: string; appearance: string; quote: string }[];
-        const invalid = rows.filter((row) => !storedTraitsAreValid(row.traits) || typeof row.appearance !== "string" ||
-          row.appearance.length > 1000 || typeof row.quote !== "string" || row.quote.length > 300).length;
-        return invalid === 0 ? { status: "ok", message: "Поля профилей и черты персонажей корректны." }
-          : { status: "error", message: `Найдено профилей с некорректными чертами, внешностью или цитатой: ${invalid}.` };
-      });
-      check("Определения полей профиля", () => {
-        const rows = client.prepare("SELECT campaign_id, label, position FROM campaign_profile_field_definitions ORDER BY campaign_id, position, id").all() as { campaign_id: string; label: string; position: number }[];
-        const groups = new Map<string, typeof rows>();
-        for (const row of rows) groups.set(row.campaign_id, [...(groups.get(row.campaign_id) ?? []), row]);
-        const invalid = [...groups.values()].some((group) => group.length > 20 || group.some((row, index) =>
-          typeof row.label !== "string" || row.label.trim().length < 1 || row.label.trim().length > 60 ||
-          !Number.isInteger(row.position) || row.position !== index));
-        return !invalid ? { status: "ok", message: "Поля профиля и их порядок корректны." }
-          : { status: "error", message: "Найдены некорректные определения, лимит или порядок полей профиля." };
-      });
-      check("Значения полей профиля", () => {
-        const rows = client.prepare(`SELECT count(*) AS count FROM character_profile_field_values v
-          LEFT JOIN campaign_profile_field_definitions d ON d.id=v.field_id AND d.campaign_id=v.campaign_id
-          LEFT JOIN characters c ON c.id=v.character_id AND c.campaign_id=v.campaign_id
-          WHERE d.id IS NULL OR c.id IS NULL OR typeof(v.value)!='text' OR length(v.value)>500`).get() as { count: number };
-        return rows.count === 0 ? { status: "ok", message: "Связи и значения полей персонажей корректны." }
-          : { status: "error", message: `Найдено некорректных значений полей профиля: ${rows.count}.` };
-      });
+      checks.push(...collectDomainIntegrityChecks(client));
       checks.push({ name: "Файлы загрузок", status: "skipped", message: "Ссылок на файлы в базе пока нет; проверено наличие каталогов." });
       return { ok: checks.every((item) => item.status !== "error"), checks };
     },
@@ -1798,13 +1802,28 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
           .where(and(eq(schema.players.id, active.playerId), isNull(schema.players.removedAt))).returning().get();
       });
     },
-    createPersonalNote(tokenHash: string, body: string, metadata: { title?: string; marker?: PersonalNoteMarker; pinned?: boolean } = {}) {
+    createPersonalNote(tokenHash: string, body: string, metadata: { noteId?: string; title?: string; marker?: PersonalNoteMarker; pinned?: boolean } = {}) {
       return db.transaction(() => {
         const active = requireActivePlayerCharacter(tokenHash);
+        const id = metadata.noteId ?? randomUUID();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+          throw new Error("Personal note ID is invalid.");
+        }
+        const fields = {
+          title: personalNoteTitle(metadata.title ?? ""), body: validatedDescription(body),
+          marker: personalNoteMarker(metadata.marker ?? "normal"), pinned: metadata.pinned ?? false
+        };
+        const existing = db.select().from(schema.characterPersonalNotes).where(eq(schema.characterPersonalNotes.id, id)).get();
+        if (existing) {
+          if (existing.characterId !== active.characterId || existing.title !== fields.title || existing.body !== fields.body ||
+              existing.marker !== fields.marker || existing.pinned !== fields.pinned) {
+            throw new Error("Personal note creation conflict.");
+          }
+          return existing;
+        }
         const now = new Date().toISOString();
         const note = db.insert(schema.characterPersonalNotes).values({
-          id: randomUUID(), characterId: active.characterId, title: personalNoteTitle(metadata.title ?? ""),
-          body: validatedDescription(body), marker: personalNoteMarker(metadata.marker ?? "normal"), pinned: metadata.pinned ?? false,
+          id, characterId: active.characterId, ...fields,
           createdAt: now, updatedAt: now
         }).returning().get();
         appendActivity({ campaignId: active.campaignId, sessionId: active.sessionId, characterId: active.characterId, type: "personal_note_created" });

@@ -228,11 +228,19 @@ export function createApp(options: {
       marker: { type: "string", enum: ["normal", "important", "check", "question"] },
       pinned: { type: "boolean" }
     };
-    player.post<{ Body: { title?: string; body: string; marker?: PersonalNoteMarker; pinned?: boolean } }>("/api/player/notes", {
-      schema: { body: { type: "object", additionalProperties: false, required: ["body"], properties: noteProperties } }
+    player.post<{ Body: { noteId?: string; title?: string; body: string; marker?: PersonalNoteMarker; pinned?: boolean } }>("/api/player/notes", {
+      schema: { body: { type: "object", additionalProperties: false, required: ["body"], properties: {
+        ...noteProperties, noteId: { type: "string", format: "uuid" }
+      } } }
     }, async (request, reply) => activeAction(request, reply, (hash) => {
       const { body, ...metadata } = request.body;
-      return { note: database.createPersonalNote(hash, body, metadata) };
+      try { return { note: database.createPersonalNote(hash, body, metadata) }; }
+      catch (error) {
+        if (error instanceof Error && error.message === "Personal note creation conflict.") {
+          return reply.code(409).send({ message: "Не удалось подтвердить создание заметки. Обновите заметки перед повтором." });
+        }
+        throw error;
+      }
     }));
     player.post<{ Params: { id: string }; Body: { title?: string; body?: string; marker?: PersonalNoteMarker; pinned?: boolean } }>("/api/player/notes/:id", {
       schema: {
@@ -397,7 +405,7 @@ export function createApp(options: {
         return { restored: await database.restoreBackup(request.body.id) };
       } catch (error) {
         if (error instanceof Error && error.message === "Backup not found.") return reply.code(404).send({ message: "Резервная копия не найдена." });
-        if (error instanceof Error && /Backup (file is damaged|schema is not supported|uploads are missing|contains invalid references)|integrity check/.test(error.message)) {
+        if (error instanceof Error && /Backup (file is damaged|schema is not supported|uploads are missing|contains invalid (?:domain )?references)|integrity check/.test(error.message)) {
           return reply.code(409).send({ message: "Копия повреждена или создана несовместимой версией приложения." });
         }
         throw error;

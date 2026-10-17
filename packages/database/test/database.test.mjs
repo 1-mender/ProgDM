@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -28,6 +28,83 @@ function memoryDatabase(t) {
   t.after(() => database.close());
   return database;
 }
+
+for (const corruption of ["inventory", "assignment", "knowledge"]) {
+  test(`staged restore rejects cross-campaign ${corruption} with clean SQLite/FKs before touching live data`, async (t) => {
+    let db;
+    t.after(() => db?.close());
+    const file = temporaryFile(t), root = dirname(dirname(file));
+    const backups = join(root, "backups"), uploads = join(root, "uploads");
+    db = openDatabase({ file, backupsDirectory: backups, uploadsDirectory: uploads });
+    const campaign = db.createCampaign("A"), foreign = db.createCampaign("B");
+    const mira = db.createCharacter(campaign.id, "Mira"), other = db.createCharacter(foreign.id, "Other");
+    const catalog = db.createCatalogItem(campaign.id, "Key"), foreignCatalog = db.createCatalogItem(foreign.id, "Foreign");
+    db.grantInventoryItem(mira.id, catalog.id, 1);
+    const session = db.createSession(campaign.id, "Session"); db.activateSession(session.id);
+    const player = db.submitPlayerRequest(session.id, "A", "restore-test-hash");
+    db.approvePlayer(player.id, { characterId: mira.id });
+    const knowledge = db.createKnowledge(campaign.id, "fact", "Clue", "Only Mira knows");
+    db.setKnowledgeVisibility(knowledge.id, "character", mira.id);
+    const asset = join(uploads, "items", "sentinel.txt"); writeFileSync(asset, "backup asset");
+    const backup = await db.createBackup(), source = db.backupFile(backup.id);
+    const corrupt = new SQLite(source);
+    try {
+      if (corruption === "inventory") corrupt.prepare("UPDATE inventory_items SET catalog_item_id=? WHERE character_id=?").run(foreignCatalog.id, mira.id);
+      if (corruption === "assignment") corrupt.prepare("UPDATE session_character_assignments SET character_id=? WHERE player_id=?").run(other.id, player.id);
+      if (corruption === "knowledge") corrupt.prepare("UPDATE knowledge_entries SET visible_to_character_id=? WHERE id=?").run(other.id, knowledge.id);
+      assert.equal(corrupt.pragma("integrity_check", { simple: true }), "ok");
+      assert.deepEqual(corrupt.pragma("foreign_key_check"), []);
+    } finally { corrupt.close(); }
+    const sourceBytes = readFileSync(source);
+    const marker = db.createCampaign("Must survive failed restore"); writeFileSync(asset, "live asset");
+    const checkpoint = new SQLite(file); checkpoint.pragma("wal_checkpoint(TRUNCATE)"); checkpoint.close();
+    const liveBytes = readFileSync(file);
+    const { exportedAt: beforeExportTime, ...before } = db.exportCampaign(campaign.id);
+    assert.equal(db.checkDataHealth().ok, true);
+    await assert.rejects(db.restoreBackup(backup.id), /Backup contains invalid domain references\./);
+    assert.deepEqual(readFileSync(file), liveBytes, "live SQLite file is unchanged");
+    const { exportedAt: afterExportTime, ...after } = db.exportCampaign(campaign.id);
+    assert.deepEqual(after, before);
+    assert.ok(db.getCampaign(marker.id));
+    assert.equal(readFileSync(asset, "utf8"), "live asset");
+    assert.deepEqual(readFileSync(source), sourceBytes);
+    assert.equal(db.checkDataHealth().ok, true);
+    assert.equal(readdirSync(backups).some((name) => name.startsWith(".migrate-restore-")), false);
+    assert.equal(readdirSync(root).some((name) => name.startsWith("uploads.restore-") || name.startsWith("uploads.previous-")), false);
+    const safety = db.listBackups().find(({ id }) => id !== backup.id);
+    assert.ok(safety, "failure still leaves a safety copy");
+    const saved = new SQLite(db.backupFile(safety.id), { readonly: true });
+    try { assert.ok(saved.prepare("SELECT id FROM campaigns WHERE id=?").get(marker.id)); } finally { saved.close(); }
+  });
+}
+
+test("note creation UUID replays once, allows identical new intents and never overwrites an existing note", (t) => {
+  const db = memoryDatabase(t), campaign = db.createCampaign("Notes"), session = db.createSession(campaign.id, "S1");
+  const mira = db.createCharacter(campaign.id, "Mira"), rowan = db.createCharacter(campaign.id, "Rowan");
+  db.activateSession(session.id);
+  const a = db.submitPlayerRequest(session.id, "A", "note-a"), b = db.submitPlayerRequest(session.id, "B", "note-b");
+  db.approvePlayer(a.id, { characterId: mira.id }); db.approvePlayer(b.id, { characterId: rowan.id });
+  const metadata = { noteId: randomUUID(), title: "Title", marker: "check", pinned: true };
+  const first = db.createPersonalNote("note-a", "Body", metadata);
+  assert.equal(first.id, metadata.noteId);
+  assert.deepEqual(db.createPersonalNote("note-a", "Body", metadata), first);
+  assert.equal(db.listPersonalNotesByCharacter(mira.id).length, 1);
+  assert.equal(db.listCampaignActivity(campaign.id).filter((row) => row.type === "personal_note_created").length, 1);
+  for (const change of [{ title: "Changed" }, { marker: "question" }, { pinned: false }]) {
+    assert.throws(() => db.createPersonalNote("note-a", "Body", { ...metadata, ...change }), /creation conflict/);
+  }
+  assert.throws(() => db.createPersonalNote("note-a", "Changed body", metadata), /creation conflict/);
+  assert.throws(() => db.createPersonalNote("note-b", "Body", metadata), /creation conflict/);
+  assert.deepEqual(db.listPersonalNotesByCharacter(mira.id), [first]);
+  const second = db.createPersonalNote("note-a", "Body", { ...metadata, noteId: randomUUID() });
+  assert.notEqual(first.id, second.id);
+  assert.equal(db.listCampaignActivity(campaign.id).filter((row) => row.type === "personal_note_created").length, 2);
+  db.updatePersonalNote("note-a", first.id, { body: "Edited" });
+  assert.throws(() => db.createPersonalNote("note-a", "Body", metadata), /creation conflict/);
+  assert.equal(db.listPersonalNotesByCharacter(mira.id).find(({ id }) => id === first.id).body, "Edited");
+  db.endSession(session.id);
+  assert.throws(() => db.createPersonalNote("note-a", "Body", metadata), /Active character access required/);
+});
 
 test("Character returns normalized traits on first/repeated restore without duplicate activity", (t) => {
   const database = memoryDatabase(t);

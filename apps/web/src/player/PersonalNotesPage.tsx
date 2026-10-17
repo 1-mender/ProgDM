@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState, type FormEvent } from "react";
 import { ChevronLeft, ChevronRight, Pin, Plus, X } from "lucide-react";
 import type { PersonalNote, PersonalNoteMarker } from "@progdm/shared";
+import { createOperationUuid } from "../sync";
 import { PERSONAL_NOTE_MARKER_LABELS, personalNoteBodyPreview, personalNoteDisplayTitle, personalNoteMarkerIcon } from "./model";
 
 type PersonalNoteDraft = Pick<PersonalNote, "title" | "body" | "marker" | "pinned">;
@@ -10,10 +11,11 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
   notes: PersonalNote[];
   busy: boolean;
   canEdit: boolean;
-  onSave: (noteId: string | null, fields: PersonalNoteDraft) => Promise<boolean>;
+  onSave: (noteId: string | null, fields: PersonalNoteDraft, creationId?: string) => Promise<boolean>;
 }) {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditTarget>(null);
+  const [creationId, setCreationId] = useState<string | undefined>(undefined);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [marker, setMarker] = useState<PersonalNoteMarker>("normal");
@@ -25,6 +27,7 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
   }, [selectedNoteId, editing]);
 
   function startCreate() {
+    setCreationId(createOperationUuid());
     setSelectedNoteId(null);
     setEditing("new");
     setTitle("");
@@ -51,7 +54,7 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
     if (!editing) return;
     const isNew = editing === "new";
     const noteId = isNew ? null : editing.id;
-    if (await onSave(noteId, { title, body, marker, pinned })) {
+    if (await onSave(noteId, { title, body, marker, pinned }, isNew ? creationId : undefined)) {
       setEditing(null);
       if (isNew) setSelectedNoteId(null);
     }

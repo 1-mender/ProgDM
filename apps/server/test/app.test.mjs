@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { openDatabase } from "@progdm/database";
 import { createApp, requestLogFields, JSON_BODY_LIMIT, CAMPAIGN_IMPORT_BODY_LIMIT } from "../dist/app.js";
-import { loadTs, memoryStorage } from "../../web/test/helpers/runtime.mjs";
+import { button, componentRuntime, elements, loadTs, memoryStorage, setGlobal } from "../../web/test/helpers/runtime.mjs";
 
 const dmToken = "test-dm-token";
 const headers = { authorization: "Bearer " + dmToken };
@@ -22,6 +22,91 @@ function fixture(t) {
 function get(app, url) { return app.inject({ method: "GET", url, headers }); }
 function post(app, url, payload = {}) { return app.inject({ method: "POST", url, headers, payload }); }
 function patch(app, url, payload = {}) { return app.inject({ method: "PATCH", url, headers, payload }); }
+
+test("DM domain-invalid backup rejection uses the safe existing restore error response", async (t) => {
+  const { app, database } = fixture(t);
+  t.mock.method(database, "restoreBackup", async () => { throw new Error("Backup contains invalid domain references."); });
+  const response = await post(app, "/api/dm/backups/restore", { id: "progdm-backup-" + randomUUID() + ".db" });
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.json(), { message: "Копия повреждена или создана несовместимой версией приложения." });
+});
+
+test("Player note create UUID is strict, idempotent, character-scoped and not an update endpoint", async (t) => {
+  const { app, database: db } = fixture(t), campaign = db.createCampaign("Note identity");
+  const mira = db.createCharacter(campaign.id, "Mira"), rowan = db.createCharacter(campaign.id, "Rowan");
+  const session = db.createSession(campaign.id, "S1"); db.activateSession(session.id);
+  const tokens = ["A".repeat(43), "B".repeat(43)];
+  for (const [index, character] of [mira, rowan].entries()) {
+    const p = db.submitPlayerRequest(session.id, String(index), createHash("sha256").update(tokens[index]).digest("hex"));
+    db.approvePlayer(p.id, { characterId: character.id });
+  }
+  const send = (payload, token = tokens[0], url = "/api/player/notes") => app.inject({ method: "POST", url,
+    headers: { authorization: "Bearer " + token }, payload });
+  const payload = { noteId: randomUUID(), title: "Title", body: "Body", marker: "important", pinned: true };
+  const first = await send(payload); assert.equal(first.statusCode, 200);
+  const replay = await send(payload); assert.equal(replay.statusCode, 200); assert.deepEqual(replay.json(), first.json());
+  assert.equal((await send({ ...payload, body: "Overwrite" })).statusCode, 409);
+  assert.equal((await send(payload, tokens[1])).statusCode, 409);
+  assert.equal((await send({ ...payload, noteId: "bad-id" })).statusCode, 400);
+  assert.equal((await send({ ...payload, characterId: rowan.id })).statusCode, 400);
+  assert.equal((await send({ noteId: randomUUID() }, tokens[0], `/api/player/notes/${payload.noteId}`)).statusCode, 400);
+  assert.deepEqual(db.listPersonalNotesByCharacter(mira.id), [first.json().note]);
+  assert.equal((await send({ ...payload, noteId: randomUUID() })).statusCode, 200);
+  assert.equal(db.listPersonalNotesByCharacter(mira.id).length, 2);
+  assert.equal(db.listCampaignActivity(campaign.id).filter(({ type }) => type === "personal_note_created").length, 2);
+  db.endSession(session.id);
+  assert.equal((await send(payload)).statusCode, 403, "idempotent branch must not bypass active authorization");
+});
+
+for (const failure of ["lost response", "unreadable 2xx body", "failed refresh"]) {
+  test(`actual Notes editor retries one UUID after ${failure} with one DB note and one Activity`, async (t) => {
+    const { app, database: db } = fixture(t), campaign = db.createCampaign("Ambiguous note");
+    const mira = db.createCharacter(campaign.id, "Mira"), session = db.createSession(campaign.id, "S1");
+    db.activateSession(session.id);
+    const token = "N".repeat(43), hash = createHash("sha256").update(token).digest("hex");
+    const p = db.submitPlayerRequest(session.id, "A", hash); db.approvePlayer(p.id, { characterId: mira.id });
+    setGlobal(t, "localStorage", memoryStorage()); setGlobal(t, "window", { scrollTo() {} });
+    let first = true, refreshFails = failure === "failed refresh";
+    const ids = [];
+    t.mock.method(globalThis, "fetch", async (path, init) => {
+      ids.push(JSON.parse(init.body).noteId);
+      const response = await app.inject({ method: "POST", url: path, headers: init.headers, payload: init.body });
+      assert.equal(response.statusCode, 200);
+      if (first) {
+        first = false;
+        if (failure === "lost response") throw new TypeError("connection lost after commit");
+        if (failure === "unreadable 2xx body") return { ok: true, status: 200, json: async () => { throw new TypeError("terminated"); } };
+      }
+      return new Response(response.body, { status: response.statusCode });
+    });
+    const api = loadTs(new URL("../../web/src/player/api.ts", import.meta.url));
+    const workspace = componentRuntime();
+    const { PlayerWorkspace } = loadTs(new URL("../../web/src/player/PlayerWorkspace.tsx", import.meta.url), { react: workspace.react, "./api": api });
+    const refresh = async () => { if (refreshFails) { refreshFails = false; throw new api.PlayerNetworkError(); } };
+    workspace.mount(PlayerWorkspace, { player: db.getPlayerState(hash), credential: token, refresh });
+    workspace.tree.props.onNavigate("journal"); workspace.render();
+    const journal = elements(workspace.tree, (node) => node.type?.name === "JournalPage")[0];
+    const notes = componentRuntime(), { PersonalNotesPage } = loadTs(new URL("../../web/src/player/PersonalNotesPage.tsx", import.meta.url), { react: notes.react });
+    notes.mount(PersonalNotesPage, { notes: [], canEdit: true, busy: false, onSave: journal.props.onSaveNote });
+    button(notes.tree, "Новая заметка").props.onClick(); notes.render();
+    elements(notes.tree, (node) => node.props?.id === "prod-note-body")[0].props.onChange({ target: { value: "Keep this draft" } }); notes.render();
+    const submit = () => elements(notes.tree, (node) => node.type === "form")[0].props.onSubmit({ preventDefault() {} });
+    submit(); await notes.settle(); await workspace.settle();
+    assert.equal(db.listPersonalNotesByCharacter(mira.id).length, 1);
+    assert.equal(elements(notes.tree, (node) => node.props?.id === "prod-note-body")[0].props.value, "Keep this draft");
+    submit(); await notes.settle(); await workspace.settle();
+    assert.equal(ids.length, 2); assert.equal(ids[0], ids[1]); assert.match(ids[0], /^[0-9a-f-]{36}$/);
+    assert.equal(db.listPersonalNotesByCharacter(mira.id).length, 1);
+    assert.equal(db.listCampaignActivity(campaign.id).filter(({ type }) => type === "personal_note_created").length, 1);
+    assert.equal(elements(notes.tree, (node) => node.type === "form").length, 0, "confirmed save closes editor");
+    button(notes.tree, "Новая заметка").props.onClick(); notes.render();
+    elements(notes.tree, (node) => node.props?.id === "prod-note-body")[0].props.onChange({ target: { value: "Keep this draft" } }); notes.render();
+    submit(); await notes.settle();
+    assert.notEqual(ids[2], ids[0], "an intentional identical note has a different creation identity");
+    assert.equal(db.listPersonalNotesByCharacter(mira.id).length, 2);
+    notes.unmount(); workspace.unmount();
+  });
+}
 
 test("DM first/repeated Character restore have identical normalized JSON traits and one activity", async (t) => {
   const { app, database } = fixture(t);
