@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { openDatabase } from "@progdm/database";
+import { DomainValidationError, openDatabase } from "@progdm/database";
 import { createApp, requestLogFields, JSON_BODY_LIMIT, CAMPAIGN_IMPORT_BODY_LIMIT } from "../dist/app.js";
 import { button, componentRuntime, elements, loadTs, memoryStorage, setGlobal } from "../../web/test/helpers/runtime.mjs";
 
@@ -22,6 +22,117 @@ function fixture(t) {
 function get(app, url) { return app.inject({ method: "GET", url, headers }); }
 function post(app, url, payload = {}) { return app.inject({ method: "POST", url, headers, payload }); }
 function patch(app, url, payload = {}) { return app.inject({ method: "PATCH", url, headers, payload }); }
+
+test("HTTP Campaign, Session, Character and Catalog names accept 120 supplementary code points and reject 121", async (t) => {
+  const { app, database } = fixture(t), name = String.fromCodePoint(0x1F9ED).repeat(120);
+  const created = await post(app, "/api/dm/campaigns", { name });
+  assert.equal(created.statusCode, 201, created.body);
+  const campaign = created.json().campaign;
+  assert.equal(campaign.name, name);
+  for (const route of ["/api/dm/campaigns", `/api/dm/campaigns/${campaign.id}/sessions`,
+    `/api/dm/campaigns/${campaign.id}/characters`, `/api/dm/campaigns/${campaign.id}/items`]) {
+    if (route !== "/api/dm/campaigns") assert.equal((await post(app, route, { name })).statusCode, 201);
+    const tooLong = await post(app, route, { name: name + String.fromCodePoint(0x1F9ED) });
+    assert.equal(tooLong.statusCode, 400);
+    assert.deepEqual(tooLong.json(), { message: "Проверьте введённые данные и допустимые значения." });
+  }
+  assert.equal(database.checkDataHealth().ok, true);
+});
+
+function unicodePlayer(t) {
+  const fixtureData = fixture(t), { database: db } = fixtureData;
+  const campaign = db.createCampaign("Unicode"), mira = db.createCharacter(campaign.id, "Mira"), session = db.createSession(campaign.id, "Session");
+  db.activateSession(session.id);
+  const token = "U".repeat(43), hash = createHash("sha256").update(token).digest("hex");
+  const player = db.submitPlayerRequest(session.id, "A", hash); db.approvePlayer(player.id, { characterId: mira.id });
+  const send = (url, payload) => fixtureData.app.inject({ method: "POST", url, payload, headers: { authorization: "Bearer " + token } });
+  return { ...fixtureData, campaign, mira, session, token, hash, send, text: (n) => String.fromCodePoint(0x1F9ED).repeat(n) };
+}
+
+test("HTTP Player join/settings use the same 60/61 supplementary code-point boundary", async (t) => {
+  const { app, database: db, campaign, session, send, text } = unicodePlayer(t);
+  const joined = await app.inject({ method: "POST", url: `/api/join/${session.joinToken}/request`,
+    payload: { displayName: text(60), playerToken: "J".repeat(43) } });
+  assert.equal(joined.statusCode, 200, joined.body); assert.equal(joined.json().displayName, text(60));
+  assert.equal((await app.inject({ method: "POST", url: `/api/join/${session.joinToken}/request`,
+    payload: { displayName: text(61), playerToken: "K".repeat(43) } })).statusCode, 400);
+  assert.equal((await send("/api/player/settings", { displayName: text(61) })).statusCode, 400);
+  const settingsName = text(59) + String.fromCodePoint(0x1F9EE);
+  const updated = await send("/api/player/settings", { displayName: settingsName });
+  assert.equal(updated.statusCode, 200);
+  assert.equal(updated.json().player.displayName, settingsName);
+  assert.equal(db.listPlayersByCampaign(campaign.id).filter((player) => player.sessionId === session.id).length, 2);
+});
+
+test("HTTP Notes and Profile supplementary boundaries agree with DB validation", async (t) => {
+  const { app, database: db, mira, hash, send, text } = unicodePlayer(t);
+  const note = { noteId: randomUUID(), title: text(120), body: text(2000), marker: "question", pinned: true };
+  const response = await send("/api/player/notes", note); assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().note.body, text(2000));
+  for (const invalid of [{ ...note, title: text(121) }, { ...note, body: text(2001) }, { ...note, body: " \t\n" }]) {
+    assert.equal((await send("/api/player/notes", invalid)).statusCode, 400);
+  }
+  const profile = { shortDescription: text(500), personalGoal: text(500), traits: [text(40)], appearance: text(1000), quote: text(300) };
+  assert.equal((await send("/api/player/profile", profile)).statusCode, 200);
+  assert.deepEqual(db.getPlayerState(hash).profile.traits, [text(40)]);
+  for (const [key, limit] of Object.entries({ shortDescription: 500, personalGoal: 500, appearance: 1000, quote: 300 })) {
+    assert.equal((await send("/api/player/profile", { ...profile, [key]: text(limit + 1) })).statusCode, 400);
+  }
+  assert.equal((await send("/api/player/profile", { ...profile, traits: [text(41)] })).statusCode, 400);
+  const dmProfile = { ...profile, name: text(120), archetype: text(120), origin: text(500), dmNotes: text(2000) };
+  assert.equal((await post(app, `/api/dm/characters/${mira.id}/profile`, dmProfile)).statusCode, 200);
+  for (const [key, limit] of Object.entries({ archetype: 120, origin: 500, dmNotes: 2000 })) {
+    assert.equal((await post(app, `/api/dm/characters/${mira.id}/profile`, { ...dmProfile, [key]: text(limit + 1) })).statusCode, 400);
+  }
+  assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("HTTP Knowledge, Facts, catalog and campaign profile fields round-trip supplementary text", async (t) => {
+  const { app, database: db, campaign, mira, text } = unicodePlayer(t);
+  const route = `/api/dm/campaigns/${campaign.id}/knowledge`;
+  const entry = await post(app, route, { category: "fact", title: text(120), description: text(2000) });
+  assert.equal(entry.statusCode, 201, entry.body);
+  const id = entry.json().entry.id;
+  for (const invalid of [{ title: text(121), description: "Body" }, { title: "Title", description: text(2001) }, { title: "Title", description: " \t\n" }]) {
+    assert.equal((await post(app, route, { category: "fact", ...invalid })).statusCode, 400);
+  }
+  const facts = `/api/dm/campaigns/${campaign.id}/knowledge/${id}/facts`;
+  assert.equal((await post(app, facts, { body: text(2000) })).statusCode, 201);
+  assert.equal((await post(app, facts, { body: text(2001) })).statusCode, 400);
+  assert.equal((await post(app, facts, { body: " \t\n" })).statusCode, 400);
+  const catalog = db.createCatalogItem(campaign.id, "Item");
+  assert.equal((await patch(app, `/api/dm/catalog-items/${catalog.id}`, { description: text(2000) })).statusCode, 200);
+  assert.equal((await patch(app, `/api/dm/catalog-items/${catalog.id}`, { description: text(2001) })).statusCode, 400);
+  const fieldRoute = `/api/dm/campaigns/${campaign.id}/profile-fields`;
+  const field = await post(app, fieldRoute, { label: text(60) }); assert.equal(field.statusCode, 201);
+  assert.equal((await post(app, fieldRoute, { label: text(61) })).statusCode, 400);
+  const valueRoute = `/api/dm/characters/${mira.id}/profile-fields`;
+  for (const [length, expected] of [[500, 200], [501, 400]]) {
+    const result = await app.inject({ method: "PUT", url: valueRoute, headers, payload: { values: [{ fieldId: field.json().field.id, value: text(length) }] } });
+    assert.equal(result.statusCode, expected, result.body);
+  }
+  const imported = await post(app, "/api/dm/campaigns/import", db.exportCampaign(campaign.id));
+  assert.equal(imported.statusCode, 201, imported.body);
+  assert.equal(db.checkDataHealth().ok, true);
+});
+
+test("typed domain input errors return safe 400 while internal and database errors remain 500", async (t) => {
+  const { app, database: db, send, session } = unicodePlayer(t);
+  let failure;
+  t.mock.method(db, "createCampaign", () => { throw failure; });
+  t.mock.method(db, "updatePlayerProfile", () => { throw failure; });
+  t.mock.method(db, "submitPlayerRequest", () => { throw failure; });
+  for (const [error, status] of [[new DomainValidationError("internal validation detail: secret"), 400],
+    [new Error("SQLITE_CONSTRAINT: secret internal SQL"), 500], [new TypeError("internal malformed value secret"), 500]]) {
+    failure = error;
+    for (const result of [await post(app, "/api/dm/campaigns", { name: "Valid" }),
+      await send("/api/player/profile", { shortDescription: "Valid", personalGoal: "Valid" }),
+      await app.inject({ method: "POST", url: `/api/join/${session.joinToken}/request`, payload: { displayName: "Valid", playerToken: "E".repeat(43) } })]) {
+      assert.equal(result.statusCode, status, result.body);
+      assert.doesNotMatch(result.body, /secret|SQLITE|stack|TypeError|internal/);
+    }
+  }
+});
 
 test("DM domain-invalid backup rejection uses the safe existing restore error response", async (t) => {
   const { app, database } = fixture(t);

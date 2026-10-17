@@ -145,9 +145,9 @@ test("Home and Journal use player-facing explicit event labels with no generic f
 
 test("Journal timeline groups by local date and session, formats Russian time, and uses safe destinations", () => {
   const events = [
-    { id: "a", kind: "item_received", itemName: "Старинный ключ", quantity: 1, createdAt: "2026-10-04T17:14:12.000Z", sessionId: "s1", sessionName: "Старый мост" },
-    { id: "b", kind: "knowledge_summary_opened", knowledgeEntryId: "entry", knowledgeTitle: "Аптекарь", createdAt: "2026-10-04T17:09:00.000Z", sessionId: "s1", sessionName: "Старый мост" },
-    { id: "c", kind: "item_discarded", itemName: "Компас", quantity: 2, createdAt: "2026-10-04T17:08:00.000Z", sessionId: null, sessionName: null }
+    { id: "a", kind: "item_received", itemName: "Старинный ключ", quantity: 1, createdAt: new Date(2026, 9, 4, 17, 14, 12).toISOString(), sessionId: "s1", sessionName: "Старый мост" },
+    { id: "b", kind: "knowledge_summary_opened", knowledgeEntryId: "entry", knowledgeTitle: "Аптекарь", createdAt: new Date(2026, 9, 4, 17, 9).toISOString(), sessionId: "s1", sessionName: "Старый мост" },
+    { id: "c", kind: "item_discarded", itemName: "Компас", quantity: 2, createdAt: new Date(2026, 9, 4, 17, 8).toISOString(), sessionId: null, sessionName: null }
   ];
   const groups = model.journalEventGroups(events);
   assert.equal(groups.length, 2, "a new session context starts its own timeline group");
@@ -197,6 +197,18 @@ test("Journal timeline groups by local date and session, formats Russian time, a
   assert.match(journalPage, /<PersonalNotesPage notes=\{player\.notes\} busy=\{busy\} canEdit=\{player\.canEdit\}/);
   assert.doesNotMatch(personalNotes, /disabled=\{!canEdit\}/);
   assert.match(personalNotes, /\{canEdit && <button className="prod-secondary"/);
+});
+
+test("Journal local midnight starts a different date group within the same session", () => {
+  const base = { kind: "item_received", itemName: "Key", quantity: 1, sessionId: "s1", sessionName: "Session" };
+  const groups = model.journalEventGroups([
+    { ...base, id: "new", createdAt: new Date(2026, 9, 5, 0, 1).toISOString() },
+    { ...base, id: "old", createdAt: new Date(2026, 9, 4, 23, 59).toISOString() }
+  ]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map(({ events }) => events.map(({ id }) => id)), [["new"], ["old"]]);
+  assert.match(groups[0].dateLabel, /5 октября 2026/);
+  assert.match(groups[1].dateLabel, /4 октября 2026/);
 });
 
 test("Profile uses only existing player-safe fields and guards its existing edit action", () => {

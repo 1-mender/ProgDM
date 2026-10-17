@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
-import { openDatabase, type GameDatabase } from "@progdm/database";
+import { DomainValidationError, openDatabase, type GameDatabase } from "@progdm/database";
 import { isDmAuthorized, loadDmToken } from "./dm-auth.js";
 import { CAMPAIGN_ARCHIVE_MAX_BYTES } from "@progdm/shared";
 
@@ -50,7 +50,7 @@ export function createApp(options: {
 
   app.setErrorHandler<FastifyError>((error, request, reply) => {
     if (error.statusCode === 413) return reply.code(413).send({ message: "Запрос слишком большой." });
-    if (error.validation || error.statusCode === 400) return reply.code(400).send({ message: "Проверьте введённые данные и допустимые значения." });
+    if (error instanceof DomainValidationError || error.validation || error.statusCode === 400) return reply.code(400).send({ message: "Проверьте введённые данные и допустимые значения." });
     if (error.statusCode && error.statusCode < 500) return reply.code(error.statusCode).send({ message: "Не удалось обработать запрос." });
     request.log.error(error);
     return reply.code(500).send({ message: "Не удалось выполнить запрос. Повторите позже." });
@@ -296,7 +296,7 @@ export function createApp(options: {
 
     dm.setErrorHandler<FastifyError>((error, request, reply) => {
       if (error.statusCode === 413) return reply.code(413).send({ message: "Запрос слишком большой." });
-      if (error.validation || error.statusCode === 400) {
+      if (error instanceof DomainValidationError || error.validation || error.statusCode === 400) {
         return reply.code(400).send({ message: "Проверьте введённые данные и допустимые значения." });
       }
       if (error.statusCode && error.statusCode < 500) {

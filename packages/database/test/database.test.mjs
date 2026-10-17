@@ -12,7 +12,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { ACTIVITY_TYPES, CAMPAIGN_ARCHIVE_MAX_BYTES } from "@progdm/shared";
-import { openDatabase, resolveDatabaseFile } from "../dist/index.js";
+import { DomainValidationError, openDatabase, resolveDatabaseFile } from "../dist/index.js";
 
 function temporaryFile(t) {
   const directory = mkdtempSync(join(tmpdir(), "progdm-db-test-"));
@@ -28,6 +28,78 @@ function memoryDatabase(t) {
   t.after(() => database.close());
   return database;
 }
+
+for (const [alphabet, character] of [["ASCII", "x"], ["Cyrillic", "я"], ["supplementary", String.fromCodePoint(0x1F9ED)]]) {
+  test(`user text validators and v11 import/export count ${alphabet} code points consistently`, (t) => {
+    const db = memoryDatabase(t), text = (count) => character.repeat(count);
+    const campaign = db.createCampaign(" " + text(120) + " ");
+    assert.equal(campaign.name, text(120));
+    const mira = db.createCharacter(campaign.id, text(120)), session = db.createSession(campaign.id, text(120));
+    db.activateSession(session.id);
+    const player = db.submitPlayerRequest(session.id, text(60), "unicode-hash"); db.approvePlayer(player.id, { characterId: mira.id });
+    const profile = { name: text(120), shortDescription: text(500), archetype: text(120), origin: text(500),
+      personalGoal: text(500), dmNotes: text(2000), traits: [text(40), " " + text(40) + " "], appearance: text(1000), quote: text(300) };
+    assert.deepEqual(db.updateCharacterProfile(mira.id, profile).traits, [text(40)]);
+    const note = db.createPersonalNote("unicode-hash", " " + text(2000) + " ", { title: " " + text(120) + " " });
+    assert.equal(note.title, text(120)); assert.equal(note.body, text(2000));
+    const knowledge = db.createKnowledge(campaign.id, "fact", text(120), text(2000));
+    db.createKnowledgeFact(campaign.id, knowledge.id, text(2000));
+    const catalog = db.createCatalogItem(campaign.id, text(120)); db.updateCatalogItemMetadata(catalog.id, { description: text(2000) });
+    const field = db.createCampaignProfileField(campaign.id, text(60));
+    db.updateCharacterProfileFieldValues(mira.id, [{ fieldId: field.id, value: text(500) }]);
+    const invalid = [
+      () => db.createCampaign(text(121)), () => db.createCharacter(campaign.id, text(121)), () => db.createSession(campaign.id, text(121)),
+      () => db.submitPlayerRequest(session.id, text(61), "bad-hash"), () => db.createCatalogItem(campaign.id, text(121)),
+      () => db.updateCatalogItemMetadata(catalog.id, { description: text(2001) }),
+      () => db.createPersonalNote("unicode-hash", text(2001)), () => db.createPersonalNote("unicode-hash", "Body", { title: text(121) }),
+      () => db.createKnowledge(campaign.id, "fact", text(121), "Body"), () => db.createKnowledge(campaign.id, "fact", "Title", text(2001)),
+      () => db.createKnowledgeFact(campaign.id, knowledge.id, text(2001)), () => db.createCampaignProfileField(campaign.id, text(61)),
+      () => db.updateCharacterProfileFieldValues(mira.id, [{ fieldId: field.id, value: text(501) }])
+    ];
+    for (const attempt of invalid) assert.throws(attempt, DomainValidationError);
+    for (const [fieldName, limit] of Object.entries({ name: 120, shortDescription: 500, archetype: 120, origin: 500,
+      personalGoal: 500, dmNotes: 2000, appearance: 1000, quote: 300 })) {
+      assert.throws(() => db.updateCharacterProfile(mira.id, { ...profile, [fieldName]: text(limit + 1) }), DomainValidationError);
+    }
+    assert.throws(() => db.updateCharacterProfile(mira.id, { ...profile, traits: [text(41)] }), DomainValidationError);
+    assert.throws(() => db.createCampaign(" \t\n"), DomainValidationError);
+    assert.throws(() => db.createPersonalNote("unicode-hash", " \t\n"), DomainValidationError);
+    assert.throws(() => db.createKnowledgeFact(campaign.id, knowledge.id, " \t\n"), DomainValidationError);
+    assert.equal(db.checkDataHealth().ok, true);
+    const archive = db.exportCampaign(campaign.id); assert.equal(archive.version, 11);
+    const imported = db.exportCampaign(db.importCampaign(archive).id);
+    assert.equal(imported.campaign.name, text(120));
+    assert.equal(imported.personalNotes[0].body, text(2000));
+    assert.equal(imported.characters[0].appearance, text(1000));
+    assert.deepEqual(imported.characters[0].traits, [text(40)]);
+    assert.equal(imported.profileFields[0].label, text(60));
+    assert.equal(imported.profileFieldValues[0].value, text(500));
+    assert.equal(imported.knowledgeFacts[0].body, text(2000));
+    assert.equal(db.checkDataHealth().ok, true);
+    const corrupt = structuredClone(archive); corrupt.characters[0].quote = text(301);
+    const count = db.listCampaigns().length;
+    assert.throws(() => db.importCampaign(corrupt), DomainValidationError);
+    assert.equal(db.listCampaigns().length, count);
+  });
+}
+
+test("backup and staged health validation preserve code-point-valid supplementary profile fields", async (t) => {
+  let db; t.after(() => db?.close());
+  const file = temporaryFile(t), root = dirname(dirname(file));
+  db = openDatabase({ file, backupsDirectory: join(root, "backups"), uploadsDirectory: join(root, "uploads") });
+  const text = (n) => String.fromCodePoint(0x1F9ED).repeat(n), campaign = db.createCampaign(text(120));
+  const mira = db.createCharacter(campaign.id, text(120));
+  db.updateCharacterProfile(mira.id, { name: mira.name, shortDescription: "", archetype: "", origin: "", personalGoal: "",
+    dmNotes: text(2000), traits: [text(40)], appearance: text(1000), quote: text(300) });
+  db.createCampaignProfileField(campaign.id, text(60));
+  const backup = await db.createBackup(), source = readFileSync(db.backupFile(backup.id));
+  const marker = db.createCampaign("After snapshot");
+  await db.restoreBackup(backup.id);
+  assert.equal(db.getCampaign(marker.id), null);
+  assert.deepEqual(db.getCharacterOverview(mira.id).character.traits, [text(40)]);
+  assert.equal(db.checkDataHealth().ok, true);
+  assert.deepEqual(readFileSync(db.backupFile(backup.id)), source);
+});
 
 for (const corruption of ["inventory", "assignment", "knowledge"]) {
   test(`staged restore rejects cross-campaign ${corruption} with clean SQLite/FKs before touching live data`, async (t) => {

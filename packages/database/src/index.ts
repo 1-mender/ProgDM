@@ -10,6 +10,8 @@ import { readMigrationFiles } from "drizzle-orm/migrator";
 import { ACTIVITY_TYPES, type ActivityDetails, type ActivityType, type Campaign, type CampaignActivity, type CampaignItem, type CampaignProfileFieldDefinition, type Character, type CharacterProfileFieldValue, type DataHealth, type EquipmentSlot, type HealthCheck, type InventoryCategory, type InventoryRarity, type KnowledgeCategory, type KnowledgeFact, type KnowledgeFactAccessResult, type KnowledgeFactReveal, type KnowledgeFactRevealAudience, type KnowledgeFactRevealBatchResult, type KnowledgeFactRevealScope, type KnowledgeVisibility, type PersonalNoteMarker, type PlayerActivityEvent, type PlayerInventoryItem, type PlayerJournalCursor, type PlayerJournalPage, type PlayerKnowledgeEntry, type Session, type SessionSnapshot } from "@progdm/shared";
 import * as schema from "./schema.js";
 import { CAMPAIGN_ARCHIVE_MAX_BYTES } from "@progdm/shared";
+import { DomainValidationError, unicodeLength } from "./validation.js";
+export { DomainValidationError } from "./validation.js";
 
 function checkArchiveSize(archive: unknown) {
   let json: string | undefined;
@@ -21,8 +23,8 @@ function checkArchiveSize(archive: unknown) {
 
 function validatedPlayerName(name: string): string {
   const value = name.trim();
-  if (value.length === 0 || value.length > 60) {
-    throw new Error("Player name must contain between 1 and 60 characters.");
+  if (value.length === 0 || unicodeLength(value) > 60) {
+    throw new DomainValidationError("Player name must contain between 1 and 60 characters.");
   }
   return value;
 }
@@ -48,16 +50,16 @@ export function resolveDatabaseFile(file = process.env.PROGDM_DATABASE_FILE ?? D
 
 function validatedName(name: string): string {
   const value = name.trim();
-  if (value.length === 0 || value.length > 120) {
-    throw new Error("Name must contain between 1 and 120 characters.");
+  if (value.length === 0 || unicodeLength(value) > 120) {
+    throw new DomainValidationError("Name must contain between 1 and 120 characters.");
   }
   return value;
 }
 
 function validatedDescription(description: string): string {
   const value = description.trim();
-  if (value.length === 0 || value.length > 2000) {
-    throw new Error("Description must contain between 1 and 2000 characters.");
+  if (value.length === 0 || unicodeLength(value) > 2000) {
+    throw new DomainValidationError("Description must contain between 1 and 2000 characters.");
   }
   return value;
 }
@@ -76,7 +78,7 @@ const INVENTORY_RARITIES: readonly InventoryRarity[] = ["common", "uncommon", "r
 const EQUIPMENT_SLOTS: readonly EquipmentSlot[] = ["primary", "secondary", "armor", "accessory", "tool", "special"];
 
 function validatedInventoryDescription(value: unknown): string {
-  if (typeof value !== "string" || value.length > 2000) throw new Error("Catalog item description is invalid.");
+  if (typeof value !== "string" || unicodeLength(value) > 2000) throw new DomainValidationError("Catalog item description is invalid.");
   return value;
 }
 
@@ -109,8 +111,8 @@ function validatedInventoryCapacity(value: unknown): number {
 
 function validatedKnowledgeFactBody(body: string): string {
   const value = body.trim();
-  if (value.length === 0 || value.length > 2000) {
-    throw new Error("Knowledge fact must contain between 1 and 2000 characters.");
+  if (value.length === 0 || unicodeLength(value) > 2000) {
+    throw new DomainValidationError("Knowledge fact must contain between 1 and 2000 characters.");
   }
   return value;
 }
@@ -140,7 +142,7 @@ function transferRecord(value: unknown): Record<string, unknown> {
 
 function transferString(record: Record<string, unknown>, key: string, max = 200): string {
   const value = record[key];
-  if (typeof value !== "string" || value.length > max) throw new Error("Campaign file is invalid.");
+  if (typeof value !== "string" || unicodeLength(value) > max) throw new DomainValidationError("Campaign file is invalid.");
   return value;
 }
 
@@ -170,20 +172,20 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
 
   function profileText(value: string, max: number): string {
     const trimmed = value.trim();
-    if (trimmed.length > max) throw new Error("Profile text is too long.");
+    if (unicodeLength(trimmed) > max) throw new DomainValidationError("Profile text is too long.");
     return trimmed;
   }
 
   function profileTraits(value: unknown): string[] {
-    if (!Array.isArray(value)) throw new Error("Character traits are invalid.");
+    if (!Array.isArray(value)) throw new DomainValidationError("Character traits are invalid.");
     const traits: string[] = [];
     for (const entry of value) {
-      if (typeof entry !== "string") throw new Error("Character traits are invalid.");
+      if (typeof entry !== "string") throw new DomainValidationError("Character traits are invalid.");
       const trait = entry.trim();
-      if (!trait || trait.length > 40) throw new Error("Character traits are invalid.");
+      if (!trait || unicodeLength(trait) > 40) throw new DomainValidationError("Character traits are invalid.");
       if (!traits.includes(trait)) traits.push(trait);
     }
-    if (traits.length > 8) throw new Error("Character traits are invalid.");
+    if (traits.length > 8) throw new DomainValidationError("Character traits are invalid.");
     return traits;
   }
 
@@ -210,7 +212,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
 
   function personalNoteTitle(value: string): string {
     const title = value.trim();
-    if (title.length > 120) throw new Error("Personal note title is too long.");
+    if (unicodeLength(title) > 120) throw new DomainValidationError("Personal note title is too long.");
     return title;
   }
 
@@ -226,13 +228,13 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
 
   function profileFieldLabel(value: string): string {
     const label = value.trim();
-    if (!label || label.length > 60) throw new Error("Profile field label must contain between 1 and 60 characters.");
+    if (!label || unicodeLength(label) > 60) throw new DomainValidationError("Profile field label must contain between 1 and 60 characters.");
     return label;
   }
 
   function profileFieldValue(value: string): string {
     const fieldValue = value.trim();
-    if (fieldValue.length > 500) throw new Error("Profile field value is too long.");
+    if (unicodeLength(fieldValue) > 500) throw new DomainValidationError("Profile field value is too long.");
     return fieldValue;
   }
 
@@ -352,7 +354,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     const audienceKeys = new Set(["party", "character"]);
     const scopeKeys = new Set(["selected", "next", "all"]);
     for (const [key, part] of Object.entries(details)) {
-      if (stringKeys.has(key) && typeof part === "string" && part.length <= 160) continue;
+      if (stringKeys.has(key) && typeof part === "string" && unicodeLength(part) <= 160) continue;
       if (key === "sourceInventoryItemId" && typeof part === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(part)) continue;
       if (visibilityKeys.has(key) && ["hidden", "party", "character"].includes(String(part))) continue;
       if (["quantity", "totalQuantity"].includes(key) && typeof part === "number" && Number.isInteger(part) && part >= 0 && part <= 9999) continue;
@@ -529,7 +531,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
     check("Профили персонажей", () => {
       const rows = database.prepare("SELECT traits, appearance, quote FROM characters").all() as { traits: string; appearance: string; quote: string }[];
       const invalid = rows.filter((row) => !storedTraitsAreValid(row.traits) || typeof row.appearance !== "string" ||
-        row.appearance.length > 1000 || typeof row.quote !== "string" || row.quote.length > 300).length;
+        unicodeLength(row.appearance) > 1000 || typeof row.quote !== "string" || unicodeLength(row.quote) > 300).length;
       return invalid === 0 ? { status: "ok", message: "Поля профилей и черты персонажей корректны." }
         : { status: "error", message: `Найдено профилей с некорректными чертами, внешностью или цитатой: ${invalid}.` };
     });
@@ -538,7 +540,7 @@ export function openDatabase(options: { file?: string; backupsDirectory?: string
       const groups = new Map<string, typeof rows>();
       for (const row of rows) groups.set(row.campaign_id, [...(groups.get(row.campaign_id) ?? []), row]);
       const invalid = [...groups.values()].some((group) => group.length > 20 || group.some((row, index) =>
-        typeof row.label !== "string" || row.label.trim().length < 1 || row.label.trim().length > 60 ||
+        typeof row.label !== "string" || row.label.trim().length < 1 || unicodeLength(row.label.trim()) > 60 ||
         !Number.isInteger(row.position) || row.position !== index));
       return !invalid ? { status: "ok", message: "Поля профиля и их порядок корректны." }
         : { status: "error", message: "Найдены некорректные определения, лимит или порядок полей профиля." };

@@ -21,12 +21,15 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
   const [marker, setMarker] = useState<PersonalNoteMarker>("normal");
   const [pinned, setPinned] = useState(false);
   const selectedNote = notes.find((note) => note.id === selectedNoteId) ?? null;
+  const targetExists = editing === "new" || (editing !== null && notes.some((note) => note.id === editing.id));
+  const editorCanEdit = canEdit && targetExists;
 
   useLayoutEffect(() => {
     window.scrollTo(0, 0);
   }, [selectedNoteId, editing]);
 
   function startCreate() {
+    if (!canEdit || busy) return;
     setCreationId(createOperationUuid());
     setSelectedNoteId(null);
     setEditing("new");
@@ -37,6 +40,7 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
   }
 
   function startEdit(note: PersonalNote) {
+    if (!canEdit || busy || !notes.some((entry) => entry.id === note.id)) return;
     setEditing(note);
     setTitle(note.title);
     setBody(note.body);
@@ -51,7 +55,7 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!editing) return;
+    if (!editing || !editorCanEdit || busy) return;
     const isNew = editing === "new";
     const noteId = isNew ? null : editing.id;
     if (await onSave(noteId, { title, body, marker, pinned }, isNew ? creationId : undefined)) {
@@ -91,17 +95,20 @@ export function PersonalNotesPage({ notes, busy, canEdit, onSave }: {
         <div className="prod-note-editor-heading"><h3>{editing === "new" ? "Новая заметка" : "Изменить заметку"}</h3>
           <button className="prod-icon-button" type="button" aria-label="Закрыть редактор" disabled={busy} onClick={cancelEdit}><X aria-hidden="true" /></button>
         </div>
+        {!editorCanEdit && <p className="prod-empty" role="status">
+          {targetExists ? "Редактирование больше недоступно." : "Заметка больше недоступна."} Несохранённый текст сохранён на этом экране.
+        </p>}
         <label htmlFor="prod-note-title">Название</label>
-        <input id="prod-note-title" value={title} maxLength={120} disabled={busy} onChange={(event) => setTitle(event.target.value)} />
+        <input id="prod-note-title" value={title} maxLength={120} disabled={busy || !editorCanEdit} onChange={(event) => setTitle(event.target.value)} />
         <label htmlFor="prod-note-marker">Тип заметки</label>
-        <select id="prod-note-marker" value={marker} disabled={busy} onChange={(event) => setMarker(event.target.value as PersonalNoteMarker)}>
+        <select id="prod-note-marker" value={marker} disabled={busy || !editorCanEdit} onChange={(event) => setMarker(event.target.value as PersonalNoteMarker)}>
           {Object.entries(PERSONAL_NOTE_MARKER_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
         </select>
         <label htmlFor="prod-note-body">Текст</label>
-        <textarea id="prod-note-body" value={body} required maxLength={2000} rows={5} disabled={busy} onChange={(event) => setBody(event.target.value)} />
-        <label className="prod-note-pin-checkbox"><input type="checkbox" checked={pinned} disabled={busy} onChange={(event) => setPinned(event.target.checked)} />Закрепить</label>
+        <textarea id="prod-note-body" value={body} required maxLength={2000} rows={5} disabled={busy || !editorCanEdit} onChange={(event) => setBody(event.target.value)} />
+        <label className="prod-note-pin-checkbox"><input type="checkbox" checked={pinned} disabled={busy || !editorCanEdit} onChange={(event) => setPinned(event.target.checked)} />Закрепить</label>
         <div className="prod-actions"><button className="prod-secondary" type="button" disabled={busy} onClick={cancelEdit}>Отмена</button>
-          <button className="prod-primary" type="submit" disabled={busy || !body.trim()}>Сохранить</button></div>
+          <button className="prod-primary" type="submit" disabled={busy || !editorCanEdit || !body.trim()}>Сохранить</button></div>
       </form>
     </div> : selectedNote ? <article className="prod-note-detail" aria-labelledby="prod-note-detail-title">
       <button className="prod-back" type="button" onClick={() => setSelectedNoteId(null)}><ChevronLeft aria-hidden="true" />Назад к заметкам</button>
